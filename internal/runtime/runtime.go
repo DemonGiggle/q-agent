@@ -1,0 +1,188 @@
+// Package runtime coordinates authorization, isolated execution, and history.
+package runtime
+
+import (
+	"context"
+	"fmt"
+	"q-agent/internal/agent"
+	"q-agent/internal/config"
+	"q-agent/internal/llm"
+	"q-agent/internal/platform"
+	"q-agent/internal/redaction"
+	"q-agent/internal/state"
+	"q-agent/internal/telegram"
+	"sync"
+)
+
+type Workspaces interface {
+	Ensure(context.Context, platform.Message) (string, error)
+}
+type ProviderFactory func(state.Conversation) (llm.Provider, error)
+type ToolFactory func(string) agent.Tools
+type Sink interface {
+	Typing(context.Context, platform.Message) error
+}
+type task struct {
+	topic  int64
+	cancel context.CancelFunc
+}
+type Runtime struct {
+	Config     config.Config
+	Store      *state.Store
+	Workspaces Workspaces
+	Providers  ProviderFactory
+	Tools      ToolFactory
+	Sink       Sink
+	Options    agent.Options
+	Report     func(error)
+	mu         sync.Mutex
+	active     map[string]task
+	wg         sync.WaitGroup
+	closed     bool
+}
+
+func (r *Runtime) allowed(m platform.Message) bool {
+	user, chat := false, false
+	for _, id := range r.Config.Telegram.ApprovedUsers {
+		user = user || m.UserID == id
+	}
+	for _, id := range r.Config.Telegram.ApprovedChats {
+		chat = chat || m.ChatID == id
+	}
+	return user && chat && m.Platform == "telegram"
+}
+func (r *Runtime) report(err error) {
+	if err != nil && r.Report != nil {
+		r.Report(err)
+	}
+}
+func (r *Runtime) reply(m platform.Message, text string) error {
+	return r.Store.Queue(m, telegram.Split(text))
+}
+
+// Handle commits the update before doing work. Authorized commands use the
+// same path as prompts, and provisioning consumes the same concurrency slot.
+func (r *Runtime) Handle(ctx context.Context, m platform.Message) error {
+	accepted, err := r.Store.Accept(m.UpdateID)
+	if err != nil || !accepted {
+		return err
+	}
+	if !r.allowed(m) {
+		return nil
+	}
+	r.mu.Lock()
+	if r.active == nil {
+		r.active = map[string]task{}
+	}
+	if r.closed {
+		r.mu.Unlock()
+		return context.Canceled
+	}
+	key := m.WorkspaceKey()
+	active, busy := r.active[key]
+	switch m.Text {
+	case "/cancel":
+		if busy && active.topic == m.TopicID {
+			active.cancel()
+			r.mu.Unlock()
+			return r.reply(m, "Cancellation requested.")
+		}
+		r.mu.Unlock()
+		return r.reply(m, "No active task in this conversation.")
+	case "/new":
+		if busy && active.topic == m.TopicID {
+			r.mu.Unlock()
+			return r.reply(m, "This conversation is busy. Use /cancel before /new.")
+		}
+		err := r.Store.Reset(m.ConversationKey())
+		r.mu.Unlock()
+		if err != nil {
+			return err
+		}
+		return r.reply(m, "Conversation cleared. Workspace retained.")
+	}
+	limit := r.Config.Limits.MaxConcurrent
+	if limit <= 0 {
+		limit = 2
+	}
+	if busy || len(r.active) >= limit {
+		r.mu.Unlock()
+		return r.reply(m, "Busy. Try again when the active task finishes.")
+	}
+	taskCtx, cancel := context.WithTimeout(ctx, r.Config.TaskDuration())
+	r.active[key] = task{topic: m.TopicID, cancel: cancel}
+	r.wg.Add(1)
+	r.mu.Unlock()
+	go func() {
+		defer r.wg.Done()
+		defer cancel()
+		defer func() { r.mu.Lock(); delete(r.active, key); r.mu.Unlock() }()
+		r.run(taskCtx, m)
+	}()
+	return nil
+}
+func (r *Runtime) run(ctx context.Context, m platform.Message) {
+	stopTyping := func() {}
+	if r.Sink != nil {
+		stopTyping = startTyping(ctx, r.Sink, m)
+	}
+	defer stopTyping()
+	answer := ""
+	var runErr error
+	root, err := r.Workspaces.Ensure(ctx, m)
+	if err != nil {
+		runErr = fmt.Errorf("workspace provisioning: %w", err)
+	} else {
+		conversation, err := r.Store.Load(m.ConversationKey())
+		if err != nil {
+			runErr = err
+		} else {
+			if conversation.Provider != r.Config.Provider.Name || conversation.Model != r.Config.Provider.Model {
+				conversation = state.Conversation{Provider: r.Config.Provider.Name, Model: r.Config.Provider.Model}
+			}
+			provider, err := r.Providers(conversation)
+			if err != nil {
+				runErr = err
+			} else {
+				if identity, ok := provider.(interface{ SessionIdentity() string }); ok {
+					conversation.Identity = identity.SessionIdentity()
+				}
+				// Save routing identity before the first request, including empty history.
+				if err = r.Store.Save(m.ConversationKey(), conversation); err != nil {
+					runErr = err
+				} else {
+					result, err := agent.Run(ctx, provider, r.Tools(root), conversation.Messages(), m.Text, r.Options)
+					answer = result.Answer
+					runErr = err
+					if err == nil {
+						conversation.Pairs = append(conversation.Pairs, state.Pair{User: m.Text, Answer: answer})
+						if err = r.Store.Save(m.ConversationKey(), conversation); err != nil {
+							runErr = fmt.Errorf("save history: %w", err)
+						}
+					}
+				}
+			}
+		}
+	}
+	if runErr != nil {
+		if ctx.Err() == context.Canceled {
+			answer = "Task cancelled."
+		} else if ctx.Err() == context.DeadlineExceeded {
+			answer = "Task reached its deadline."
+		} else {
+			answer = "Task failed: " + r.Options.Redaction.Text(redaction.Remote, runErr.Error())
+		}
+		r.report(runErr)
+	}
+	r.report(r.reply(m, answer))
+}
+func (r *Runtime) Close() {
+	r.mu.Lock()
+	r.closed = true
+	for _, t := range r.active {
+		t.cancel()
+	}
+	r.mu.Unlock()
+	r.wg.Wait()
+}
+func (r *Runtime) Wait() { r.wg.Wait() }

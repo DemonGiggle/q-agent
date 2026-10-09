@@ -1,0 +1,87 @@
+package telegram
+
+import (
+	"bytes"
+	"context"
+	"encoding/json"
+	"fmt"
+	"io"
+	"net/http"
+	"q-agent/internal/platform"
+	"time"
+)
+
+type Client struct {
+	Token   string
+	HTTP    *http.Client
+	BaseURL string
+}
+type APIError struct {
+	Code        int
+	Description string
+	RetryAfter  int
+}
+
+func (e *APIError) Error() string { return fmt.Sprintf("Telegram error %d: %s", e.Code, e.Description) }
+func New(token string) *Client {
+	return &Client{Token: token, HTTP: &http.Client{Timeout: 35 * time.Second}, BaseURL: "https://api.telegram.org"}
+}
+func (c *Client) call(ctx context.Context, method string, input, result any) error {
+	data, err := json.Marshal(input)
+	if err != nil {
+		return err
+	}
+	req, err := http.NewRequestWithContext(ctx, "POST", c.BaseURL+"/bot"+c.Token+"/"+method, bytes.NewReader(data))
+	if err != nil {
+		return err
+	}
+	req.Header.Set("Content-Type", "application/json")
+	resp, err := c.HTTP.Do(req)
+	if err != nil {
+		return err
+	}
+	defer resp.Body.Close()
+	var envelope struct {
+		OK          bool            `json:"ok"`
+		Result      json.RawMessage `json:"result"`
+		Code        int             `json:"error_code"`
+		Description string          `json:"description"`
+		Parameters  struct {
+			RetryAfter int `json:"retry_after"`
+		} `json:"parameters"`
+	}
+	if err = json.NewDecoder(io.LimitReader(resp.Body, 4<<20)).Decode(&envelope); err != nil {
+		return fmt.Errorf("decode Telegram response (%s): %w", resp.Status, err)
+	}
+	if !envelope.OK {
+		return &APIError{Code: envelope.Code, Description: envelope.Description, RetryAfter: envelope.Parameters.RetryAfter}
+	}
+	if result != nil {
+		return json.Unmarshal(envelope.Result, result)
+	}
+	return nil
+}
+func (c *Client) Me(ctx context.Context) (User, error) {
+	var u User
+	err := c.call(ctx, "getMe", map[string]any{}, &u)
+	return u, err
+}
+func (c *Client) Updates(ctx context.Context, offset int64) ([]Update, error) {
+	var updates []Update
+	err := c.call(ctx, "getUpdates", map[string]any{"offset": offset, "timeout": 25, "allowed_updates": []string{"message"}}, &updates)
+	return updates, err
+}
+func (c *Client) Send(ctx context.Context, m platform.Message, text string) error {
+	input := map[string]any{"chat_id": m.ChatID, "text": text}
+	if m.TopicID != 0 {
+		input["message_thread_id"] = m.TopicID
+	}
+	return c.call(ctx, "sendMessage", input, nil)
+}
+func (c *Client) Typing(ctx context.Context, m platform.Message) error {
+	input := map[string]any{"chat_id": m.ChatID, "action": "typing"}
+	if m.TopicID != 0 {
+		input["message_thread_id"] = m.TopicID
+	}
+	return c.call(ctx, "sendChatAction", input, nil)
+}

@@ -1,0 +1,4 @@
+/bin/
+/.test-state/
+/config.json
+/.test-config.json

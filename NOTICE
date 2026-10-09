@@ -1,0 +1,4 @@
+q-agent includes code derived from qcode commit e9389fa.
+The provider adapters, redaction, trust envelopes, and repeated-call guard
+originate from qcode, Copyright (c) 2026 qcode contributors, under the MIT
+License reproduced in LICENSE.

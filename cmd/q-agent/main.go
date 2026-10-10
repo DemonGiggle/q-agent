@@ -49,16 +49,16 @@ func mainRun() error {
 	}
 	if command == "image" {
 		if len(args) == 0 || args[0] != "build" {
-			return fmt.Errorf("usage: q-agent image build --config config.json")
+			return fmt.Errorf("usage: q-agent image build --config config.toml")
 		}
 		command = "image build"
 		args = args[1:]
 	}
 	if command != "serve" && command != "image build" {
-		return fmt.Errorf("usage: q-agent {serve|image build} --config config.json")
+		return fmt.Errorf("usage: q-agent {serve|image build} --config config.toml")
 	}
 	flags := flag.NewFlagSet(command, flag.ContinueOnError)
-	path := flags.String("config", "config.json", "JSON configuration")
+	path := flags.String("config", "config.toml", "TOML configuration")
 	if err := flags.Parse(args); err != nil {
 		return err
 	}

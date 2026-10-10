@@ -51,7 +51,7 @@ Telegram and model network endpoints were mocked; no live Telegram messages or
 paid model requests were sent. Race checks cover the unit/runtime tests; the live
 integration run used the normal static worker.
 
-## Initial baseline
+## Initial baseline (commit 97df202)
 
 | Measurement | Observed value |
 | --- | --- |
@@ -75,10 +75,24 @@ These are initial observations on this machine, not latency distributions.
 make test
 make race
 make build
-./bin/q-agent image build --config config.json
+./bin/q-agent image build --config config.toml
 Q_AGENT_IMAGE="$HOME/.local/share/q-agent/images/debian-trixie.tar" make integration
 ```
 
 The validation image caches are local ignored artifacts under `.test-state/images/`.
 The integration tests remove their own rootfs trees through the mapped worker.
-`config.json`, binaries, and validation image caches are excluded from Git.
+`config.toml`, binaries, and validation image caches are excluded from Git.
+
+## TOML configuration update
+
+Configuration now uses `config.toml` and `config.example.toml`, parsed with the
+same pinned `go-toml/v2` v2.3.1 dependency as qcode. The loader preserves defaults,
+relative-path resolution, environment credential selection, duration checks, and
+strict unknown-field validation. Tests cover comments, negative 64-bit chat IDs,
+invalid syntax, duplicate keys, and oversized configuration files. Host state
+continues to use atomic JSON files.
+
+`go test ./...`, `go test -race ./...`, `go vet ./...`, and the static build passed.
+The cached-image CLI command also passed using the local TOML validation config.
+The updated stripped native binary is 6,693,016 bytes (6.38 MiB); the table above
+records the original implementation's baseline.

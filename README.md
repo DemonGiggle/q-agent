@@ -26,22 +26,22 @@ Build a static native binary with Go 1.22 or newer:
 
 ```sh
 make build
-cp config.example.json config.json
+cp config.example.toml config.toml
 ```
 
-Edit `config.json`: set the model, approved Telegram user IDs, and approved chat
+Edit `config.toml`: set the model, approved Telegram user IDs, and approved chat
 IDs. **Both allowlists must match every prompt and command.** For a private chat,
 the chat ID normally equals the user's ID; group chat IDs are usually negative.
-Configuration uses JSON, rejects unknown fields, and resolves relative paths
+Configuration uses TOML, rejects unknown fields, and resolves relative paths
 against the configuration file's directory. Credentials are environment values,
 not configuration values.
 
 Build the cached base image once, then start polling:
 
 ```sh
-./bin/q-agent image build --config config.json
+./bin/q-agent image build --config config.toml
 export TELEGRAM_BOT_TOKEN='your BotFather token'
-./bin/q-agent serve --config config.json
+./bin/q-agent serve --config config.toml
 ```
 
 The image command runs rootless mmdebstrap with `--mode=unshare`, `--variant=apt`,

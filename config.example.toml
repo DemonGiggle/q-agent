@@ -1,0 +1,25 @@
+state_dir = "~/.local/share/q-agent"
+
+[provider]
+name = "ollama"
+model = "qwen3"
+base_url = "http://127.0.0.1:11434"
+# Credential variable defaults to OPENAI_API_KEY or OPENCODE_GO_API_KEY
+# for those providers. An empty value uses the provider default.
+api_key_env = ""
+thinking = ""
+
+[telegram]
+token_env = "TELEGRAM_BOT_TOKEN"
+approved_user_ids = [123456789]
+approved_chat_ids = [123456789, -1001234567890]
+
+[sandbox]
+base_image = "~/.local/share/q-agent/images/debian-trixie.tar"
+
+[limits]
+max_steps = 8
+max_tool_calls = 16
+max_concurrent = 2
+task_timeout = "5m"
+shell_timeout = "2m"

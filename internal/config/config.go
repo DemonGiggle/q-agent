@@ -1,48 +1,50 @@
 package config
 
 import (
-	"encoding/json"
+	"bytes"
 	"fmt"
 	"io"
 	"os"
 	"path/filepath"
 	"strings"
 	"time"
+
+	"github.com/pelletier/go-toml/v2"
 )
 
 type Config struct {
-	StateDir string   `json:"state_dir"`
-	Provider Provider `json:"provider"`
-	Telegram Telegram `json:"telegram"`
-	Sandbox  Sandbox  `json:"sandbox"`
-	Limits   Limits   `json:"limits"`
+	StateDir string   `toml:"state_dir"`
+	Provider Provider `toml:"provider"`
+	Telegram Telegram `toml:"telegram"`
+	Sandbox  Sandbox  `toml:"sandbox"`
+	Limits   Limits   `toml:"limits"`
 }
 type Provider struct {
-	Name      string `json:"name"`
-	Model     string `json:"model"`
-	BaseURL   string `json:"base_url"`
-	APIKeyEnv string `json:"api_key_env"`
-	Thinking  string `json:"thinking"`
+	Name      string `toml:"name"`
+	Model     string `toml:"model"`
+	BaseURL   string `toml:"base_url"`
+	APIKeyEnv string `toml:"api_key_env"`
+	Thinking  string `toml:"thinking"`
 }
 type Telegram struct {
-	TokenEnv      string  `json:"token_env"`
-	ApprovedUsers []int64 `json:"approved_user_ids"`
-	ApprovedChats []int64 `json:"approved_chat_ids"`
+	TokenEnv      string  `toml:"token_env"`
+	ApprovedUsers []int64 `toml:"approved_user_ids"`
+	ApprovedChats []int64 `toml:"approved_chat_ids"`
 }
 type Sandbox struct {
-	BaseImage  string `json:"base_image"`
-	Worker     string `json:"worker"`
-	Bubblewrap string `json:"bubblewrap"`
-	NewUIDMap  string `json:"newuidmap"`
-	NewGIDMap  string `json:"newgidmap"`
-	MMdebstrap string `json:"mmdebstrap"`
+	BaseImage  string `toml:"base_image"`
+	Worker     string `toml:"worker"`
+	Bubblewrap string `toml:"bubblewrap"`
+	NewUIDMap  string `toml:"newuidmap"`
+	NewGIDMap  string `toml:"newgidmap"`
+	MMdebstrap string `toml:"mmdebstrap"`
 }
 type Limits struct {
-	MaxSteps      int    `json:"max_steps"`
-	MaxToolCalls  int    `json:"max_tool_calls"`
-	MaxConcurrent int    `json:"max_concurrent"`
-	TaskTimeout   string `json:"task_timeout"`
-	ShellTimeout  string `json:"shell_timeout"`
+	MaxSteps      int    `toml:"max_steps"`
+	MaxToolCalls  int    `toml:"max_tool_calls"`
+	MaxConcurrent int    `toml:"max_concurrent"`
+	TaskTimeout   string `toml:"task_timeout"`
+	ShellTimeout  string `toml:"shell_timeout"`
 }
 
 func Defaults() Config {
@@ -55,14 +57,16 @@ func Load(path string) (Config, error) {
 		return c, err
 	}
 	defer f.Close()
-	d := json.NewDecoder(io.LimitReader(f, 1<<20))
-	d.DisallowUnknownFields()
-	if err = d.Decode(&c); err != nil {
+	data, err := io.ReadAll(io.LimitReader(f, (1<<20)+1))
+	if err != nil {
 		return c, err
 	}
-	var extra any
-	if d.Decode(&extra) != io.EOF {
-		return c, fmt.Errorf("config must contain one JSON object")
+	if len(data) > 1<<20 {
+		return c, fmt.Errorf("configuration exceeds 1 MiB")
+	}
+	d := toml.NewDecoder(bytes.NewReader(data)).DisallowUnknownFields()
+	if err = d.Decode(&c); err != nil {
+		return c, err
 	}
 	if c.Provider.Name != "openai" && c.Provider.Name != "ollama" && c.Provider.Name != "opencode-go" {
 		return c, fmt.Errorf("unknown provider %q", c.Provider.Name)

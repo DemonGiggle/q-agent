@@ -2,3 +2,5 @@
 /.test-state/
 /config.json
 /.test-config.json
+/config.toml
+/.test-config.toml

@@ -96,3 +96,18 @@ continues to use atomic JSON files.
 The cached-image CLI command also passed using the local TOML validation config.
 The updated stripped native binary is 6,693,016 bytes (6.38 MiB); the table above
 records the original implementation's baseline.
+
+## Pre-publication audit
+
+All reachable Git commits and source blobs were checked with Gitleaks v8.30.1
+and against credentials available in the local environment. No real credentials
+were found. The scanner's four matches were manually reviewed synthetic
+redaction fixtures; `.gitleaksignore` limits their exceptions to the original
+commit, rule, and line. Private operator configuration, runtime state, images,
+and binaries are untracked and ignored. Published commit metadata uses the
+GitHub noreply address, and the isolation test uses a temporary host marker
+instead of a workstation-specific path.
+
+After the audit changes, unit tests, race checks, `go vet`, the static build,
+and both live integration suites passed again. The host-isolation check now
+asserts that a file which exists on the host is inaccessible inside the sandbox.

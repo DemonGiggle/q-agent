@@ -34,6 +34,11 @@ func TestIntegrationIsolationAndPackages(t *testing.T) {
 		t.Fatal(err)
 	}
 	dir := t.TempDir()
+	hostOnly := filepath.Join(dir, "host-only-marker")
+	if err := os.WriteFile(hostOnly, []byte("host-only test data"), 0600); err != nil {
+		t.Fatal(err)
+	}
+	quotedHostOnly := "'" + strings.ReplaceAll(hostOnly, "'", "'\"'\"'") + "'"
 	manager := &workspace.Manager{Dir: filepath.Join(dir, "workspaces"), Image: image, Sandbox: options}
 	t.Cleanup(func() {
 		ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
@@ -71,7 +76,7 @@ func TestIntegrationIsolationAndPackages(t *testing.T) {
 	t.Setenv("Q_AGENT_TEST_SECRET", "must-never-be-in-sandbox")
 	t.Setenv("TELEGRAM_BOT_TOKEN", "must-never-be-in-sandbox")
 	start = time.Now()
-	out := shell(rootA, "id; cat /proc/self/uid_map; cat /proc/self/gid_map; grep '^CapEff:' /proc/self/status; env; test ! -e /host-private-state; test ! -e /target; test ! -e /image.tar; test ! -w /.q-agent-worker")
+	out := shell(rootA, "id; cat /proc/self/uid_map; cat /proc/self/gid_map; grep '^CapEff:' /proc/self/status; env; test ! -e "+quotedHostOnly+" && test ! -e /target && test ! -e /image.tar && test ! -w /.q-agent-worker")
 	t.Logf("tool_launch=%s", time.Since(start))
 	if !strings.Contains(out, "uid=0(root)") || strings.Contains(out, "must-never") || !strings.Contains(out, "00000000000400db") {
 		t.Fatalf("mapping/capabilities/environment: %s", out)

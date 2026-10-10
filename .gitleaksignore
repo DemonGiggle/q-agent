@@ -1,0 +1,5 @@
+# Synthetic redaction fixtures, reviewed before publication. These exceptions
+# match only the original commit, rule, and line; new findings remain visible.
+97df2026a939532ce4161f2f5d959e3fdb29629c:internal/redaction/policy_test.go:generic-api-key:13
+97df2026a939532ce4161f2f5d959e3fdb29629c:internal/redaction/policy_test.go:private-key:135
+97df2026a939532ce4161f2f5d959e3fdb29629c:internal/redaction/policy_test.go:private-key:156

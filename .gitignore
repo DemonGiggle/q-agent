@@ -4,3 +4,6 @@
 /.test-config.json
 /config.toml
 /.test-config.toml
+.env
+.env.*
+!.env.example

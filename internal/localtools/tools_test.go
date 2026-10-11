@@ -15,7 +15,7 @@ func TestFilesAndEditFailure(t *testing.T) {
 	path := filepath.Join(t.TempDir(), "file")
 	call := func(name string, args map[string]string) (string, error) {
 		data, _ := json.Marshal(args)
-		return Execute(context.Background(), llm.ToolCall{Name: name, Arguments: data}, 0)
+		return Execute(context.Background(), llm.ToolCall{Name: name, Arguments: data}, Options{WorkingDir: "/workspace"})
 	}
 	if _, err := call("write", map[string]string{"path": path, "content": "same same"}); err != nil {
 		t.Fatal(err)
@@ -39,7 +39,7 @@ func TestNullContentCannotTruncate(t *testing.T) {
 	path := filepath.Join(t.TempDir(), "file")
 	os.WriteFile(path, []byte("keep"), 0600)
 	args, _ := json.Marshal(map[string]any{"path": path, "content": nil})
-	_, err := Execute(context.Background(), llm.ToolCall{Name: "write", Arguments: args}, 0)
+	_, err := Execute(context.Background(), llm.ToolCall{Name: "write", Arguments: args}, Options{WorkingDir: "/workspace"})
 	data, _ := os.ReadFile(path)
 	if err == nil || string(data) != "keep" {
 		t.Fatal("null content changed a file")
@@ -55,7 +55,7 @@ func TestOutputBoundAndJSON(t *testing.T) {
 		t.Fatal("invalid truncation")
 	}
 	for _, args := range []string{`null`, `{"path":9}`, `{"path":null}`, `{"path":"/x","unknown":true}`} {
-		_, err := Execute(context.Background(), llm.ToolCall{Name: "read", Arguments: json.RawMessage(args)}, 0)
+		_, err := Execute(context.Background(), llm.ToolCall{Name: "read", Arguments: json.RawMessage(args)}, Options{WorkingDir: "/workspace"})
 		if err == nil {
 			t.Fatal("invalid arguments accepted")
 		}

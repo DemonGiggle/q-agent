@@ -13,13 +13,16 @@ import (
 	"path/filepath"
 	"q-agent/internal/agent"
 	"q-agent/internal/config"
+	"q-agent/internal/host"
 	"q-agent/internal/llm"
+	"q-agent/internal/localtools"
 	"q-agent/internal/redaction"
 	run "q-agent/internal/runtime"
 	"q-agent/internal/sandbox"
 	"q-agent/internal/state"
 	"q-agent/internal/telegram"
 	"q-agent/internal/workspace"
+	"runtime"
 	"sort"
 	"syscall"
 	"time"
@@ -91,6 +94,9 @@ func mainRun() error {
 }
 
 func serve(ctx context.Context, c config.Config, policy *redaction.Policy, bot *telegram.Client) error {
+	if runtime.GOOS != "linux" {
+		return fmt.Errorf("q-agent runtime requires Linux")
+	}
 	if len(c.Telegram.ApprovedUsers) == 0 || len(c.Telegram.ApprovedChats) == 0 {
 		return fmt.Errorf("approved_user_ids and approved_chat_ids are both required")
 	}
@@ -101,19 +107,34 @@ func serve(ctx context.Context, c config.Config, policy *redaction.Policy, bot *
 	if c.Provider.Name != "ollama" && os.Getenv(c.Provider.APIKeyEnv) == "" {
 		return fmt.Errorf("missing provider credential environment variable %s", c.Provider.APIKeyEnv)
 	}
-	if err := workspace.CheckImage(c.Sandbox.BaseImage); err != nil {
-		return err
+	mode := state.ExecutionHost
+	var workspaces run.Workspaces = &workspace.HostManager{Dir: filepath.Join(c.StateDir, "host-workspaces")}
+	environment, removed := redaction.FilterEnvironment(os.Environ(), c.Telegram.TokenEnv, c.Provider.APIKeyEnv)
+	policy = policy.WithValues(removed)
+	var tools run.ToolFactory = func(root string) agent.Tools {
+		return &host.Runner{Options: localtools.Options{WorkingDir: root, Environment: environment, ShellTimeout: c.ShellDuration()}}
 	}
-	options, err := sandbox.Resolve(sandbox.Options{Bubblewrap: c.Sandbox.Bubblewrap, NewUIDMap: c.Sandbox.NewUIDMap, NewGIDMap: c.Sandbox.NewGIDMap, Worker: c.Sandbox.Worker, ShellTimeout: c.ShellDuration()})
-	if err != nil {
-		return err
-	}
-	if err = checkMapping(c.StateDir, options); err != nil {
-		return err
+	if c.Sandbox.Enabled {
+		mode = state.ExecutionSandbox
+		if err := workspace.CheckImage(c.Sandbox.BaseImage); err != nil {
+			return err
+		}
+		options, err := sandbox.Resolve(sandbox.Options{Bubblewrap: c.Sandbox.Bubblewrap, NewUIDMap: c.Sandbox.NewUIDMap, NewGIDMap: c.Sandbox.NewGIDMap, Worker: c.Sandbox.Worker, ShellTimeout: c.ShellDuration()})
+		if err != nil {
+			return err
+		}
+		if err = checkMapping(c.StateDir, options); err != nil {
+			return err
+		}
+		workspaces = &workspace.Manager{Dir: filepath.Join(c.StateDir, "workspaces"), Image: c.Sandbox.BaseImage, Sandbox: options}
+		tools = func(root string) agent.Tools { return &sandbox.Runner{Options: options, RootFS: root} }
 	}
 	store, err := state.Open(c.StateDir, policy)
 	if err != nil {
 		return err
+	}
+	if err = store.SetExecutionMode(mode); err != nil {
+		return fmt.Errorf("prepare execution mode: %w", err)
 	}
 	identity, err := bot.Me(ctx)
 	if err != nil {
@@ -126,7 +147,7 @@ func serve(ctx context.Context, c config.Config, policy *redaction.Policy, bot *
 	// completions reuse this transport's connection pool.
 	httpClient := &http.Client{Transport: http.DefaultTransport.(*http.Transport).Clone()}
 	providerConfig := llm.Config{BaseURL: c.Provider.BaseURL, APIKey: os.Getenv(c.Provider.APIKeyEnv), HTTP: httpClient}
-	rt := &run.Runtime{Config: c, Store: store, Workspaces: &workspace.Manager{Dir: filepath.Join(c.StateDir, "workspaces"), Image: c.Sandbox.BaseImage, Sandbox: options}, Sink: bot, Options: agent.Options{Model: c.Provider.Model, Thinking: c.Provider.Thinking, MaxSteps: c.Limits.MaxSteps, MaxToolCalls: c.Limits.MaxToolCalls, Redaction: policy}, Report: func(err error) { log.Print(err) }}
+	rt := &run.Runtime{Config: c, Store: store, Workspaces: workspaces, Tools: tools, Sink: bot, Options: agent.Options{Model: c.Provider.Model, Thinking: c.Provider.Thinking, MaxSteps: c.Limits.MaxSteps, MaxToolCalls: c.Limits.MaxToolCalls, Redaction: policy}, Report: func(err error) { log.Print(err) }}
 	rt.Providers = func(conversation state.Conversation) (llm.Provider, error) {
 		p, err := llm.New(c.Provider.Name, providerConfig)
 		if err != nil {
@@ -141,13 +162,12 @@ func serve(ctx context.Context, c config.Config, policy *redaction.Policy, bot *
 		}
 		return p, nil
 	}
-	rt.Tools = func(root string) agent.Tools { return &sandbox.Runner{Options: options, RootFS: root} }
 	deliveryCtx, cancelDelivery := context.WithCancel(context.Background())
 	defer cancelDelivery()
 	deliveryDone := make(chan struct{})
 	go func() { defer close(deliveryDone); bot.Deliver(deliveryCtx, store, func(err error) { log.Print(err) }) }()
 	defer func() { rt.Close(); cancelDelivery(); <-deliveryDone }()
-	log.Printf("serving as @%s", identity.Username)
+	log.Printf("serving as @%s (%s execution)", identity.Username, mode)
 	for ctx.Err() == nil {
 		updates, err := bot.Updates(ctx, store.Cursor()+1)
 		if err != nil {

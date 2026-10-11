@@ -54,16 +54,6 @@ var defaultPolicy, _ = New(Config{}, nil)
 // CredentialEnvironment lists supported credential sources. Values are never logged.
 var CredentialEnvironment = []string{"TELEGRAM_BOT_TOKEN", "Q_AGENT_API_KEY", "QCODE_API_KEY", "OPENAI_API_KEY", "ANTHROPIC_API_KEY", "OPENCODE_API_KEY", "OPENCODE_GO_API_KEY", "GITHUB_TOKEN", "GH_TOKEN", "AWS_ACCESS_KEY_ID", "AWS_SECRET_ACCESS_KEY", "AWS_SESSION_TOKEN", "GOOGLE_API_KEY", "GEMINI_API_KEY", "BRAVE_API_KEY", "TAVILY_API_KEY", "SERPER_API_KEY"}
 
-func EnvironmentValues() []string {
-	var values []string
-	for _, name := range CredentialEnvironment {
-		if value := os.Getenv(name); value != "" {
-			values = append(values, value)
-		}
-	}
-	return values
-}
-
 type InvalidPatternError struct{ Index int }
 
 func (e *InvalidPatternError) Error() string {

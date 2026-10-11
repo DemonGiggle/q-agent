@@ -32,6 +32,7 @@ type Telegram struct {
 	ApprovedChats []int64 `toml:"approved_chat_ids"`
 }
 type Sandbox struct {
+	Enabled    bool   `toml:"enabled"`
 	BaseImage  string `toml:"base_image"`
 	Worker     string `toml:"worker"`
 	Bubblewrap string `toml:"bubblewrap"`
@@ -102,9 +103,9 @@ func Load(path string) (Config, error) {
 			return c, err
 		}
 	}
-	if c.Sandbox.Worker == "" {
+	if c.Sandbox.Worker == "" && c.Sandbox.Enabled {
 		c.Sandbox.Worker, err = os.Executable()
-	} else {
+	} else if c.Sandbox.Worker != "" {
 		c.Sandbox.Worker, err = absolute(c.Sandbox.Worker, filepath.Dir(path))
 	}
 	if err != nil {

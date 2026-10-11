@@ -24,11 +24,20 @@ import (
 )
 
 func TestIntegrationServe(t *testing.T) {
-	if os.Getenv("Q_AGENT_INTEGRATION") != "1" {
+	testServe(t, true)
+}
+
+func TestIntegrationServeHost(t *testing.T) {
+	testServe(t, false)
+}
+
+func testServe(t *testing.T, isolated bool) {
+	t.Helper()
+	if isolated && os.Getenv("Q_AGENT_INTEGRATION") != "1" {
 		t.Skip("requires the real Linux sandbox and Debian image")
 	}
 	image, worker := os.Getenv("Q_AGENT_IMAGE"), os.Getenv("Q_AGENT_WORKER")
-	if image == "" || worker == "" {
+	if isolated && (image == "" || worker == "") {
 		t.Fatal("Q_AGENT_IMAGE and Q_AGENT_WORKER are required")
 	}
 	t.Setenv("TELEGRAM_BOT_TOKEN", "fake-telegram-test-token")
@@ -38,17 +47,32 @@ func TestIntegrationServe(t *testing.T) {
 	c.Telegram.ApprovedUsers = []int64{1}
 	c.Sandbox.BaseImage = image
 	c.Sandbox.Worker = worker
-	options, err := sandbox.Resolve(sandbox.Options{Bubblewrap: "bwrap", NewUIDMap: "newuidmap", NewGIDMap: "newgidmap", Worker: worker})
-	if err != nil {
-		t.Fatal(err)
-	}
-	t.Cleanup(func() {
-		ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
-		defer cancel()
-		if err := sandbox.Remove(ctx, options, c.StateDir); err != nil {
+	c.Sandbox.Enabled = isolated
+	if isolated {
+		options, err := sandbox.Resolve(sandbox.Options{Bubblewrap: "bwrap", NewUIDMap: "newuidmap", NewGIDMap: "newgidmap", Worker: worker})
+		if err != nil {
+			t.Fatal(err)
+		}
+		t.Cleanup(func() {
+			ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+			defer cancel()
+			if err := sandbox.Remove(ctx, options, c.StateDir); err != nil {
+				t.Error(err)
+			}
+		})
+	} else {
+		c.Sandbox.BaseImage = filepath.Join(c.StateDir, "missing-image")
+		c.Sandbox.Worker = filepath.Join(c.StateDir, "missing-worker")
+		c.Sandbox.Bubblewrap = "missing-bwrap"
+		c.Sandbox.NewUIDMap = "missing-newuidmap"
+		c.Sandbox.NewGIDMap = "missing-newgidmap"
+		// A legacy sandbox mapping must not be validated or rewritten on host.
+		if err := state.Atomic(filepath.Join(c.StateDir, "mapping.json"), map[string]string{"legacy": "unchanged"}); err != nil {
 			t.Error(err)
 		}
-	})
+	}
+	t.Setenv("Q_AGENT_SERVICE_SECRET", "service-filter-test-value")
+	t.Setenv("Q_AGENT_SERVICE_VISIBLE", "service-visible-test-value")
 	var requests atomic.Int32
 	model := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		if r.URL.Path != "/api/chat" {
@@ -61,7 +85,16 @@ func TestIntegrationServe(t *testing.T) {
 			t.Error(err)
 		}
 		if requests.Add(1) == 1 {
-			fmt.Fprintln(w, `{"message":{"role":"assistant","tool_calls":[{"function":{"name":"shell","arguments":{"command":"printf ready > /workspace/service-tested"}}}]},"done":true,"prompt_eval_count":1,"eval_count":1}`)
+			command := "printf ready > service-tested"
+			if !isolated {
+				workdir := filepath.Join(c.StateDir, "host-workspaces", platform.WorkspaceKey("telegram", -10), "workspace")
+				if !strings.Contains(input.Messages[0].Content, workdir) || !strings.Contains(input.Messages[0].Content, "ordinary host permissions") || strings.Contains(input.Messages[0].Content, "isolated, persistent Debian") {
+					t.Errorf("host system prompt: %s", input.Messages[0].Content)
+				}
+				command = `test -z "$TELEGRAM_BOT_TOKEN$Q_AGENT_SERVICE_SECRET" && test "$Q_AGENT_SERVICE_VISIBLE" = service-visible-test-value && printf ready > service-tested`
+			}
+			payload := map[string]any{"message": map[string]any{"role": "assistant", "tool_calls": []any{map[string]any{"function": map[string]any{"name": "shell", "arguments": map[string]string{"command": command}}}}}, "done": true, "prompt_eval_count": 1, "eval_count": 1}
+			json.NewEncoder(w).Encode(payload)
 		} else {
 			last := input.Messages[len(input.Messages)-1]
 			if last.Role != "tool" || !strings.Contains(last.Content, `"trust":"untrusted"`) {
@@ -192,10 +225,27 @@ func TestIntegrationServe(t *testing.T) {
 	if requests.Load() != 2 {
 		t.Fatal("completed update replayed after restart")
 	}
-	root := filepath.Join(c.StateDir, "workspaces", m.WorkspaceKey(), "rootfs")
-	data, err := os.ReadFile(filepath.Join(root, "workspace/service-tested"))
+	store, err = state.Open(c.StateDir, policy)
+	if err != nil {
+		t.Fatal(err)
+	}
+	conversation, err = store.Load(m.ConversationKey())
+	if err != nil || len(conversation.Pairs) != 1 {
+		t.Fatalf("same-mode history lost: %+v %v", conversation, err)
+	}
+	root := filepath.Join(c.StateDir, "host-workspaces", m.WorkspaceKey(), "workspace")
+	if isolated {
+		root = filepath.Join(c.StateDir, "workspaces", m.WorkspaceKey(), "rootfs", "workspace")
+	}
+	data, err := os.ReadFile(filepath.Join(root, "service-tested"))
 	if err != nil || string(data) != "ready" {
 		t.Fatalf("file: %s %v", data, err)
+	}
+	if !isolated {
+		data, err := os.ReadFile(filepath.Join(c.StateDir, "mapping.json"))
+		if err != nil || string(data) != `{"legacy":"unchanged"}` {
+			t.Fatalf("host changed sandbox mapping: %s %v", data, err)
+		}
 	}
 }
 func TestMappingMustBeComplete(t *testing.T) {

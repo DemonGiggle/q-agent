@@ -1,4 +1,4 @@
-// Package runtime coordinates authorization, isolated execution, and history.
+// Package runtime coordinates authorization, tool execution, and history.
 package runtime
 
 import (

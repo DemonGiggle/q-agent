@@ -111,3 +111,54 @@ instead of a workstation-specific path.
 After the audit changes, unit tests, race checks, `go vet`, the static build,
 and both live integration suites passed again. The host-isolation check now
 asserts that a file which exists on the host is inaccessible inside the sandbox.
+
+## Host execution default (2026-10-12)
+
+Tools now execute on the host unless TOML explicitly sets `sandbox.enabled = true`.
+The ignored local OpenCode configuration and the tracked example select host
+execution. Host mode requires Linux and uses the service account's ordinary
+permissions. Credential environment variables are filtered and their values join
+the existing redaction policy. Host and sandbox files remain in separate trees.
+
+Validated on the same Linux amd64 environment with Go 1.23.12:
+
+| Check | Result |
+| --- | --- |
+| `go test ./...` | Passed, including mocked host service integration |
+| `go test -race ./...` | Passed |
+| `go vet ./...` | Passed |
+| `make build` | Passed; stripped, statically linked ELF |
+| `make integration-host` | Passed; host tools 3.46 seconds, service 0.30 seconds |
+| Real sandbox isolation and package integration | Passed, 33.85 seconds |
+| Mocked service with real sandbox tools | Passed, 18.46 seconds |
+| Gitleaks v8.30.1 over all reachable Git history | Passed |
+| Gitleaks publication scan of staged changes | Passed |
+
+An exact-value audit checked 108 reachable/staged source blobs and commits.
+The validation process had no configured or recognized credential values in its
+environment, so that comparison had no credential values to check.
+
+Configuration tests cover omitted, false, true, and invalid `enabled` values,
+including old sandbox settings that must not implicitly enable sandboxing.
+The mocked host service starts with nonexistent image, worker, and mapping-helper
+paths and an incompatible legacy sandbox mapping. Explicit sandbox startup still
+fails on invalid setup before contacting Telegram and never falls back to host.
+
+Host tests exercise all six tools, relative and absolute host paths, separate
+chat folders, shared topic folders, restart persistence, service UID/GID,
+credential filtering, retained ordinary environment values, concurrent working
+directories and environments, Unicode output limits, shell deadlines,
+cancellation, and cleanup of ordinary background processes. Tool names and
+argument shapes remain unchanged. Host mode cannot guarantee termination of
+children that deliberately detach from the command's process group.
+
+Mode-state tests exercise both transitions across all topics, preservation of
+files/cursor/queued reply progress, legacy sandbox history, and same-mode identity
+and history persistence. Injected failures after partial clearing and after all
+histories are cleared leave the prior mode uncommitted and repeat the reset on
+restart. Service tests verify failed resets stop startup before network or agent
+work. Sandbox integrations explicitly enable sandbox mode and retain their
+isolation, provisioning-failure, process-cleanup, and package-persistence checks.
+
+All Telegram and provider endpoints in service tests were mocked. No live messages
+or paid model requests were sent, and qcode's working tree remained unchanged.

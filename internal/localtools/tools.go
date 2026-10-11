@@ -1,4 +1,4 @@
-// Package localtools is executed only by the trusted sandbox worker.
+// Package localtools supplies the shared host and sandbox tools.
 package localtools
 
 import (
@@ -95,6 +95,31 @@ func Schemas() []llm.Tool {
 	}
 }
 
+// HostSchemas preserves the tool names and argument shapes while describing
+// the host's actual filesystem and execution permissions.
+func HostSchemas(workdir string) []llm.Tool {
+	tools := Schemas()
+	path := "Absolute host path or relative to " + workdir
+	for i := range tools {
+		if field, ok := tools[i].Parameters["properties"].(map[string]any)["path"]; ok {
+			field.(map[string]any)["description"] = path
+			if tools[i].Name == "list" || tools[i].Name == "search" {
+				field.(map[string]any)["description"] = path + "; defaults to " + workdir
+			}
+		}
+	}
+	tools[0].Description = "Read a UTF-8 text file on the host, with bounded output."
+	tools[1].Description = "List a host directory. Symlinks are shown without following them."
+	tools[5].Description = "Run /bin/sh -c in " + workdir + " as the service account with ordinary host permissions and a credential-filtered environment. Changes persist. Process-group cleanup runs at completion; deliberately detached children may survive."
+	return tools
+}
+
+type Options struct {
+	WorkingDir   string
+	Environment  []string
+	ShellTimeout time.Duration
+}
+
 type Request struct {
 	Call         llm.ToolCall  `json:"call"`
 	ShellTimeout time.Duration `json:"shell_timeout"`
@@ -104,10 +129,13 @@ type Response struct {
 	Error  string `json:"error,omitempty"`
 }
 
-func Execute(ctx context.Context, call llm.ToolCall, timeout time.Duration) (output string, err error) {
+func Execute(ctx context.Context, call llm.ToolCall, options Options) (output string, err error) {
 	defer func() { output = Limit(output) }()
 	if ctx.Err() != nil {
 		return "", ctx.Err()
+	}
+	if !filepath.IsAbs(options.WorkingDir) {
+		return "", fmt.Errorf("tool working directory must be absolute")
 	}
 	var args struct{ Path, Pattern, Content, OldText, NewText, Command string }
 	// Underscored edit keys are explicit to avoid Go's default field matching.
@@ -138,10 +166,10 @@ func Execute(ctx context.Context, call llm.ToolCall, timeout time.Duration) (out
 	}
 	path := args.Path
 	if path == "" {
-		path = "/workspace"
+		path = options.WorkingDir
 	}
 	if !filepath.IsAbs(path) {
-		path = filepath.Join("/workspace", path)
+		path = filepath.Join(options.WorkingDir, path)
 	}
 	switch call.Name {
 	case "read":
@@ -281,10 +309,10 @@ func Execute(ctx context.Context, call llm.ToolCall, timeout time.Duration) (out
 		if strings.TrimSpace(args.Command) == "" {
 			return "", fmt.Errorf("command is required")
 		}
-		if timeout <= 0 {
-			timeout = 2 * time.Minute
+		if options.ShellTimeout <= 0 {
+			options.ShellTimeout = 2 * time.Minute
 		}
-		return runShell(ctx, args.Command, timeout)
+		return runShell(ctx, args.Command, options)
 	default:
 		return "", fmt.Errorf("unknown tool %q", call.Name)
 	}

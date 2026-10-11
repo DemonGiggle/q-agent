@@ -26,7 +26,7 @@ func Worker(mode string, in io.Reader, out io.Writer) error {
 		if err := d.Decode(&request); err != nil {
 			return err
 		}
-		output, err := localtools.Execute(context.Background(), request.Call, request.ShellTimeout)
+		output, err := localtools.Execute(context.Background(), request.Call, localtools.Options{WorkingDir: "/workspace", ShellTimeout: request.ShellTimeout})
 		response := localtools.Response{Output: output}
 		if err != nil {
 			response.Error = localtools.Limit(err.Error())

@@ -31,7 +31,7 @@ approved_chat_ids = [123456789, -1001234567890]
 	if err != nil {
 		t.Fatal(err)
 	}
-	if c.Provider.APIKeyEnv != "OPENCODE_GO_API_KEY" || c.StateDir != filepath.Join(dir, "state") || c.Limits.MaxSteps != 8 || c.TaskDuration() != 5*time.Minute || c.ShellDuration() != 2*time.Minute {
+	if c.Sandbox.Enabled || c.Provider.APIKeyEnv != "OPENCODE_GO_API_KEY" || c.StateDir != filepath.Join(dir, "state") || c.Limits.MaxSteps != 8 || c.TaskDuration() != 5*time.Minute || c.ShellDuration() != 2*time.Minute {
 		t.Fatalf("%+v", c)
 	}
 	if len(c.Telegram.ApprovedUsers) != 1 || len(c.Telegram.ApprovedChats) != 2 || c.Telegram.ApprovedChats[1] != -1001234567890 {
@@ -61,7 +61,32 @@ func TestExampleConfig(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if c.Provider.Name != "ollama" || c.Provider.Model != "qwen3" || c.Telegram.TokenEnv != "TELEGRAM_BOT_TOKEN" || c.Limits.MaxConcurrent != 2 || !filepath.IsAbs(c.Sandbox.BaseImage) {
+	if c.Sandbox.Enabled || c.Provider.Name != "ollama" || c.Provider.Model != "qwen3" || c.Telegram.TokenEnv != "TELEGRAM_BOT_TOKEN" || c.Limits.MaxConcurrent != 2 || !filepath.IsAbs(c.Sandbox.BaseImage) {
 		t.Fatalf("example config: %+v", c)
+	}
+}
+
+func TestSandboxEnabled(t *testing.T) {
+	for _, tc := range []struct {
+		name, text       string
+		enabled, invalid bool
+	}{
+		{name: "omitted"},
+		{name: "existing sandbox settings", text: "[sandbox]\nbase_image = 'missing.tar'\nworker = 'missing-worker'"},
+		{name: "false", text: "[sandbox]\nenabled = false"},
+		{name: "true", text: "[sandbox]\nenabled = true", enabled: true},
+		{name: "string", text: "[sandbox]\nenabled = 'true'", invalid: true},
+		{name: "number", text: "[sandbox]\nenabled = 1", invalid: true},
+		{name: "array", text: "[sandbox]\nenabled = [true]", invalid: true},
+		{name: "table", text: "[sandbox.enabled]\nvalue = true", invalid: true},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			path := filepath.Join(t.TempDir(), "config.toml")
+			writeConfig(t, path, tc.text)
+			c, err := Load(path)
+			if (err != nil) != tc.invalid || err == nil && c.Sandbox.Enabled != tc.enabled {
+				t.Fatalf("enabled=%v err=%v", c.Sandbox.Enabled, err)
+			}
+		})
 	}
 }

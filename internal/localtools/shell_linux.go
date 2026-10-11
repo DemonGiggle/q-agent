@@ -10,11 +10,12 @@ import (
 	"time"
 )
 
-func runShell(ctx context.Context, command string, timeout time.Duration) (string, error) {
-	ctx, cancel := context.WithTimeout(ctx, timeout)
+func runShell(ctx context.Context, command string, options Options) (string, error) {
+	ctx, cancel := context.WithTimeout(ctx, options.ShellTimeout)
 	defer cancel()
 	cmd := exec.CommandContext(ctx, "/bin/sh", "-c", command)
-	cmd.Dir = "/workspace"
+	cmd.Dir = options.WorkingDir
+	cmd.Env = options.Environment
 	cmd.SysProcAttr = &syscall.SysProcAttr{Setpgid: true}
 	var output Buffer
 	cmd.Stdout = &output

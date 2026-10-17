@@ -173,10 +173,13 @@ explicit per-command working directory and environment. In sandbox mode,
 ordinary `apt-get update && apt-get install -y ...` installations persist.
 
 While a task runs, the bot keeps one best-effort live preview message in the
-same chat/topic: a `Working…` status during provisioning and tool calls
+same chat/topic: `Working… contacting <model>` and tool calls
 (`🔧`/`✅`/`⚠️` with a tool count), then paragraph-flushed streaming of the
 final answer as provider tokens arrive (throttled to ~1 edit/sec, truncated
-to Telegram's 4096 UTF-16 limit). Thinking traces and raw tool output are
+to Telegram's 4096 UTF-16 limit). `Working… preparing workspace` only appears
+if provisioning is slow (real first-time setup, >0.8s); the fast path for an
+existing chat folder — e.g. right after `/models` — skips straight to
+contacting the model. Thinking traces and raw tool output are
 never streamed. The preview is deleted on success or edited to the terminal
 status on failure/cancel; the durable outbox reply that follows remains the
 authoritative answer and still resumes after restart.

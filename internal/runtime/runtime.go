@@ -179,10 +179,14 @@ func (r *Runtime) run(ctx context.Context, m platform.Message, runID string) {
 	runStart := time.Now()
 	r.logf("run start update=%d chat=%d topic=%d", m.UpdateID, m.ChatID, m.TopicID)
 	live := newLiveReporter(r.Sink, m, r.Options.Redaction)
-	live.SetStatus("Working\u2026 preparing workspace")
+	// Only announce provisioning if it is slow (real first-time setup).
+	// The fast path (existing chat folder, e.g. right after /models)
+	// skips straight to contacting the model to avoid confusion.
+	preparingTimer := time.AfterFunc(800*time.Millisecond, func() { live.SetStatus("Working\u2026 preparing workspace") })
 	answer := ""
 	var runErr error
 	root, err := r.Workspaces.Ensure(ctx, m)
+	preparingTimer.Stop()
 	if err != nil {
 		runErr = fmt.Errorf("workspace provisioning: %w", err)
 		r.logf("run update=%d provisioning error after=%s err=%q", m.UpdateID, time.Since(runStart).Truncate(time.Millisecond), r.Options.Redaction.Text(redaction.Terminal, runErr.Error()))
@@ -207,7 +211,7 @@ func (r *Runtime) run(ctx context.Context, m platform.Message, runID string) {
 				} else {
 					options := r.Options
 					options.Model = conversation.Model
-					live.SetStatus("Working\u2026 contacting model")
+					live.SetStatus("Working\u2026 contacting " + conversation.Model)
 					toolCount := 0
 					options.OnStream = func(ev llm.StreamEvent) { live.StreamEvent(ev) }
 					options.OnToolStart = func(name string) {

@@ -148,7 +148,46 @@ func TestRuntimeLiveStreamingKeepsDurableReply(t *testing.T) {
 	if len(sink.sends) == 0 {
 		t.Fatal("no live preview sent")
 	}
+	// Fast path (existing workspace) must skip "preparing workspace" and go
+	// straight to contacting the model to avoid confusion after /models.
+	for _, text := range append(append([]string{}, sink.sends...), sink.edits...) {
+		if contains(text, "preparing workspace") {
+			t.Fatalf("fast path showed preparing: %q", text)
+		}
+	}
+	if !contains(sink.sends[0], "contacting") {
+		t.Fatalf("expected contacting status first: %q", sink.sends[0])
+	}
 	if sink.deletes != 1 {
 		t.Fatalf("preview not cleaned: %+v", sink)
+	}
+}
+
+func TestRuntimeSlowProvisioningShowsPreparing(t *testing.T) {
+	r, w, _ := fixture(t)
+	sink := &fakeLiveSink{}
+	r.Sink = sink
+	w.block = make(chan struct{})
+	w.started = make(chan struct{}, 1)
+	provider := &streamTestProvider{answer: "done"}
+	r.Providers = func(_ state.Conversation) (llm.Provider, error) { return provider, nil }
+	m := input(1, 10, 0, 1, "go")
+	if err := r.Handle(context.Background(), m); err != nil {
+		t.Fatal(err)
+	}
+	<-w.started
+	// Simulate slow first-time provisioning (>0.8s timer).
+	time.Sleep(1100 * time.Millisecond)
+	close(w.block)
+	r.Wait()
+	found := false
+	for _, text := range append(append([]string{}, sink.sends...), sink.edits...) {
+		if contains(text, "preparing workspace") {
+			found = true
+			break
+		}
+	}
+	if !found {
+		t.Fatalf("slow provisioning never announced: sends=%v edits=%v", sink.sends, sink.edits)
 	}
 }

@@ -132,6 +132,13 @@ running service when ready to use the new version. See the
 
 In groups, address commands to your bot, for example `/status@your_bot`.
 
+**Want to adjust a task while it runs?** Send another message in the same
+chat/topic. Your follow-up steers your current task at the next safe boundary,
+without cancelling an operation already in progress. Only the task's original
+sender can steer it; other topics and users do not change its instructions.
+Follow-ups still waiting to be consumed are merged in order and sent together.
+Control commands such as `/status` and `/cancel` keep their usual behavior.
+
 ## A few things worth knowing
 
 - **It runs where you host it.** By default, tools use your Linux service

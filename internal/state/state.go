@@ -17,8 +17,9 @@ const MaxPairs = 12
 const MaxHistoryBytes = 32 << 10
 
 type Pair struct {
-	User   string `json:"user"`
-	Answer string `json:"answer"`
+	User   string   `json:"user"`
+	Answer string   `json:"answer"`
+	Steers []string `json:"steers,omitempty"`
 }
 type Conversation struct {
 	ModelSelection string `json:"model_selection,omitempty"`
@@ -31,7 +32,11 @@ type Conversation struct {
 func (c Conversation) Messages() []llm.Message {
 	var messages []llm.Message
 	for _, p := range c.Pairs {
-		messages = append(messages, llm.Message{Role: "user", Content: p.User}, llm.Message{Role: "assistant", Content: p.Answer})
+		messages = append(messages, llm.Message{Role: "user", Content: p.User})
+		for _, steer := range p.Steers {
+			messages = append(messages, llm.Message{Role: "user", Content: steer})
+		}
+		messages = append(messages, llm.Message{Role: "assistant", Content: p.Answer})
 	}
 	return messages
 }
@@ -173,6 +178,10 @@ func (s *Store) Save(key string, c Conversation) error {
 	for i := range c.Pairs {
 		c.Pairs[i].User = s.policy.Text(redaction.Persistence, c.Pairs[i].User)
 		c.Pairs[i].Answer = s.policy.Text(redaction.Persistence, c.Pairs[i].Answer)
+		c.Pairs[i].Steers = append([]string(nil), c.Pairs[i].Steers...)
+		for j, steer := range c.Pairs[i].Steers {
+			c.Pairs[i].Steers[j] = s.policy.Text(redaction.Persistence, steer)
+		}
 	}
 	c.Bound()
 	return Atomic(s.path(key), c)
@@ -186,13 +195,23 @@ func (s *Store) Queue(route platform.Message, parts []string) error {
 	return s.QueueKeyboard(route, parts, nil)
 }
 func (s *Store) QueueKeyboard(route platform.Message, parts []string, keyboard *platform.InlineKeyboard) error {
+	return s.queue(route, parts, keyboard, "")
+}
+
+// QueueNotice keeps an acknowledgement distinct from a later final answer
+// to the same update, including input arriving as the previous run finishes.
+func (s *Store) QueueNotice(route platform.Message, parts []string) error {
+	return s.queue(route, parts, nil, ":notice")
+}
+
+func (s *Store) queue(route platform.Message, parts []string, keyboard *platform.InlineKeyboard, suffix string) error {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	if len(parts) == 0 {
 		return fmt.Errorf("reply must have at least one part")
 	}
 	route.Text = ""
-	id := fmt.Sprintf("%s:%d", route.Platform, route.UpdateID)
+	id := fmt.Sprintf("%s:%d%s", route.Platform, route.UpdateID, suffix)
 	for _, r := range s.outbox {
 		if r.ID == id {
 			return nil

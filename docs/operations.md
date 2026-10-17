@@ -107,7 +107,8 @@ points; attachments and streaming replies are outside v1.
 - `/help`: list available commands without calling the model.
 - `/new`: clear this topic's conversation, retaining its workspace.
 - `/cancel`: request cancellation of this topic's active task.
-- `/ask <prompt>`: submit a prompt (plain text also works in private chats).
+- `/ask <prompt>`: submit a prompt or steer your active task (plain text also
+  works in private chats).
 
 All commands require an approved user and chat. In groups, use
 `/status@your_bot`, `/status @your_bot`, or reply to the bot with `/status`;
@@ -263,11 +264,54 @@ durable run queue described below.
 
 Defaults are two concurrent requests across different chats, one request per
 chat including provisioning, eight model steps, sixteen tool calls, a five-minute
-request deadline, and a two-minute shell timeout. Additional requests receive a
-busy reply. History keeps at most twelve user/final-answer pairs and 32 KiB of
+request deadline, and a two-minute shell timeout. Additional requests from
+another topic, another user in the active chat, or a chat beyond the global
+capacity receive a busy reply. History keeps at most twelve user/final-answer
+pairs (including applied follow-up instructions) and 32 KiB of
 serialized history; whole oldest pairs are removed, including an oversized newest
 pair if necessary. Tool exchanges and reasoning stay inside the active run.
 Changing a conversation's configured provider or model starts fresh history.
+
+### Steering an active task
+
+New Telegram text (including `/ask`) from the task's original approved sender
+in the same chat/topic is **steering**, not a new independent task. This also
+works during workspace provisioning and while an owned scheduled agent task is
+running. Normal group addressing and both allowlists still apply. Other topics
+and users cannot inject instructions into the active task. `/status`, `/help`,
+`/models`, `/new`, and `/cancel` remain control commands, not steering text.
+
+Each follow-up is acknowledged. All messages still pending at the same safe
+boundary are merged in arrival order, separated by blank lines, into **one user
+input** for the next model request. New text appends to rather than replaces the
+pending steering. Multiple batches consumed before the same model request are
+also merged; once sent, later messages form the next batch. It cannot change a request already sent to the provider
+or undo a tool's side effects. A running tool is allowed to return; if follow-up
+input is pending at a later tool boundary, unstarted calls in that batch get
+explicit skipped results so every tool-call ID remains paired. The agent then
+continues with the new instructions, preserving the original task and counters.
+An apparent final text answer is not terminal if steering is already pending.
+Old preview text is cleared when steering is applied; only the revised final
+answer is queued as the task's authoritative reply.
+
+If input arrives after the final answer has been sealed, it starts a new task
+only after the previous task saves history, queues its reply, and releases its
+execution slot. Messages accumulated in that small window are likewise merged
+into one prompt for that next task. No runs overlap within a chat, and acknowledgements use
+separate outbox IDs so they cannot suppress the later final reply.
+
+At most 16 messages and 64 KiB may be pending per chat. Excess input is rejected
+explicitly. Steering does not reset model-step, tool-call, or deadline limits.
+Repeated-tool recovery is reset for a changed instruction, but task budgets
+remain in force. `/status` includes the pending count while running. Cancellation
+or failure discards unapplied follow-ups, reporting their count in the terminal
+reply; new input while stopping is rejected with a resend notice.
+
+Applied follow-ups are redacted and saved with the successful user/final-answer
+pair, and replayed as user context after restart. Intermediate tool and reasoning
+exchanges remain run-local. Pending steering is in memory, **not a durable work
+queue**: shutdown/crash does not replay it, even if its receipt acknowledgement
+was already delivered. Resend unfinished work after restart.
 
 Back up the state directory preserving ownership and modes. For sandbox trees,
 also preserve subordinate ownership and keep the service account and subordinate
@@ -306,7 +350,8 @@ provider, execution mode, and conversation history at execution time. Pure
 reminders bypass the model and tools entirely; agent jobs share provisioning,
 workspace exclusion (one task per chat across topics), global concurrency limits,
 timeouts, history, and cancellation with interactive requests. Busy scheduled
-jobs remain queued; interactive requests retain the existing Busy behavior.
+jobs remain queued; interactive follow-ups steer an owned task in the same
+topic, while unrelated busy requests are rejected as described above.
 
 A single goroutine scans immediately on startup and on each wall-clock minute
 boundary. Expected scan lateness is 0–60 seconds, plus any worker or network

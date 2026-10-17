@@ -16,6 +16,15 @@ func (r *Runtime) statusLocked(m platform.Message) string {
 		activity = "Busy (another topic in this chat)"
 		if active.topic == m.TopicID {
 			activity = "Running"
+			if len(active.pending) > 0 {
+				activity += fmt.Sprintf(" (%d follow-up(s) pending)", len(active.pending))
+			}
+			if active.finishing {
+				activity = "Finishing"
+			}
+			if active.stopping {
+				activity = "Stopping"
+			}
 			if active.userCancelled {
 				activity = "Cancelling"
 			}

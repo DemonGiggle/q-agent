@@ -115,6 +115,13 @@ func (r *Runtime) Handle(ctx context.Context, m platform.Message) error {
 	key := m.WorkspaceKey()
 	active, busy := r.active[key]
 	switch m.Text {
+	case "/status":
+		text := r.statusLocked(m)
+		r.mu.Unlock()
+		return r.reply(m, text)
+	case "/help":
+		r.mu.Unlock()
+		return r.reply(m, "q-agent commands\n/status — Show current runtime and safe settings (no model call).\n/help — Show this help.\n/new — Clear this topic's conversation; keep workspace.\n/cancel — Cancel this topic's active task.\n/ask <prompt> — Ask the agent.\n\nIn groups, address commands to @your_bot (e.g. /status@your_bot), mention the bot, or reply to it.")
 	case "/cancel":
 		if busy && active.topic == m.TopicID {
 			active.userCancelled = true

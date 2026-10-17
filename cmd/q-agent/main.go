@@ -20,6 +20,7 @@ import (
 	"q-agent/internal/redaction"
 	run "q-agent/internal/runtime"
 	"q-agent/internal/sandbox"
+	"q-agent/internal/service"
 	"q-agent/internal/state"
 	"q-agent/internal/telegram"
 	"q-agent/internal/update"
@@ -43,6 +44,13 @@ func main() {
 }
 func mainRun() error {
 	args := os.Args[1:]
+	if len(args) > 0 && args[0] == "service" {
+		err := service.Run(args[1:], service.Options{Stdout: os.Stdout, Stderr: os.Stderr})
+		if errors.Is(err, flag.ErrHelp) {
+			return nil
+		}
+		return err
+	}
 	if len(args) > 0 && args[0] == "update" {
 		ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
 		defer stop()

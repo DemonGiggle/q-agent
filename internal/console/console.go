@@ -40,6 +40,7 @@ Runtime commands (non-interactive):
   q-agent serve [--config FILE]
   q-agent image build [--config FILE]
   q-agent update [--arch amd64|arm64]
+  q-agent service install|print [--config FILE]
   q-agent version
 
 Config defaults to ` + config.DefaultPath + `.

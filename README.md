@@ -104,6 +104,20 @@ or `/help` to see the available commands.
 reply to it, or send `/ask@your_bot <request>`. Replies stay in the original topic.
 See the [group setup details](docs/operations.md#setup).
 
+### Keep it running with systemd
+
+```sh
+install -D -m 0755 ./bin/q-agent "$HOME/.local/bin/q-agent"
+"$HOME/.local/bin/q-agent" service install
+```
+
+This installs a **user service** and creates a private config template only if
+missing. Review the config, allowlists and credential files, then enable it with
+`systemctl --user enable --now q-agent.service` after `systemctl --user daemon-reload`.
+Existing configuration is preserved; the installer never starts the bot.
+Host and sandbox modes are supported. See the [systemd guide](docs/systemd.md)
+for exact file locations, boot-without-login setup, credentials and sandbox requirements.
+
 ## Your everyday controls
 
 ### Upgrade q-agent

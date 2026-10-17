@@ -24,6 +24,8 @@ func TestUpdateCLI(t *testing.T) {
 		{args: []string{"version"}, want: "v1.2.3"},
 		{args: []string{"--version"}, want: "v1.2.3"},
 		{args: []string{"update", "--help"}, want: "Usage: q-agent update"},
+		{args: []string{"service", "--help"}, want: "Usage: q-agent service"},
+		{args: []string{"service", "install", "--help"}, want: "Usage: q-agent service"},
 		{args: []string{"update", "--arch", "386"}, wantErr: true},
 		{args: []string{"update", "--unknown"}, wantErr: true},
 		{args: []string{"update", "extra"}, wantErr: true},

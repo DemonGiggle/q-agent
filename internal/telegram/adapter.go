@@ -30,9 +30,16 @@ type Message struct {
 	Entities []Entity `json:"entities"`
 	Reply    *Message `json:"reply_to_message,omitempty"`
 }
+type CallbackQuery struct {
+	ID      string   `json:"id"`
+	From    *User    `json:"from"`
+	Message *Message `json:"message"`
+	Data    string   `json:"data"`
+}
 type Update struct {
-	ID      int64    `json:"update_id"`
-	Message *Message `json:"message,omitempty"`
+	Callback *CallbackQuery `json:"callback_query,omitempty"`
+	ID       int64          `json:"update_id"`
+	Message  *Message       `json:"message,omitempty"`
 }
 
 func entityText(text string, e Entity) string {
@@ -45,6 +52,16 @@ func entityText(text string, e Entity) string {
 
 // Normalize filters group addressing after Telegram privacy mode is disabled.
 func Normalize(update Update, bot User) (platform.Message, bool) {
+	if q := update.Callback; q != nil {
+		if q.ID == "" || q.From == nil || q.From.IsBot || q.Message == nil || q.Message.From == nil || q.Message.From.ID != bot.ID || !strings.HasPrefix(q.Data, "models:") {
+			return platform.Message{}, false
+		}
+		m := q.Message
+		if m.Chat.Type != "private" && m.Chat.Type != "group" && m.Chat.Type != "supergroup" {
+			return platform.Message{}, false
+		}
+		return platform.Message{Platform: "telegram", ChatID: m.Chat.ID, TopicID: m.TopicID, UserID: q.From.ID, MessageID: m.ID, UpdateID: update.ID, CallbackID: q.ID, CallbackData: q.Data}, true
+	}
 	m := update.Message
 	if m == nil || m.From == nil || m.From.IsBot || strings.TrimSpace(m.Text) == "" {
 		return platform.Message{}, false
@@ -90,7 +107,7 @@ func Normalize(update Update, bot User) (platform.Message, bool) {
 				return platform.Message{}, false
 			}
 			text = strings.TrimSpace(strings.TrimPrefix(text, first))
-		case "/new", "/cancel", "/status", "/help":
+		case "/new", "/cancel", "/status", "/help", "/models":
 			if !addressed {
 				return platform.Message{}, false
 			}

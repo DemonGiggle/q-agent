@@ -15,7 +15,12 @@ func (c *Client) Deliver(ctx context.Context, store *state.Store, report func(er
 		reply, ok := store.Pending()
 		if ok {
 			requestCtx, cancel := context.WithTimeout(ctx, 10*time.Second)
-			err := c.Send(requestCtx, reply.Route, reply.Parts[reply.Next])
+			var err error
+			if reply.Keyboard != nil {
+				err = c.SendKeyboard(requestCtx, reply.Route, reply.Parts[reply.Next], reply.Keyboard)
+			} else {
+				err = c.Send(requestCtx, reply.Route, reply.Parts[reply.Next])
+			}
 			cancel()
 			if err == nil {
 				if err = store.Delivered(reply.ID); err == nil {

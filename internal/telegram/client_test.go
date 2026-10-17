@@ -127,3 +127,119 @@ func TestDeliveryRetryAndResume(t *testing.T) {
 		t.Fatal("pending reply remains")
 	}
 }
+
+func TestModelKeyboardAPIs(t *testing.T) {
+	calls := map[string]bool{}
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		var body map[string]any
+		if err := json.NewDecoder(r.Body).Decode(&body); err != nil {
+			t.Error(err)
+		}
+		method := strings.TrimPrefix(r.URL.Path, "/bottoken/")
+		calls[method] = true
+		switch method {
+		case "getUpdates":
+			allowed := body["allowed_updates"].([]any)
+			if len(allowed) != 2 || allowed[1] != "callback_query" {
+				t.Errorf("updates: %+v", body)
+			}
+			w.Write([]byte(`{"ok":true,"result":[{"update_id":2,"callback_query":{"id":"q","from":{"id":1},"message":{"message_id":5,"message_thread_id":7,"from":{"id":99},"chat":{"id":10,"type":"supergroup"}},"data":"models:token:p:1"}}]}`))
+			return
+		case "sendMessage", "editMessageText":
+			if body["chat_id"] != float64(10) || body["parse_mode"] != nil || body["reply_markup"] == nil {
+				t.Errorf("keyboard: %+v", body)
+			}
+			if method == "sendMessage" && body["message_thread_id"] != float64(7) {
+				t.Error("lost topic")
+			}
+			if method == "editMessageText" && body["message_id"] != float64(5) {
+				t.Error("wrong edit target")
+			}
+		case "answerCallbackQuery":
+			if body["callback_query_id"] != "q" {
+				t.Error("wrong callback")
+			}
+		default:
+			t.Error(method)
+		}
+		w.Write([]byte(`{"ok":true,"result":true}`))
+	}))
+	defer server.Close()
+	c := New("token")
+	c.BaseURL = server.URL
+	c.HTTP = server.Client()
+	ctx := context.Background()
+	updates, err := c.Updates(ctx, 2)
+	if err != nil {
+		t.Fatal(err)
+	}
+	m, ok := Normalize(updates[0], User{ID: 99, Username: "bot"})
+	if !ok || m.UserID != 1 || m.CallbackID != "q" || m.TopicID != 7 {
+		t.Fatalf("callback: %+v", m)
+	}
+	k := &platform.InlineKeyboard{Rows: [][]platform.InlineButton{{{Text: "Model", Data: "models:token:s:0"}}}}
+	if err = c.SendKeyboard(ctx, m, "choose", k); err != nil {
+		t.Fatal(err)
+	}
+	if err = c.EditModels(ctx, m, "page 2", k); err != nil {
+		t.Fatal(err)
+	}
+	if err = c.AnswerCallback(ctx, "q", ""); err != nil {
+		t.Fatal(err)
+	}
+	if len(calls) != 4 {
+		t.Fatal(calls)
+	}
+}
+
+func TestKeyboardOutboxSurvivesRestart(t *testing.T) {
+	dir := t.TempDir()
+	s, err := state.Open(dir, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	keyboard := &platform.InlineKeyboard{Rows: [][]platform.InlineButton{{{Text: "Next", Data: "models:token:p:1"}}}}
+	if err = s.QueueKeyboard(platform.Message{Platform: "telegram", UpdateID: 1, ChatID: 10, TopicID: 7}, []string{"choose"}, keyboard); err != nil {
+		t.Fatal(err)
+	}
+	s, err = state.Open(dir, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	delivered := make(chan struct{}, 1)
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		var body struct {
+			Keyboard *platform.InlineKeyboard `json:"reply_markup"`
+			Topic    int64                    `json:"message_thread_id"`
+		}
+		if err := json.NewDecoder(r.Body).Decode(&body); err != nil {
+			t.Error(err)
+		}
+		if body.Keyboard == nil || body.Keyboard.Rows[0][0].Data != "models:token:p:1" || body.Topic != 7 {
+			t.Errorf("lost keyboard/route: %+v", body)
+		}
+		w.Write([]byte(`{"ok":true,"result":true}`))
+		delivered <- struct{}{}
+	}))
+	defer server.Close()
+	c := New("token")
+	c.BaseURL = server.URL
+	c.HTTP = server.Client()
+	ctx, cancel := context.WithCancel(context.Background())
+	done := make(chan struct{})
+	go func() {
+		defer close(done)
+		c.Deliver(ctx, s, func(err error) {
+			if ctx.Err() == nil {
+				t.Error(err)
+			}
+		})
+	}()
+	select {
+	case <-delivered:
+	case <-time.After(3 * time.Second):
+		t.Error("keyboard not delivered")
+	}
+	cancel()
+	<-done
+}

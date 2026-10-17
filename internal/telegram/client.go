@@ -8,6 +8,7 @@ import (
 	"io"
 	"net/http"
 	"q-agent/internal/platform"
+	"strings"
 	"time"
 )
 
@@ -68,7 +69,7 @@ func (c *Client) Me(ctx context.Context) (User, error) {
 }
 func (c *Client) Updates(ctx context.Context, offset int64) ([]Update, error) {
 	var updates []Update
-	err := c.call(ctx, "getUpdates", map[string]any{"offset": offset, "timeout": 25, "allowed_updates": []string{"message"}}, &updates)
+	err := c.call(ctx, "getUpdates", map[string]any{"offset": offset, "timeout": 25, "allowed_updates": []string{"message", "callback_query"}}, &updates)
 	return updates, err
 }
 func (c *Client) Send(ctx context.Context, m platform.Message, text string) error {
@@ -84,4 +85,22 @@ func (c *Client) Typing(ctx context.Context, m platform.Message) error {
 		input["message_thread_id"] = m.TopicID
 	}
 	return c.call(ctx, "sendChatAction", input, nil)
+}
+
+func (c *Client) EditModels(ctx context.Context, m platform.Message, text string, keyboard *platform.InlineKeyboard) error {
+	err := c.call(ctx, "editMessageText", map[string]any{"chat_id": m.ChatID, "message_id": m.MessageID, "text": text, "reply_markup": keyboard}, nil)
+	if api, ok := err.(*APIError); ok && api.Code == 400 && strings.Contains(api.Description, "message is not modified") {
+		return nil
+	}
+	return err
+}
+func (c *Client) AnswerCallback(ctx context.Context, id, text string) error {
+	return c.call(ctx, "answerCallbackQuery", map[string]any{"callback_query_id": id, "text": text}, nil)
+}
+func (c *Client) SendKeyboard(ctx context.Context, m platform.Message, text string, keyboard *platform.InlineKeyboard) error {
+	input := map[string]any{"chat_id": m.ChatID, "text": text, "reply_markup": keyboard}
+	if m.TopicID != 0 {
+		input["message_thread_id"] = m.TopicID
+	}
+	return c.call(ctx, "sendMessage", input, nil)
 }

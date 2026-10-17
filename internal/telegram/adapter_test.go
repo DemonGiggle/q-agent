@@ -58,3 +58,38 @@ func TestSplit(t *testing.T) {
 		}
 	}
 }
+
+func TestModelsAddressingAndCallbackNormalization(t *testing.T) {
+	bot := User{ID: 99, Username: "bot"}
+	for _, tc := range []struct {
+		kind, text string
+		want       bool
+	}{
+		{"private", "/models", true}, {"supergroup", "/models", false},
+		{"supergroup", "/models@bot", true}, {"supergroup", "/models@other", false},
+		{"supergroup", "/models @bot", true},
+	} {
+		m, ok := Normalize(Update{ID: 1, Message: &Message{ID: 2, Chat: Chat{ID: 10, Type: tc.kind}, From: &User{ID: 1}, Text: tc.text}}, bot)
+		if ok != tc.want || ok && m.Text != "/models" {
+			t.Errorf("%+v: %+v %v", tc, m, ok)
+		}
+	}
+	for _, tc := range []struct {
+		name    string
+		from    *User
+		message *Message
+		data    string
+		want    bool
+	}{
+		{"valid", &User{ID: 1}, &Message{ID: 2, Chat: Chat{ID: 10, Type: "private"}, From: &bot}, "models:abc:p:0", true},
+		{"bot click", &User{ID: 1, IsBot: true}, &Message{From: &bot}, "models:abc:p:0", false},
+		{"inline message", &User{ID: 1}, nil, "models:abc:p:0", false},
+		{"other bot", &User{ID: 1}, &Message{From: &User{ID: 88}}, "models:abc:p:0", false},
+		{"other callback", &User{ID: 1}, &Message{From: &bot}, "other", false},
+	} {
+		_, ok := Normalize(Update{ID: 1, Callback: &CallbackQuery{ID: "q", From: tc.from, Message: tc.message, Data: tc.data}}, bot)
+		if ok != tc.want {
+			t.Errorf("%s: %v", tc.name, ok)
+		}
+	}
+}

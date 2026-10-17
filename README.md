@@ -67,6 +67,25 @@ Replies and typing indicators retain the incoming topic ID. Replies are plain
 text, split at a conservative 4096 UTF-16 units without splitting Unicode code
 points; attachments and streaming replies are outside v1.
 
+### Telegram commands
+
+- `/status`: read-only snapshot of provider, model, thinking setting, host/sandbox
+  mode, this topic's activity, global task concurrency, scheduler lifecycle,
+  and step/tool/timeout limits. It reports configured routing, not a provider
+  health check or the model's resolved thinking behavior. It works while busy,
+  without calling the model, provisioning a workspace, or changing history.
+- `/help`: list available commands without calling the model.
+- `/new`: clear this topic's conversation, retaining its workspace.
+- `/cancel`: request cancellation of this topic's active task.
+- `/ask <prompt>`: submit a prompt (plain text also works in private chats).
+
+All commands require an approved user and chat. In groups, use
+`/status@your_bot`, `/status @your_bot`, or reply to the bot with `/status`;
+unaddressed commands and commands for another bot are ignored. Replies preserve
+the original chat/topic and use the durable outbox. Status deliberately excludes
+credentials, credential sources/paths, provider URLs, filesystem paths, allowlists,
+and other conversations' content. It does not test provider/network health.
+
 ### Sandbox opt-in
 
 Set the execution mode explicitly:

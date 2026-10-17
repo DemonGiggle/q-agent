@@ -1,6 +1,10 @@
-.PHONY: build test race integration integration-host
+VERSION ?= $(shell sh ./scripts/version.sh)
+
+.PHONY: build release test race integration integration-host
 build:
-	CGO_ENABLED=0 go build -trimpath -ldflags='-s -w' -o bin/q-agent ./cmd/q-agent
+	CGO_ENABLED=0 go build -trimpath -ldflags='-s -w -X main.version=$(VERSION)' -o bin/q-agent ./cmd/q-agent
+release:
+	VERSION=$(VERSION) sh ./scripts/build-all.sh
 test:
 	go test ./...
 race:

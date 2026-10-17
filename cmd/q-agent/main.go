@@ -22,12 +22,16 @@ import (
 	"q-agent/internal/sandbox"
 	"q-agent/internal/state"
 	"q-agent/internal/telegram"
+	"q-agent/internal/update"
 	"q-agent/internal/workspace"
 	"runtime"
 	"sort"
 	"syscall"
 	"time"
 )
+
+// Set by release builds via -ldflags; untagged source builds remain dev.
+var version = "dev"
 
 func main() {
 	policy, _ := redaction.New(redaction.Config{}, redaction.EnvironmentValues())
@@ -39,6 +43,17 @@ func main() {
 }
 func mainRun() error {
 	args := os.Args[1:]
+	if len(args) > 0 && args[0] == "update" {
+		ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
+		defer stop()
+		err := update.Run(ctx, args[1:], update.Options{
+			CurrentVersion: version, Stdout: os.Stdout, Stderr: os.Stderr,
+		})
+		if errors.Is(err, flag.ErrHelp) {
+			return nil
+		}
+		return err
+	}
 	if handled, err := console.Run(args, os.Stdin, os.Stdout, os.Stderr); handled {
 		return err
 	}
@@ -50,8 +65,11 @@ func mainRun() error {
 		command = args[0]
 		args = args[1:]
 	}
-	if command == "version" {
-		fmt.Println("q-agent v1 (qcode e9389fa)")
+	if command == "version" || command == "--version" {
+		if len(args) != 0 {
+			return fmt.Errorf("q-agent version does not accept arguments")
+		}
+		fmt.Println(version)
 		return nil
 	}
 	if command == "image" {

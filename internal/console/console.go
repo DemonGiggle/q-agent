@@ -39,6 +39,7 @@ Automation (never prompts; --json for machine-readable output):
 Runtime commands (non-interactive):
   q-agent serve [--config FILE]
   q-agent image build [--config FILE]
+  q-agent update [--arch amd64|arm64]
   q-agent version
 
 Config defaults to ` + config.DefaultPath + `.

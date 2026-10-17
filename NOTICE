@@ -3,5 +3,8 @@ The provider adapters, redaction, trust envelopes, and repeated-call guard
 originate from qcode, Copyright (c) 2026 qcode contributors, under the MIT
 License reproduced in LICENSE.
 
+The self-updater is adapted from qcode commit
+8688ef96a63cb001e1698dacadb537f4b9c9bb0d under the same MIT license.
+
 q-agent also uses github.com/pelletier/go-toml/v2 v2.3.1. Its MIT license
 and copyright notice are reproduced in THIRD_PARTY_NOTICES.

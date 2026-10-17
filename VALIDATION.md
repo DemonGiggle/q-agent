@@ -197,6 +197,9 @@ arm64 with Go 1.24.4:
 
 - Full `go test -count=1 -timeout 5m ./...`, `go vet ./...`, formatting,
   `git diff --check`, and static `make build`: passed.
+- New deterministic web tests also passed on Go 1.22.12. HTTP timeouts use
+  `net.Error.Timeout()` for version-compatible classification, including both
+  waiting-for-headers and reading-the-response-body deadlines.
 - Deterministic web tests cover HTTP/HTTPS, standard TLS verification, readable
   HTML and relative links, plain text/JSON, character encodings, gzip and input/
   UTF-8 output limits, URL validation, redirect limits, cancellation, recoverable

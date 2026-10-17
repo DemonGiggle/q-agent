@@ -101,17 +101,27 @@ func TestWebFetchHTMLTextAndBounds(t *testing.T) {
 }
 
 func TestWebCancellationTimeoutAndTLS(t *testing.T) {
-	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) { <-r.Context().Done() }))
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path == "/body" {
+			w.Header().Set("Content-Type", "text/plain")
+			w.WriteHeader(http.StatusOK)
+			w.(http.Flusher).Flush()
+		}
+		<-r.Context().Done()
+	}))
 	defer server.Close()
-	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Millisecond)
-	defer cancel()
-	if _, err := fetchWeb(ctx, newWebClient(), server.URL); !errors.Is(err, context.DeadlineExceeded) {
-		t.Fatalf("cancellation: %v", err)
-	}
-	client := newWebClient()
-	client.Timeout = 30 * time.Millisecond
-	if _, err := fetchWeb(context.Background(), client, server.URL); err == nil || errors.Is(err, context.DeadlineExceeded) || !strings.Contains(err.Error(), "timed out") {
-		t.Fatalf("site timeout must remain a recoverable tool error: %v", err)
+	for _, path := range []string{"/headers", "/body"} {
+		ctx, cancel := context.WithTimeout(context.Background(), 30*time.Millisecond)
+		_, err := fetchWeb(ctx, newWebClient(), server.URL+path)
+		cancel()
+		if !errors.Is(err, context.DeadlineExceeded) {
+			t.Fatalf("%s cancellation: %v", path, err)
+		}
+		client := newWebClient()
+		client.Timeout = 30 * time.Millisecond
+		if _, err := fetchWeb(context.Background(), client, server.URL+path); err == nil || errors.Is(err, context.DeadlineExceeded) || !strings.Contains(err.Error(), "timed out") {
+			t.Fatalf("%s site timeout must remain a recoverable tool error: %v", path, err)
+		}
 	}
 	tlsServer := httptest.NewTLSServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) { io.WriteString(w, "secure") }))
 	defer tlsServer.Close()

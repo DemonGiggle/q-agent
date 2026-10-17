@@ -100,7 +100,8 @@ func getWeb(ctx context.Context, client *http.Client, raw string) (page webPage,
 	defer func() {
 		// A site's own 20-second timeout is a recoverable tool failure. Only
 		// the caller's cancellation/deadline should abort the whole agent run.
-		if err != nil && ctx.Err() == nil && errors.Is(err, context.DeadlineExceeded) {
+		var timeout net.Error
+		if err != nil && ctx.Err() == nil && errors.As(err, &timeout) && timeout.Timeout() {
 			err = fmt.Errorf("web request timed out: %v", err)
 		}
 	}()

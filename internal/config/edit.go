@@ -22,7 +22,12 @@ func Values(c Config) map[string]any {
 	walk = func(v reflect.Value, prefix string) {
 		for i := 0; i < v.NumField(); i++ {
 			key := prefix + v.Type().Field(i).Tag.Get("toml")
-			if v.Field(i).Kind() == reflect.Struct {
+			if v.Field(i).Kind() == reflect.Map {
+				iter := v.Field(i).MapRange()
+				for iter.Next() {
+					walk(iter.Value(), key+"."+iter.Key().String()+".")
+				}
+			} else if v.Field(i).Kind() == reflect.Struct {
 				walk(v.Field(i), key+".")
 			} else {
 				result[key] = v.Field(i).Interface()

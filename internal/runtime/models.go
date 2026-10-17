@@ -38,8 +38,27 @@ func (r *Runtime) chatModel(m platform.Message) (state.ChatModel, error) {
 	if err != nil {
 		return selected, err
 	}
-	if selected.Provider != r.Config.Provider.Name || selected.Model == "" {
-		selected = state.ChatModel{Provider: r.Config.Provider.Name, Model: r.Config.Provider.Model}
+	return r.resolveChatModel(selected)
+}
+
+func (r *Runtime) resolveChatModel(selected state.ChatModel) (state.ChatModel, error) {
+	if !selected.ProviderPinned && selected.Provider != r.Config.Provider.Name {
+		selected.Provider = r.Config.Provider.Name
+		selected.Model = ""
+	}
+	provider, ok := r.Config.ProviderByName(selected.Provider)
+	if !ok {
+		return selected, fmt.Errorf("chat provider %q is no longer configured; use /provider default", selected.Provider)
+	}
+	if selected.Model == "" {
+		selected.Model = provider.Model
+	}
+	if selected.Thinking == nil {
+		thinking := r.Config.Provider.Thinking
+		if provider.Thinking != "" {
+			thinking = provider.Thinking
+		}
+		selected.Thinking = &thinking
 	}
 	return selected, nil
 }
@@ -180,7 +199,7 @@ func (r *Runtime) handleModelCallback(ctx context.Context, m platform.Message) e
 		return context.Canceled
 	}
 	menu, ok := r.modelMenus[parts[1]]
-	if !ok || time.Now().After(menu.Expires) || menu.Provider != r.Config.Provider.Name {
+	if !ok || time.Now().After(menu.Expires) {
 		return nil
 	}
 	if menu.Route.ChatID != m.ChatID || menu.Route.TopicID != m.TopicID || menu.Route.UserID != m.UserID {
@@ -192,6 +211,10 @@ func (r *Runtime) handleModelCallback(ctx context.Context, m platform.Message) e
 		answer = "Unable to load chat settings."
 		return err
 	}
+	if menu.Provider != selected.Provider {
+		return nil
+	}
+
 	switch parts[2] {
 	case "p":
 		if index >= (len(menu.Models)+modelsPerPage-1)/modelsPerPage {
@@ -209,7 +232,12 @@ func (r *Runtime) handleModelCallback(ctx context.Context, m platform.Message) e
 			return nil
 		}
 		if selected.Model != menu.Models[index] {
-			if err = r.Store.SetChatModel(m.WorkspaceKey(), state.ChatModel{Provider: menu.Provider, Model: menu.Models[index], Revision: parts[1]}); err != nil {
+			raw, err := r.Store.ChatModel(m.WorkspaceKey())
+			if err != nil {
+				return err
+			}
+			raw.Provider, raw.Model, raw.Revision = menu.Provider, menu.Models[index], parts[1]
+			if err = r.Store.SetChatModel(m.WorkspaceKey(), raw); err != nil {
 				answer = "Unable to save model settings."
 				return err
 			}
@@ -243,5 +271,6 @@ func (r *Runtime) loadModelConversation(m platform.Message) (state.Conversation,
 	if conversation.Provider != selection.Provider || conversation.Model != selection.Model || conversation.ModelSelection != selection.Revision {
 		conversation = state.Conversation{Provider: selection.Provider, Model: selection.Model, ModelSelection: selection.Revision}
 	}
+	conversation.Thinking = *selection.Thinking
 	return conversation, nil
 }

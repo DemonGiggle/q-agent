@@ -103,10 +103,11 @@ func mainRun() error {
 		return err
 	}
 	values := redaction.EnvironmentValues()
-	values = append(values, os.Getenv(c.Telegram.TokenEnv), os.Getenv(c.Provider.APIKeyEnv))
-	if c.Provider.APIKeyPath != "" {
-		// Best effort for early diagnostics; serve() enforces the file strictly.
-		if fileKey, err := c.Provider.APIKey(); err == nil && fileKey != "" {
+	values = append(values, os.Getenv(c.Telegram.TokenEnv))
+	for _, provider := range configuredProviders(c) {
+		values = append(values, os.Getenv(provider.APIKeyEnv))
+		// Best effort for early diagnostics; serve enforces credential files.
+		if fileKey, err := provider.APIKey(); err == nil && fileKey != "" {
 			values = append(values, fileKey)
 		}
 	}
@@ -161,26 +162,30 @@ func serve(ctx context.Context, c config.Config, policy *redaction.Policy, bot *
 		}
 		return fmt.Errorf("missing Telegram credential environment variable %s", c.Telegram.TokenEnv)
 	}
-	providerKey, err := c.Provider.APIKey()
-	if err != nil {
-		return err
-	}
-	if c.Provider.Name != "ollama" && providerKey == "" {
-		if c.Provider.APIKeyPath != "" {
-			return fmt.Errorf("missing provider credential file %s (empty)", c.Provider.APIKeyPath)
+	providerKeys := map[string]string{}
+	credentialEnvs := []string{c.Telegram.TokenEnv}
+	for name, provider := range configuredProviders(c) {
+		key, err := provider.APIKey()
+		if err != nil {
+			return err
 		}
-		return fmt.Errorf("missing provider credential environment variable %s", c.Provider.APIKeyEnv)
+		if provider.Name != "ollama" && key == "" {
+			return fmt.Errorf("missing credential for provider %s", name)
+		}
+		providerKeys[name] = key
+		credentialEnvs = append(credentialEnvs, provider.APIKeyEnv)
+		if key != "" {
+			policy = policy.WithValues([]string{key})
+		}
 	}
 	mode := state.ExecutionHost
 	var workspaces run.Workspaces = &workspace.HostManager{Dir: filepath.Join(c.StateDir, "host-workspaces")}
-	environment, removed := redaction.FilterEnvironment(os.Environ(), c.Telegram.TokenEnv, c.Provider.APIKeyEnv)
+	environment, removed := redaction.FilterEnvironment(os.Environ(), credentialEnvs...)
 	policy = policy.WithValues(removed)
 	if token != "" {
 		policy = policy.WithValues([]string{token})
 	}
-	if providerKey != "" {
-		policy = policy.WithValues([]string{providerKey})
-	}
+
 	var tools run.ToolFactory = func(root string) agent.Tools {
 		return &host.Runner{Options: localtools.Options{WorkingDir: root, Environment: environment, ShellTimeout: c.ShellDuration()}}
 	}
@@ -216,22 +221,8 @@ func serve(ctx context.Context, c config.Config, policy *redaction.Policy, bot *
 	// Every provider instance has its own routing identity and state, while all
 	// completions reuse this transport's connection pool.
 	httpClient := &http.Client{Transport: http.DefaultTransport.(*http.Transport).Clone()}
-	providerConfig := llm.Config{BaseURL: c.Provider.BaseURL, APIKey: providerKey, HTTP: httpClient}
 	rt := &run.Runtime{Config: c, Store: store, Workspaces: workspaces, Tools: tools, Sink: bot, Options: agent.Options{Model: c.Provider.Model, Thinking: c.Provider.Thinking, MaxSteps: c.Limits.MaxSteps, MaxToolCalls: c.Limits.MaxToolCalls, Redaction: policy, Logger: log.Default()}, Report: func(err error) { log.Print(err) }}
-	rt.Providers = func(conversation state.Conversation) (llm.Provider, error) {
-		p, err := llm.New(c.Provider.Name, providerConfig)
-		if err != nil {
-			return nil, err
-		}
-		if conversation.Identity != "" {
-			if identity, ok := p.(interface{ RestoreSessionIdentity(string) error }); ok {
-				if err = identity.RestoreSessionIdentity(conversation.Identity); err != nil {
-					return nil, err
-				}
-			}
-		}
-		return p, nil
-	}
+	rt.Providers = configuredProviderFactory(c, providerKeys, httpClient)
 	if err := rt.StartScheduler(ctx); err != nil {
 		return fmt.Errorf("start scheduler: %w", err)
 	}
@@ -296,4 +287,35 @@ func checkMapping(dir string, o sandbox.Options) error {
 		return fmt.Errorf("service-user/subordinate mapping changed; restore the original allocation")
 	}
 	return nil
+}
+
+func configuredProviders(c config.Config) map[string]config.Provider {
+	providers := make(map[string]config.Provider, len(c.Providers)+1)
+	for name := range c.Providers {
+		p, _ := c.ProviderByName(name)
+		providers[name] = p
+	}
+	providers[c.Provider.Name] = c.Provider
+	return providers
+}
+
+func configuredProviderFactory(c config.Config, providerKeys map[string]string, httpClient *http.Client) run.ProviderFactory {
+	return func(conversation state.Conversation) (llm.Provider, error) {
+		settings, ok := c.ProviderByName(conversation.Provider)
+		if !ok {
+			return nil, fmt.Errorf("provider %q is not configured", conversation.Provider)
+		}
+		p, err := llm.New(settings.Name, llm.Config{BaseURL: settings.BaseURL, APIKey: providerKeys[settings.Name], HTTP: httpClient})
+		if err != nil {
+			return nil, err
+		}
+		if conversation.Identity != "" {
+			if identity, ok := p.(interface{ RestoreSessionIdentity(string) error }); ok {
+				if err = identity.RestoreSessionIdentity(conversation.Identity); err != nil {
+					return nil, err
+				}
+			}
+		}
+		return p, nil
+	}
 }

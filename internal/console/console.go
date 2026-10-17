@@ -124,7 +124,7 @@ func (c *console) options(args []string) ([]string, error) {
 func safeValues(values map[string]any) map[string]any {
 	result := make(map[string]any, len(values))
 	for key, value := range values {
-		if key == "provider.base_url" {
+		if key == "provider.base_url" || strings.HasPrefix(key, "providers.") && strings.HasSuffix(key, ".base_url") {
 			if raw, ok := value.(string); ok && raw != "" {
 				u, err := url.Parse(raw)
 				if err != nil {

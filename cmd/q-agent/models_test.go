@@ -14,6 +14,7 @@ import (
 	"time"
 
 	"q-agent/internal/config"
+	"q-agent/internal/llm"
 	"q-agent/internal/platform"
 	"q-agent/internal/redaction"
 	"q-agent/internal/state"
@@ -166,5 +167,64 @@ func TestServeModelsPaginationAndRouting(t *testing.T) {
 	conversation, err := store.Load(m.ConversationKey())
 	if err != nil || conversation.Model != "model-09" || len(conversation.Pairs) != 1 {
 		t.Fatalf("conversation: %+v %v", conversation, err)
+	}
+}
+
+func TestConfiguredProviderFactoryRoutesCredentialsAndEndpoints(t *testing.T) {
+	t.Setenv("Q_AGENT_REMOTE_KEY", "remote-provider-secret")
+	remoteCalls := 0
+	remote := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		remoteCalls++
+		if r.Header.Get("Authorization") != "Bearer remote-provider-secret" {
+			t.Errorf("wrong remote credential")
+		}
+		var body struct {
+			Model string `json:"model"`
+		}
+		if err := json.NewDecoder(r.Body).Decode(&body); err != nil {
+			t.Error(err)
+		}
+		if body.Model != "chat-override" {
+			t.Errorf("wrong model: %s", body.Model)
+		}
+		fmt.Fprintln(w, `data: {"choices":[{"delta":{"content":"remote answer"}}]}`)
+		fmt.Fprint(w, "\ndata: [DONE]\n\n")
+	}))
+	defer remote.Close()
+	localCalls := 0
+	local := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		localCalls++
+		if r.Header.Get("Authorization") != "" {
+			t.Error("remote credential leaked to local provider")
+		}
+		fmt.Fprintln(w, `{"message":{"role":"assistant","content":"local answer"},"done":true}`)
+	}))
+	defer local.Close()
+	c := config.Defaults()
+	c.Provider.BaseURL = local.URL
+	c.Providers = map[string]config.Provider{"openai": {Name: "openai", Model: "remote-default", BaseURL: remote.URL, APIKeyEnv: "Q_AGENT_REMOTE_KEY"}}
+	factory := configuredProviderFactory(c, map[string]string{"openai": "remote-provider-secret"}, remote.Client())
+	p, err := factory(state.Conversation{Provider: "openai", Model: "chat-override"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if p.Name() != "openai" {
+		t.Fatal("factory used global provider")
+	}
+	if _, err = p.Complete(context.Background(), llm.Request{Model: "chat-override", Messages: []llm.Message{{Role: "user", Content: "hi"}}}, nil); err != nil {
+		t.Fatal(err)
+	}
+	p, err = factory(state.Conversation{Provider: "ollama", Model: "local"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err = p.Complete(context.Background(), llm.Request{Model: "local", Messages: []llm.Message{{Role: "user", Content: "hi"}}}, nil); err != nil {
+		t.Fatal(err)
+	}
+	if remoteCalls != 1 || localCalls != 1 {
+		t.Fatalf("routing: remote %d local %d", remoteCalls, localCalls)
+	}
+	if _, err = factory(state.Conversation{Provider: "unknown"}); err == nil {
+		t.Fatal("unconfigured provider accepted")
 	}
 }

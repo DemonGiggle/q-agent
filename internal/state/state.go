@@ -22,6 +22,7 @@ type Pair struct {
 	Steers []string `json:"steers,omitempty"`
 }
 type Conversation struct {
+	Thinking       string `json:"thinking,omitempty"`
 	ModelSelection string `json:"model_selection,omitempty"`
 	Provider       string `json:"provider"`
 	Model          string `json:"model"`

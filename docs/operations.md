@@ -84,8 +84,54 @@ Replies and typing indicators retain the incoming topic ID. Replies are plain
 text, split at a conservative 4096 UTF-16 units without splitting Unicode code
 points; attachments and streaming replies are outside v1.
 
+### Per-chat provider configuration
+
+The existing `[provider]` remains the global default. To make another provider
+available to chats, add an optional table whose name is its adapter:
+
+```toml
+[providers.openai]
+model = "YOUR_OPENAI_MODEL"
+api_key_env = "OPENAI_API_KEY"
+# api_key_path can be used instead of api_key_env, with the same file rules.
+```
+
+Supported table names are `ollama`, `openai`, and `opencode-go`. Each additional
+provider needs a model and can configure its own `base_url`, credentials, and
+`thinking`. Do not duplicate the global provider in these tables. All configured
+credential references are validated at startup; their values are redacted and
+removed from tool environments. Additional providers must be configured by the
+operator; Telegram users cannot supply credentials or arbitrary endpoints.
+
+For example, `/provider openai`, `/model YOUR_OPENAI_MODEL`, and `/think high`
+change only the current private chat or group. Only approved users in approved
+chats can change settings. All topics in a group share these overrides. Changes
+are rejected while a task in that chat is active. Preferences survive restarts
+and `/new`, and apply to scheduled agent tasks. Unset models use the selected
+provider's model; unset thinking uses that provider's configured thinking when
+nonempty, otherwise the global thinking setting.
+
+Provider/model changes start fresh topic history on the next task, including
+when switching back. Thinking-only changes retain history. Workspace files,
+schedules, and other chats are retained. Old configurations and saved model
+selections remain readable; no migration of the state directory is required.
+
+
 ### Telegram commands
 
+- `/provider <name|default>`: select a provider for this chat/group. `/provider`
+  lists configured choices. `default` follows the global provider again.
+  Changing providers clears this chat's model override and uses the selected
+  provider's configured model. Explicit thinking overrides are retained.
+- `/model <id|default>`: set a model directly, or inherit the selected provider's
+  configured model. `/models` provides the existing button picker.
+- `/think <level|auto|default>`: override thinking for this chat/group.
+  `default` inherits configured thinking; `auto` explicitly uses the provider's
+  own default, even when a configured thinking level exists. Known model-specific
+  levels are checked. Providers may omit unsupported thinking settings, as with
+  global thinking; `/status` reports the configured choice, not resolved behavior.
+- `/settings [reset]`: show effective settings, or clear all overrides for this
+  chat/group and follow global defaults again.
 - `/status`: read-only snapshot of provider, model, thinking setting, host/sandbox
   mode, this topic's activity, global task concurrency, scheduler lifecycle,
   and step/tool/timeout limits. It reports configured routing, not a provider
@@ -100,9 +146,9 @@ points; attachments and streaming replies are outside v1.
   Selecting a model saves a **chat-wide** override (all topics), effective for
   the next task, including scheduled agent tasks. Other chats and the global
   config are unchanged. The choice survives restarts and `/new`; `/status`
-  reports the effective chat model. Changing the configured provider makes
-  overrides from the old provider inactive. Thinking settings remain configured
-  globally; provider discovery does not guarantee model access or compatibility.
+  reports the effective chat model. Changing the global provider makes legacy
+  model-only overrides from the old provider inactive. Explicit `/provider` choices remain selected. Provider
+  discovery does not guarantee model access or compatibility.
   Switching is rejected while any task in this chat is active. A successful
   switch invalidates all existing menus in the chat and starts fresh topic
   history lazily on the next task, including when switching back to an earlier

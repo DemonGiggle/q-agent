@@ -18,11 +18,12 @@ import (
 const DefaultPath = "~/.config/q-agent/config.toml"
 
 type Config struct {
-	StateDir string   `toml:"state_dir"`
-	Provider Provider `toml:"provider"`
-	Telegram Telegram `toml:"telegram"`
-	Sandbox  Sandbox  `toml:"sandbox"`
-	Limits   Limits   `toml:"limits"`
+	StateDir  string              `toml:"state_dir"`
+	Provider  Provider            `toml:"provider"`
+	Providers map[string]Provider `toml:"providers"`
+	Telegram  Telegram            `toml:"telegram"`
+	Sandbox   Sandbox             `toml:"sandbox"`
+	Limits    Limits              `toml:"limits"`
 }
 type Provider struct {
 	Name       string `toml:"name"`
@@ -85,24 +86,21 @@ func Load(path string) (Config, error) {
 	if err = d.Decode(&c); err != nil {
 		return c, err
 	}
-	if c.Provider.Name != "openai" && c.Provider.Name != "ollama" && c.Provider.Name != "opencode-go" {
-		return c, fmt.Errorf("unknown provider %q", c.Provider.Name)
+	if err = normalizeProvider(&c.Provider, filepath.Dir(path)); err != nil {
+		return c, err
 	}
-	if c.Provider.APIKeyPath != "" {
-		if c.Provider.APIKeyEnv != "" {
-			return c, fmt.Errorf("provider.api_key_env and provider.api_key_path are mutually exclusive")
+	for name, provider := range c.Providers {
+		if name == c.Provider.Name {
+			return c, fmt.Errorf("providers.%s duplicates the default provider", name)
 		}
-		c.Provider.APIKeyPath, err = absolute(c.Provider.APIKeyPath, filepath.Dir(path))
-		if err != nil {
-			return c, err
+		if provider.Name != "" && provider.Name != name {
+			return c, fmt.Errorf("providers.%s.name must match its table name", name)
 		}
-	} else if c.Provider.APIKeyEnv == "" {
-		switch c.Provider.Name {
-		case "openai":
-			c.Provider.APIKeyEnv = "OPENAI_API_KEY"
-		case "opencode-go":
-			c.Provider.APIKeyEnv = "OPENCODE_GO_API_KEY"
+		provider.Name = name
+		if err = normalizeProvider(&provider, filepath.Dir(path)); err != nil {
+			return c, fmt.Errorf("providers.%s: %w", name, err)
 		}
+		c.Providers[name] = provider
 	}
 	if c.Telegram.TokenPath != "" {
 		if c.Telegram.TokenEnv != "" {
@@ -114,9 +112,6 @@ func Load(path string) (Config, error) {
 		}
 	} else if c.Telegram.TokenEnv == "" {
 		c.Telegram.TokenEnv = "TELEGRAM_BOT_TOKEN"
-	}
-	if c.Provider.Model == "" {
-		return c, fmt.Errorf("provider.model is required")
 	}
 	if c.Limits.MaxSteps < 1 || c.Limits.MaxToolCalls < 1 || c.Limits.MaxConcurrent < 1 || c.Limits.MaxConcurrent > 2 {
 		return c, fmt.Errorf("positive limits required; max_concurrent must be 1 or 2")
@@ -272,4 +267,41 @@ func (c Config) TaskDuration() time.Duration {
 func (c Config) ShellDuration() time.Duration {
 	d, _ := time.ParseDuration(c.Limits.ShellTimeout)
 	return d
+}
+
+// ProviderByName only permits providers configured by the operator.
+func (c Config) ProviderByName(name string) (Provider, bool) {
+	if name == c.Provider.Name {
+		return c.Provider, true
+	}
+	p, ok := c.Providers[name]
+	p.Name = name
+	return p, ok
+}
+
+func normalizeProvider(p *Provider, dir string) error {
+	if p.Name != "openai" && p.Name != "ollama" && p.Name != "opencode-go" {
+		return fmt.Errorf("unknown provider %q", p.Name)
+	}
+	if p.Model == "" {
+		return fmt.Errorf("provider.model is required")
+	}
+	if p.APIKeyPath != "" {
+		if p.APIKeyEnv != "" {
+			return fmt.Errorf("provider.api_key_env and provider.api_key_path are mutually exclusive")
+		}
+		path, err := absolute(p.APIKeyPath, dir)
+		if err != nil {
+			return err
+		}
+		p.APIKeyPath = path
+	} else if p.APIKeyEnv == "" {
+		switch p.Name {
+		case "openai":
+			p.APIKeyEnv = "OPENAI_API_KEY"
+		case "opencode-go":
+			p.APIKeyEnv = "OPENCODE_GO_API_KEY"
+		}
+	}
+	return nil
 }

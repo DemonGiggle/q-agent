@@ -90,3 +90,40 @@ func TestSandboxEnabled(t *testing.T) {
 		})
 	}
 }
+
+func TestAdditionalProviders(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "config.toml")
+	writeConfig(t, path, `[provider]
+name = 'ollama'
+model = 'local'
+[providers.openai]
+model = 'remote'
+api_key_path = 'openai.key'
+[providers.opencode-go]
+model = 'other'
+`)
+	c, err := Load(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	p, ok := c.ProviderByName("openai")
+	if !ok || p.Name != "openai" || p.Model != "remote" || p.APIKeyPath != filepath.Join(filepath.Dir(path), "openai.key") || p.APIKeyEnv != "" {
+		t.Fatalf("profile: %+v", p)
+	}
+	p, ok = c.ProviderByName("opencode-go")
+	if !ok || p.APIKeyEnv != "OPENCODE_GO_API_KEY" {
+		t.Fatalf("credential default: %+v", p)
+	}
+	for _, text := range []string{
+		"[providers.ollama]\nmodel='duplicate'",
+		"[providers.unknown]\nmodel='invalid'",
+		"[providers.openai]\nname='ollama'\nmodel='invalid'",
+		"[providers.openai]\nmodel='invalid'\napi_key_env='KEY'\napi_key_path='key'",
+		"[providers.openai]\nbase_url='https://example.test'",
+	} {
+		writeConfig(t, path, "[provider]\nname='ollama'\nmodel='local'\n"+text)
+		if _, err := Load(path); err == nil {
+			t.Fatalf("accepted invalid profile: %s", text)
+		}
+	}
+}

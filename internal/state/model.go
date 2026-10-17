@@ -2,11 +2,17 @@ package state
 
 import "path/filepath"
 
-// ChatModel is separate from topic history so /new retains the chat preference.
+// ChatModel stores chat-wide overrides separately from topic history so /new
+// retains preferences. Empty Model inherits the selected provider's model.
+// ProviderPinned distinguishes an explicit provider from legacy model-only
+// selections, which continue following the global provider. A nil Thinking
+// inherits configured defaults; a pointer to "" requests the provider default.
 type ChatModel struct {
-	Revision string `json:"revision,omitempty"`
-	Provider string `json:"provider"`
-	Model    string `json:"model"`
+	ProviderPinned bool    `json:"provider_pinned,omitempty"`
+	Thinking       *string `json:"thinking,omitempty"`
+	Revision       string  `json:"revision,omitempty"`
+	Provider       string  `json:"provider"`
+	Model          string  `json:"model"`
 }
 
 func (s *Store) ChatModel(key string) (ChatModel, error) {

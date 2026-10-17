@@ -13,6 +13,18 @@ api_key_env = ""
 # api_key_path = "~/.config/q-agent/provider.key"
 thinking = ""
 
+# Optional additional providers available to /provider in each chat/group.
+# The table name selects the adapter; do not repeat the default provider here.
+# Each needs a default model and its own URL/credential references.
+# [providers.openai]
+# model = "YOUR_OPENAI_MODEL"
+# api_key_env = "OPENAI_API_KEY"
+# thinking = ""
+#
+# [providers.opencode-go]
+# model = "YOUR_OPENCODE_MODEL"
+# api_key_env = "OPENCODE_GO_API_KEY"
+
 [telegram]
 token_env = "TELEGRAM_BOT_TOKEN"
 # Optional file containing the Telegram bot token. Mutually exclusive with

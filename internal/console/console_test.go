@@ -305,3 +305,15 @@ func TestReadOnlyCommandsDoNotOpenCredentialFiles(t *testing.T) {
 		}
 	}
 }
+
+func TestAdditionalProviderURLsAreSanitized(t *testing.T) {
+	c := config.Defaults()
+	c.Providers = map[string]config.Provider{"openai": {Name: "openai", Model: "remote", BaseURL: "https://user:password@example.test/v1?token=secret#private"}}
+	values := safeValues(config.Values(c))
+	if got := values["providers.openai.base_url"]; got != "https://example.test/v1" {
+		t.Fatalf("unsafe URL: %v", got)
+	}
+	if got := values["providers.openai.model"]; got != "remote" {
+		t.Fatalf("missing provider values: %v", got)
+	}
+}

@@ -15,6 +15,12 @@ func TestAddressing(t *testing.T) {
 		want             bool
 		normalized       string
 	}{
+		{"private provider", "private", "/provider openai", false, true, "/provider openai"},
+		{"targeted model", "group", "/model@OUR_BOT remote", false, true, "/model remote"},
+		{"mentioned think", "supergroup", "/think high @our_bot", false, true, "/think high"},
+		{"reset settings", "group", "/settings@our_bot reset", false, true, "/settings reset"},
+		{"unaddressed provider", "group", "/provider openai", false, false, ""},
+		{"wrong think target", "private", "/think@other high", false, false, ""},
 		{"private status", "private", "/status", false, true, "/status"},
 		{"targeted status", "group", "/status@OUR_BOT", false, true, "/status"},
 		{"mentioned status", "supergroup", "/status @our_bot", false, true, "/status"},

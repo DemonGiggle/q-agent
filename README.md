@@ -138,7 +138,11 @@ running service when ready to use the new version. See the
 | Command | What it does |
 | --- | --- |
 | `/status` | Show your provider, model, activity, process RSS memory, and current settings — even while busy. |
-| `/models` | Browse models with buttons and switch this chat’s model. |
+| `/models` | Browse the selected provider’s models and switch this chat’s model. |
+| `/provider <name\|default>` | Select a configured provider for this chat/group; `/provider` lists choices. |
+| `/model <id\|default>` | Set this chat/group’s model, or inherit the selected provider’s default. |
+| `/think <level\|auto\|default>` | Set thinking, use the provider’s automatic behavior, or inherit configured defaults. |
+| `/settings [reset]` | Show effective settings, or clear this chat/group’s overrides. |
 | `/help` | Show the command list. |
 | `/new` | Start a fresh conversation in this topic. Your files and schedules stay. |
 | `/cancel` | Ask the current task to stop. Changes already made stay in place. |

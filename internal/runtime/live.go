@@ -186,6 +186,17 @@ func (l *liveReporter) SetStatus(status string) {
 	l.editLocked(false)
 }
 
+// Steered clears superseded response text before the next model turn.
+func (l *liveReporter) Steered() {
+	l.mu.Lock()
+	defer l.mu.Unlock()
+	l.stream.Reset()
+	l.status = "Working… applying follow-up"
+	if l.ensureLocked() {
+		l.editLocked(false)
+	}
+}
+
 // ToolStart announces a tool; count tracks tools used so far.
 func (l *liveReporter) ToolStart(name string, count int) {
 	status := "Working… 🔧 " + name

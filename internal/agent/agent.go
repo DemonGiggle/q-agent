@@ -49,6 +49,12 @@ type Options struct {
 	// directly; the runtime formats the preview.
 	OnToolStart func(name string)
 	OnToolEnd   func(name string, err error)
+	// NextInput drains follow-up user input at safe boundaries. When final is
+	// true and no input is returned, it must atomically seal this run against
+	// further steering; later input belongs to the next run. It must not wait
+	// for new input to arrive.
+	NextInput func(final bool) []string
+	OnSteer   func()
 }
 
 func (o Options) logf(format string, args ...any) {
@@ -85,6 +91,7 @@ func summarizeArgs(call llm.ToolCall) string {
 
 type Result struct {
 	Answer     string           `json:"answer"`
+	Steers     []string         `json:"steers,omitempty"`
 	Usage      llm.SessionUsage `json:"usage"`
 	ModelSteps int              `json:"model_steps"`
 	ToolCalls  int              `json:"tool_calls"`
@@ -123,10 +130,35 @@ func Run(ctx context.Context, provider llm.Provider, tools Tools, history []llm.
 	o.logf("agent start model=%q thinking=%q max_steps=%d max_tool_calls=%d history=%d", o.Model, o.Thinking, o.MaxSteps, o.MaxToolCalls, len(history))
 	identical := map[string]int{}
 	recovery := ""
+	applySteer := func(inputs []string) {
+		if len(inputs) == 0 {
+			return
+		}
+		text := strings.Join(inputs, "\n\n")
+		// Multiple boundary checks may consume input before the same next
+		// request (for example after skipping tools and at the loop head).
+		// Keep those unsent batches together, but never mutate a sent request.
+		if len(result.Steers) > 0 && messages[len(messages)-1].Role == "user" {
+			messages[len(messages)-1].Content += "\n\n" + text
+			result.Steers[len(result.Steers)-1] += "\n\n" + text
+		} else {
+			messages = append(messages, llm.Message{Role: "user", Content: text})
+			result.Steers = append(result.Steers, text)
+		}
+		identical = map[string]int{}
+		recovery = ""
+		o.logf("agent steering applied inputs=%d", len(inputs))
+		if o.OnSteer != nil {
+			o.OnSteer()
+		}
+	}
 	for step := 0; step < o.MaxSteps; step++ {
 		if err := ctx.Err(); err != nil {
 			o.logf("agent cancel step=%d/%d after=%s err=%q", step+1, o.MaxSteps, time.Since(runStart).Truncate(time.Millisecond), o.redactTerminal(err.Error()))
 			return result, err
+		}
+		if o.NextInput != nil {
+			applySteer(o.NextInput(false))
 		}
 		requestMessages := append([]llm.Message(nil), messages...)
 		recoveryInjected := recovery != ""
@@ -167,14 +199,33 @@ func Run(ctx context.Context, provider llm.Provider, tools Tools, history []llm.
 		}
 		messages = append(messages, response.Message)
 		if len(response.Message.ToolCalls) == 0 {
+			if o.NextInput != nil {
+				if inputs := o.NextInput(true); len(inputs) > 0 {
+					applySteer(inputs)
+					continue
+				}
+			}
+			if err := ctx.Err(); err != nil {
+				return result, err
+			}
 			result.Answer = response.Message.Content
 			o.logf("agent done steps=%d tools=%d after=%s usage=%d/%d/%d answer_len=%d", result.ModelSteps, result.ToolCalls, time.Since(runStart).Truncate(time.Millisecond), result.Usage.InputTokens, result.Usage.OutputTokens, result.Usage.TotalTokens, len(result.Answer))
 			return result, nil
 		}
+		var pendingSteer []string
 		for _, call := range response.Message.ToolCalls {
 			if ctx.Err() != nil {
 				o.logf("agent cancel tool=%q after=%s err=%q", call.Name, time.Since(runStart).Truncate(time.Millisecond), o.redactTerminal(ctx.Err().Error()))
 				return result, ctx.Err()
+			}
+			if len(pendingSteer) == 0 && o.NextInput != nil {
+				pendingSteer = o.NextInput(false)
+			}
+			if len(pendingSteer) > 0 {
+				// Complete the provider's tool-call pairing without executing
+				// superseded actions. Append the new user input after the batch.
+				messages = append(messages, llm.Message{Role: "tool", Name: call.Name, ToolCallID: call.ID, Content: "Skipped: user steering arrived before this action started."})
+				continue
 			}
 			fingerprint := toolFingerprint(call)
 			identical[fingerprint]++
@@ -226,6 +277,7 @@ func Run(ctx context.Context, provider llm.Provider, tools Tools, history []llm.
 			}
 			messages = append(messages, llm.Message{Role: "tool", Content: trust.Wrap(call.Name, localtools.Limit(output)), Origin: call.Name, Untrusted: true, Name: call.Name, ToolCallID: call.ID})
 		}
+		applySteer(pendingSteer)
 	}
 	o.logf("agent giving up steps=%d/%d tools=%d after=%s usage=%d/%d/%d", o.MaxSteps, o.MaxSteps, result.ToolCalls, time.Since(runStart).Truncate(time.Millisecond), result.Usage.InputTokens, result.Usage.OutputTokens, result.Usage.TotalTokens)
 	return result, fmt.Errorf("reached the maximum of %d model steps", o.MaxSteps)

@@ -23,14 +23,26 @@ func (r *Runtime) startLocked(ctx context.Context, m platform.Message, runID str
 	}
 	taskCtx, cancel := context.WithTimeout(ctx, r.Config.TaskDuration())
 	key := m.WorkspaceKey()
-	r.active[key] = task{topic: m.TopicID, cancel: cancel}
+	r.active[key] = task{topic: m.TopicID, user: m.UserID, ctx: taskCtx, cancel: cancel}
 	r.wg.Add(1)
 	go func() {
 		defer r.wg.Done()
 		defer cancel()
+		succeeded := false
 		defer func() {
 			r.mu.Lock()
+			finished := r.active[key]
 			delete(r.active, key)
+			// A message racing with final-answer sealing belongs to the next
+			// run, but only after this run has saved history and queued output.
+			if succeeded && finished.finishing && !finished.userCancelled && !r.closed && ctx.Err() == nil && len(finished.pending) > 0 {
+				next := finished.pending
+				message := next[0]
+				message.Text = mergeFollowups(next)
+				if err := r.startLocked(ctx, message, ""); err != nil {
+					r.report(err)
+				}
+			}
 			if r.scheduleWake != nil {
 				select {
 				case r.scheduleWake <- struct{}{}:
@@ -39,7 +51,7 @@ func (r *Runtime) startLocked(ctx context.Context, m platform.Message, runID str
 			}
 			r.mu.Unlock()
 		}()
-		r.run(taskCtx, m, runID)
+		succeeded = r.run(taskCtx, m, runID)
 	}()
 	return nil
 }

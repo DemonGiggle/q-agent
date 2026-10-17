@@ -57,8 +57,9 @@ func (r *Runtime) statusLocked(m platform.Message) string {
 	// Keep config strings on one line; apply the same remote redaction policy
 	// used for agent errors before the response reaches the durable outbox.
 	line := func(s string) string { return strings.Join(strings.Fields(s), " ") }
-	text := fmt.Sprintf("q-agent status\n\nProvider: %s\nModel: %s\nThinking: %s\nExecution: %s\n\nThis topic: %s\nActive tasks: %d/%d\nScheduler: %s\n\nLimits per task\nModel steps: %d\nTool calls: %d\nTask timeout: %s\nShell timeout: %s\n\n/help — Available commands",
+	text := fmt.Sprintf("q-agent status\n\nProvider: %s\nModel: %s\nThinking: %s\nExecution: %s\nMemory (RSS, q-agent): %s\n\nThis topic: %s\nActive tasks: %d/%d\nScheduler: %s\n\nLimits per task\nModel steps: %d\nTool calls: %d\nTask timeout: %s\nShell timeout: %s\n\n/help — Available commands",
 		line(r.Config.Provider.Name), line(model), line(thinking), mode,
+		formatRSS(currentRSS()),
 		activity, len(r.active), limit, scheduler,
 		r.Config.Limits.MaxSteps, r.Config.Limits.MaxToolCalls,
 		line(r.Config.Limits.TaskTimeout), line(r.Config.Limits.ShellTimeout))

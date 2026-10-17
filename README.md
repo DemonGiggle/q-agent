@@ -137,7 +137,7 @@ running service when ready to use the new version. See the
 
 | Command | What it does |
 | --- | --- |
-| `/status` | Show your provider, model, activity, and current settings — even while busy. |
+| `/status` | Show your provider, model, activity, process RSS memory, and current settings — even while busy. |
 | `/models` | Browse models with buttons and switch this chat’s model. |
 | `/help` | Show the command list. |
 | `/new` | Start a fresh conversation in this topic. Your files and schedules stay. |
@@ -145,6 +145,12 @@ running service when ready to use the new version. See the
 | `/ask <request>` | Give the agent a task. Plain messages work in private chats too. |
 
 In groups, address commands to your bot, for example `/status@your_bot`.
+
+`/status` reports the q-agent bot process's current resident memory (RSS) in MiB,
+read from Linux `/proc/self/status` on each request. This is physical resident
+memory, not virtual size, Go heap usage, or a historical peak. It includes shared
+resident pages and excludes sandbox workers and other child processes. If the
+kernel metric cannot be read, it shows `Unavailable` instead of a substitute.
 
 **Want to adjust a task while it runs?** Send another message in the same
 chat/topic. Your follow-up steers your current task at the next safe boundary,

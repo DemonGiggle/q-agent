@@ -133,7 +133,7 @@ func (r *Runtime) Handle(ctx context.Context, m platform.Message) error {
 		return r.reply(m, text)
 	case "/help":
 		r.mu.Unlock()
-		return r.reply(m, "q-agent commands\n/status — Show current runtime and safe settings (no model call).\n/models — Choose a model for this chat.\n/help — Show this help.\n/new — Clear this topic's conversation; keep workspace.\n/cancel — Cancel this topic's active task.\n/ask <prompt> — Ask the agent or steer your running task.\n\nSend follow-up text in the same topic to steer your task. /cancel stops the task and pending follow-ups.\n\nIn groups, address commands to @your_bot (e.g. /status@your_bot), mention the bot, or reply to it.")
+		return r.reply(m, "q-agent commands\n/status — Show current runtime, process RSS memory, and safe settings (no model call).\n/models — Choose a model for this chat.\n/help — Show this help.\n/new — Clear this topic's conversation; keep workspace.\n/cancel — Cancel this topic's active task.\n/ask <prompt> — Ask the agent or steer your running task.\n\nSend follow-up text in the same topic to steer your task. /cancel stops the task and pending follow-ups.\n\nIn groups, address commands to @your_bot (e.g. /status@your_bot), mention the bot, or reply to it.")
 	case "/cancel":
 		if busy && active.topic == m.TopicID {
 			active.userCancelled = true

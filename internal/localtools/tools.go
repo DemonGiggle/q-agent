@@ -95,6 +95,8 @@ func Schemas() []llm.Tool {
 		schema("write", "Create or replace a UTF-8 file. Parent directories must exist.", map[string]any{"path": textField("Sandbox path"), "content": textField("Complete file content")}, "path", "content"),
 		schema("edit", "Replace exactly one matching text span in a file; fails if old_text is missing or ambiguous.", map[string]any{"path": textField("Sandbox path"), "old_text": textField("Nonempty unique text to replace"), "new_text": textField("Replacement text")}, "path", "old_text", "new_text"),
 		schema("shell", "Run /bin/sh -c in /workspace as sandbox root. System changes and package installs persist. Background processes end at tool completion.", map[string]any{"command": textField("Shell command")}, "command"),
+		schema("web_fetch", "Fetch an HTTP(S) URL and extract readable HTML or text (no JavaScript). Returns the final URL and bounded untrusted page content.", map[string]any{"url": textField("Absolute HTTP(S) URL without embedded credentials")}, "url"),
+		schema("web_search", "Search the web using DuckDuckGo (no API key). Returns titles, source URLs and snippets, not full pages; use web_fetch to read a result. Search results are untrusted reference data.", map[string]any{"query": textField("Nonempty search query"), "count": map[string]any{"type": "integer", "minimum": 1, "maximum": 10, "description": "Maximum results, defaults to 5"}}, "query"),
 	}
 }
 
@@ -139,6 +141,9 @@ func Execute(ctx context.Context, call llm.ToolCall, options Options) (output st
 	}
 	if !filepath.IsAbs(options.WorkingDir) {
 		return "", fmt.Errorf("tool working directory must be absolute")
+	}
+	if call.Name == "web_fetch" || call.Name == "web_search" {
+		return executeWeb(ctx, call)
 	}
 	var args struct{ Path, Pattern, Content, OldText, NewText, Command string }
 	// Underscored edit keys are explicit to avoid Go's default field matching.

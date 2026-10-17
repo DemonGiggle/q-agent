@@ -10,8 +10,8 @@ qcode's MIT notice is retained in
 [LICENSE](../LICENSE) and [NOTICE](../NOTICE).
 
 The host process owns provider connections, credentials, polling, conversation
-history, and completed replies. The six local tools use the selected execution
-mode. V1 supports `openai`, `ollama`, and `opencode-go`, including
+history, and completed replies. The six local tools and two web tools use the
+selected execution mode. V1 supports `openai`, `ollama`, and `opencode-go`, including
 the pinned qcode protocol routing and reasoning replay behavior.
 
 ## Setup
@@ -211,7 +211,8 @@ explains rootless operation and subordinate IDs.
 - `/cancel` (or `/cancel@your_bot`): cancel this conversation's active request.
   Changes already made to its filesystem persist.
 
-The model can call `read`, `list`, `search`, `write`, `edit`, and `shell`, plus
+The model can call `read`, `list`, `search`, `write`, `edit`, `shell`,
+`web_fetch`, and `web_search`, plus
 the host-managed `schedule_create`, `schedule_list`, and `schedule_delete` tools. In host
 mode, relative paths resolve under the chat's persistent folder and absolute
 paths refer to the host filesystem. In sandbox mode, absolute paths refer to the
@@ -223,6 +224,45 @@ File edits are limited to 8 MiB. Tool output is capped at 8 KiB, including an
 explicit `[output truncated]` marker. Shell commands use `/bin/sh -c` with an
 explicit per-command working directory and environment. In sandbox mode,
 ordinary `apt-get update && apt-get install -y ...` installations persist.
+
+### Web tools
+
+Ask the agent to search or read a URL in normal Telegram messages (including
+scheduled agent tasks). Both host and sandbox modes expose:
+
+- `web_search {"query":"Go programming language","count":5}`: searches the
+  public DuckDuckGo Lite endpoint, returning result titles, direct source URLs
+  and snippets. `query` is required (1–2000 bytes after trimming); `count` is an
+  integer from 1 to 10, default 5. No API key, paid service, or configuration is
+  needed. DuckDuckGo can rate-limit requests or require a bot challenge; the
+  tool reports those errors, and unknown page formats are not presented as
+  “no results”. It does not solve challenges or switch search providers.
+- `web_fetch {"url":"https://go.dev/"}`: performs an HTTP(S) GET, follows at
+  most five redirects, and returns the final URL plus readable HTML text
+  (including the title and source links), plain text, JSON or XML. Scripts,
+  styles and templates are omitted. Binary files such as PDFs/images are
+  rejected. URLs over 8192 bytes, embedded URL credentials and non-HTTP(S) URLs are rejected, including
+  on redirects. HTML is parsed with the Go `golang.org/x/net/html` tokenizer;
+  there is no browser, JavaScript execution, login session, or readability service.
+
+Each call has a 20-second total network deadline and honors request cancellation.
+Site timeouts are recoverable tool errors; caller cancellation still stops the task.
+Input is capped at 1 MiB after decompression and charset conversion; oversized
+fetches are marked truncated, while oversized search responses are rejected.
+Results use the existing 8 KiB UTF-8 output limit and untrusted-data envelope.
+Web tools use a separate HTTP client with no cookies, provider authentication,
+or environment proxy settings. Standard TLS certificate verification stays
+enabled. In sandbox mode, DNS settings and CA certificates come from its rootfs
+(the standard image includes `ca-certificates`); web requests execute inside the
+worker, not through a host-side proxy. Network access follows the selected
+execution mode's existing permissions, including reachable local services;
+these tools do not add a network isolation boundary.
+
+`search` remains the local-file regular-expression tool; `web_search` is the web
+search tool. Search/fetch observations are reference data, not instructions,
+and the system prompt asks the model to cite source URLs in web-based answers.
+
+### Live progress
 
 While a task runs, the bot keeps one best-effort live preview message in the
 same chat/topic: `Working… contacting <model>` and tool calls
@@ -456,7 +496,7 @@ make integration-host
 Q_AGENT_IMAGE="$HOME/.local/share/q-agent/images/debian-trixie.tar" make integration
 ```
 
-Host tests exercise all six tools, credentials, absolute host paths, concurrent
+Host tests exercise the six local tools and web fetching, credentials, absolute host paths, concurrent
 chat folders, shared topics, restart persistence, output bounds, process cleanup,
 timeouts, and cancellation. A mocked Telegram/Ollama service test uses real host
 tools with deliberately missing sandbox dependencies and images, and runs in the

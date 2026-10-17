@@ -16,6 +16,10 @@ the pinned qcode protocol routing and reasoning replay behavior.
 
 ## Setup
 
+For guided model/settings menus or prompt-free commands for automation, see
+the [console guide](console.md). These edit the same TOML file and do not restart
+the running service.
+
 Use Linux and a service account with the permissions you want tools to have.
 Host startup requires no image build, bubblewrap, mapping helpers, or subordinate
 ID allocations. Build a static native binary with Go 1.22 or newer:

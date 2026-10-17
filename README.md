@@ -82,6 +82,10 @@ Edit `config.toml` to choose your provider and model, then set
 **Both your user ID and the chat ID must be approved.** For a private chat,
 they normally match. Keep the bot token out of the config file.
 
+Prefer a guided setup? Run `./bin/q-agent models` to review and change your
+model, or `./bin/q-agent config` to edit other settings. Each change is previewed
+before you save. [Console guide →](docs/console.md)
+
 ### 3. Start chatting
 
 ```sh

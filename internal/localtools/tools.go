@@ -79,6 +79,9 @@ func (b *Buffer) String() string {
 }
 func (b *Buffer) Full() bool { b.mu.Lock(); defer b.mu.Unlock(); return len(b.data) > OutputLimit }
 func schema(name, description string, props map[string]any, required ...string) llm.Tool {
+	if required == nil {
+		required = []string{}
+	}
 	return llm.Tool{Name: name, Description: description, Parameters: map[string]any{"type": "object", "properties": props, "required": required, "additionalProperties": false}}
 }
 func textField(description string) map[string]any {

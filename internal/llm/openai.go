@@ -168,6 +168,7 @@ func (p *openAIProvider) Complete(ctx context.Context, input Request, onText Str
 	}
 	tools := make([]openAITool, 0, len(input.Tools))
 	for _, tool := range input.Tools {
+		tool.Parameters = tool.normalizedParameters()
 		tools = append(tools, openAITool{Type: "function", Function: tool})
 	}
 	body := map[string]any{"stream_options": map[string]any{"include_usage": true}, "model": input.Model, "messages": messages, "stream": true}

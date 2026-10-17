@@ -41,7 +41,7 @@ func (p *openAIProvider) completeAnthropicMessages(ctx context.Context, input Re
 	if len(input.Tools) > 0 {
 		tools := make([]anthropicTool, 0, len(input.Tools))
 		for _, tool := range input.Tools {
-			tools = append(tools, anthropicTool{Name: tool.Name, Description: tool.Description, InputSchema: tool.Parameters})
+			tools = append(tools, anthropicTool{Name: tool.Name, Description: tool.Description, InputSchema: tool.normalizedParameters()})
 		}
 		body["tools"] = tools
 	}

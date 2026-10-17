@@ -213,6 +213,7 @@ func (p *ollamaProvider) Complete(ctx context.Context, input Request, onText Str
 	}
 	tools := make([]map[string]any, 0, len(input.Tools))
 	for _, tool := range input.Tools {
+		tool.Parameters = tool.normalizedParameters()
 		tools = append(tools, map[string]any{"type": "function", "function": tool})
 	}
 	body := map[string]any{"model": input.Model, "messages": messages, "stream": true, "options": map[string]any{"temperature": input.Temperature}}

@@ -44,6 +44,31 @@ type Tool struct {
 	Parameters  map[string]any `json:"parameters"`
 }
 
+// normalizedParameters returns a copy of the tool's JSON schema with nil
+// slices and maps replaced by empty values. The OpenAI Responses API
+// validates tool schemas strictly: a Go nil slice marshals to JSON null,
+// so a tool without required arguments (for example `list`) would send
+// `"required":null` and the provider rejects it with
+// `Invalid JSON schema: null is not of type "array"` (param `parameters`).
+func (t Tool) normalizedParameters() map[string]any {
+	if t.Parameters == nil {
+		return map[string]any{"type": "object", "properties": map[string]any{}, "required": []string{}, "additionalProperties": false}
+	}
+	out := make(map[string]any, len(t.Parameters))
+	for key, value := range t.Parameters {
+		out[key] = value
+	}
+	if value, ok := out["required"]; !ok || value == nil {
+		out["required"] = []string{}
+	} else if slice, ok := value.([]string); ok && slice == nil {
+		out["required"] = []string{}
+	}
+	if value, ok := out["properties"]; !ok || value == nil {
+		out["properties"] = map[string]any{}
+	}
+	return out
+}
+
 type Request struct {
 	Model string
 	// Thinking is an optional user-selected level. Providers must omit thinking

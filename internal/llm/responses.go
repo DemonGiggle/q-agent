@@ -35,7 +35,7 @@ func (p *openAIProvider) completeResponses(ctx context.Context, input Request, o
 	if len(input.Tools) > 0 {
 		tools := make([]map[string]any, 0, len(input.Tools))
 		for _, tool := range input.Tools {
-			tools = append(tools, map[string]any{"type": "function", "name": tool.Name, "description": tool.Description, "parameters": tool.Parameters})
+			tools = append(tools, map[string]any{"type": "function", "name": tool.Name, "description": tool.Description, "parameters": tool.normalizedParameters()})
 		}
 		body["tools"] = tools
 	}
@@ -88,9 +88,19 @@ func responsesInput(messages []Message) []any {
 					continue
 				}
 			}
-			items = append(items, responsesMessage("assistant", message.Content, nil))
+			// Fallback for assistant turns without replayable output (for
+			// example history restored without ReasoningDetails). The
+			// Responses API rejects input_text on assistant messages, so
+			// text must go as output_text. Skip empty text and only send
+			// the function_call items for pure tool-call turns.
+			if message.Content != "" {
+				items = append(items, responsesMessage("assistant", message.Content, nil))
+			}
 			for _, call := range message.ToolCalls {
 				items = append(items, map[string]any{"type": "function_call", "call_id": call.ID, "name": call.Name, "arguments": string(call.Arguments)})
+			}
+			if message.Content == "" && len(message.ToolCalls) == 0 {
+				items = append(items, responsesMessage("assistant", "", nil))
 			}
 		default:
 			items = append(items, responsesMessage(message.Role, message.Content, message.Images))
@@ -100,9 +110,16 @@ func responsesInput(messages []Message) []any {
 }
 
 func responsesMessage(role, text string, images []Image) map[string]any {
+	contentType := "input_text"
+	if role == "assistant" {
+		// The Responses API rejects input_text on assistant messages
+		// (400: content type `input_text` is not valid on `assistant`
+		// messages). Assistant text must be output_text.
+		contentType = "output_text"
+	}
 	content := make([]map[string]any, 0, len(images)+1)
 	if text != "" || len(images) == 0 {
-		content = append(content, map[string]any{"type": "input_text", "text": text})
+		content = append(content, map[string]any{"type": contentType, "text": text})
 	}
 	for _, image := range images {
 		content = append(content, map[string]any{"type": "input_image", "image_url": "data:" + image.MediaType + ";base64," + base64.StdEncoding.EncodeToString(image.Data)})

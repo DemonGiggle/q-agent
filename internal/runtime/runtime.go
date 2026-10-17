@@ -43,6 +43,7 @@ type Runtime struct {
 	active         map[string]task
 	wg             sync.WaitGroup
 	closed         bool
+	modelMenus     map[string]modelMenu
 	scheduleCancel context.CancelFunc
 	scheduleDone   chan struct{}
 	scheduleWake   chan struct{}
@@ -104,6 +105,12 @@ func (r *Runtime) Handle(ctx context.Context, m platform.Message) error {
 		return nil
 	}
 	r.logf("telegram update=%d chat=%d topic=%d user=%d text=%q", m.UpdateID, m.ChatID, m.TopicID, m.UserID, r.Options.Redaction.Text(redaction.Terminal, preview(m.Text)))
+	if m.CallbackID != "" {
+		return r.handleModelCallback(ctx, m)
+	}
+	if m.Text == "/models" {
+		return r.showModels(ctx, m)
+	}
 	r.mu.Lock()
 	if r.active == nil {
 		r.active = map[string]task{}
@@ -121,7 +128,7 @@ func (r *Runtime) Handle(ctx context.Context, m platform.Message) error {
 		return r.reply(m, text)
 	case "/help":
 		r.mu.Unlock()
-		return r.reply(m, "q-agent commands\n/status — Show current runtime and safe settings (no model call).\n/help — Show this help.\n/new — Clear this topic's conversation; keep workspace.\n/cancel — Cancel this topic's active task.\n/ask <prompt> — Ask the agent.\n\nIn groups, address commands to @your_bot (e.g. /status@your_bot), mention the bot, or reply to it.")
+		return r.reply(m, "q-agent commands\n/status — Show current runtime and safe settings (no model call).\n/models — Choose a model for this chat.\n/help — Show this help.\n/new — Clear this topic's conversation; keep workspace.\n/cancel — Cancel this topic's active task.\n/ask <prompt> — Ask the agent.\n\nIn groups, address commands to @your_bot (e.g. /status@your_bot), mention the bot, or reply to it.")
 	case "/cancel":
 		if busy && active.topic == m.TopicID {
 			active.userCancelled = true
@@ -170,7 +177,7 @@ func (r *Runtime) run(ctx context.Context, m platform.Message, runID string) {
 	}
 	defer stopTyping()
 	runStart := time.Now()
-	r.logf("run start update=%d chat=%d topic=%d model=%q", m.UpdateID, m.ChatID, m.TopicID, r.Config.Provider.Model)
+	r.logf("run start update=%d chat=%d topic=%d", m.UpdateID, m.ChatID, m.TopicID)
 	answer := ""
 	var runErr error
 	root, err := r.Workspaces.Ensure(ctx, m)
@@ -178,14 +185,12 @@ func (r *Runtime) run(ctx context.Context, m platform.Message, runID string) {
 		runErr = fmt.Errorf("workspace provisioning: %w", err)
 		r.logf("run update=%d provisioning error after=%s err=%q", m.UpdateID, time.Since(runStart).Truncate(time.Millisecond), r.Options.Redaction.Text(redaction.Terminal, runErr.Error()))
 	} else {
-		conversation, err := r.Store.Load(m.ConversationKey())
+		conversation, err := r.loadModelConversation(m)
 		if err != nil {
 			runErr = err
 			r.logf("run update=%d load history error after=%s err=%q", m.UpdateID, time.Since(runStart).Truncate(time.Millisecond), r.Options.Redaction.Text(redaction.Terminal, err.Error()))
 		} else {
-			if conversation.Provider != r.Config.Provider.Name || conversation.Model != r.Config.Provider.Model {
-				conversation = state.Conversation{Provider: r.Config.Provider.Name, Model: r.Config.Provider.Model}
-			}
+			r.logf("run update=%d model=%q", m.UpdateID, conversation.Model)
 			provider, err := r.Providers(conversation)
 			if err != nil {
 				runErr = err
@@ -198,7 +203,9 @@ func (r *Runtime) run(ctx context.Context, m platform.Message, runID string) {
 					runErr = err
 					r.logf("run update=%d save identity error after=%s err=%q", m.UpdateID, time.Since(runStart).Truncate(time.Millisecond), r.Options.Redaction.Text(redaction.Terminal, err.Error()))
 				} else {
-					result, err := agent.Run(ctx, provider, &scheduleTools{base: r.Tools(root), runtime: r, owner: m}, conversation.Messages(), m.Text, r.Options)
+					options := r.Options
+					options.Model = conversation.Model
+					result, err := agent.Run(ctx, provider, &scheduleTools{base: r.Tools(root), runtime: r, owner: m}, conversation.Messages(), m.Text, options)
 					answer = result.Answer
 					runErr = err
 					if err == nil {

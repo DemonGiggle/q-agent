@@ -105,6 +105,7 @@ See the [group setup details](docs/operations.md#setup).
 | Command | What it does |
 | --- | --- |
 | `/status` | Show your provider, model, activity, and current settings — even while busy. |
+| `/models` | Browse models with buttons and switch this chat’s model. |
 | `/help` | Show the command list. |
 | `/new` | Start a fresh conversation in this topic. Your files and schedules stay. |
 | `/cancel` | Ask the current task to stop. Changes already made stay in place. |

@@ -21,10 +21,11 @@ type Pair struct {
 	Answer string `json:"answer"`
 }
 type Conversation struct {
-	Provider string `json:"provider"`
-	Model    string `json:"model"`
-	Identity string `json:"identity,omitempty"`
-	Pairs    []Pair `json:"pairs"`
+	ModelSelection string `json:"model_selection,omitempty"`
+	Provider       string `json:"provider"`
+	Model          string `json:"model"`
+	Identity       string `json:"identity,omitempty"`
+	Pairs          []Pair `json:"pairs"`
 }
 
 func (c Conversation) Messages() []llm.Message {
@@ -45,10 +46,11 @@ func (c *Conversation) Bound() {
 }
 
 type Reply struct {
-	ID    string           `json:"id"`
-	Route platform.Message `json:"route"`
-	Parts []string         `json:"parts"`
-	Next  int              `json:"next"`
+	Keyboard *platform.InlineKeyboard `json:"keyboard,omitempty"`
+	ID       string                   `json:"id"`
+	Route    platform.Message         `json:"route"`
+	Parts    []string                 `json:"parts"`
+	Next     int                      `json:"next"`
 }
 type Store struct {
 	mu              sync.Mutex
@@ -181,6 +183,9 @@ func (s *Store) Reset(key string) error {
 	return Atomic(s.path(key), Conversation{})
 }
 func (s *Store) Queue(route platform.Message, parts []string) error {
+	return s.QueueKeyboard(route, parts, nil)
+}
+func (s *Store) QueueKeyboard(route platform.Message, parts []string, keyboard *platform.InlineKeyboard) error {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	if len(parts) == 0 {
@@ -197,7 +202,7 @@ func (s *Store) Queue(route platform.Message, parts []string) error {
 	for i := range copyParts {
 		copyParts[i] = s.policy.Text(redaction.Remote, copyParts[i])
 	}
-	next := append(append([]Reply(nil), s.outbox...), Reply{ID: id, Route: route, Parts: copyParts})
+	next := append(append([]Reply(nil), s.outbox...), Reply{ID: id, Route: route, Parts: copyParts, Keyboard: keyboard})
 	if err := Atomic(filepath.Join(s.dir, "outbox.json"), next); err != nil {
 		return err
 	}

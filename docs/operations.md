@@ -80,6 +80,24 @@ points; attachments and streaming replies are outside v1.
   and step/tool/timeout limits. It reports configured routing, not a provider
   health check or the model's resolved thinking behavior. It works while busy,
   without calling the model, provisioning a workspace, or changing history.
+- `/models`: browse the active provider's models with inline buttons (eight per
+  page, previous/next navigation). The current model is marked with a check.
+  Only the approved user who opened the menu can use it, in the original
+  chat/topic. Menus expire after 15 minutes or a service restart; opening another
+  menu in the same topic replaces your old one. Discovery failures are reported
+  without exposing provider diagnostics.
+  Selecting a model saves a **chat-wide** override (all topics), effective for
+  the next task, including scheduled agent tasks. Other chats and the global
+  config are unchanged. The choice survives restarts and `/new`; `/status`
+  reports the effective chat model. Changing the configured provider makes
+  overrides from the old provider inactive. Thinking settings remain configured
+  globally; provider discovery does not guarantee model access or compatibility.
+  Switching is rejected while any task in this chat is active. A successful
+  switch invalidates all existing menus in the chat and starts fresh topic
+  history lazily on the next task, including when switching back to an earlier
+  model. Choosing the already-active model retains history. Workspace files and
+  schedules are retained. Callback selection is durable, but a crash before its
+  acknowledgement may require reopening `/models` to confirm.
 - `/help`: list available commands without calling the model.
 - `/new`: clear this topic's conversation, retaining its workspace.
 - `/cancel`: request cancellation of this topic's active task.
@@ -88,7 +106,9 @@ points; attachments and streaming replies are outside v1.
 All commands require an approved user and chat. In groups, use
 `/status@your_bot`, `/status @your_bot`, or reply to the bot with `/status`;
 unaddressed commands and commands for another bot are ignored. Replies preserve
-the original chat/topic and use the durable outbox. Status deliberately excludes
+the original chat/topic and use the durable outbox, including initial model
+keyboards and selection confirmations. Page edits and callback acknowledgements
+are best-effort Telegram requests, not durable deliveries. Status deliberately excludes
 credentials, credential sources/paths, provider URLs, filesystem paths, allowlists,
 and other conversations' content. It does not test provider/network health.
 

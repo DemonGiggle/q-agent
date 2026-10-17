@@ -44,8 +44,12 @@ sandbox execution; strings and other types are rejected.
 For OpenAI, set `provider.name` to `openai`, choose the model, remove the Ollama
 `base_url` or set the desired compatible URL, and export `OPENAI_API_KEY`. For
 OpenCode Go, use `opencode-go`, remove the Ollama URL, and export
-`OPENCODE_GO_API_KEY`. `api_key_env` can override the credential variable. Set
-`provider.thinking` to a supported effort level when desired. Wire routing stays
+`OPENCODE_GO_API_KEY`. `api_key_env` can override the credential variable.
+Alternatively, set `provider.api_key_path` to a file containing the key and
+clear `api_key_env`; the two settings are mutually exclusive. The key file
+must be a regular file owned by the service user with mode `0600` or `0400`,
+must not be a symlink, and is limited to 64 KiB; surrounding whitespace is
+trimmed. Set `provider.thinking` to a supported effort level when desired. Wire routing stays
 pinned to qcode's catalog; adding future protocol routes requires an adapter
 update. The providers share HTTP connections while each conversation retains its
 own persisted OpenCode session identity. `/new` discards that identity.

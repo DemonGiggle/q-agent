@@ -74,6 +74,12 @@ func mainRun() error {
 	}
 	values := redaction.EnvironmentValues()
 	values = append(values, os.Getenv(c.Telegram.TokenEnv), os.Getenv(c.Provider.APIKeyEnv))
+	if c.Provider.APIKeyPath != "" {
+		// Best effort for early diagnostics; serve() enforces the file strictly.
+		if fileKey, err := c.Provider.APIKey(); err == nil && fileKey != "" {
+			values = append(values, fileKey)
+		}
+	}
 	policy, _ := redaction.New(redaction.Config{}, values)
 	log.SetOutput(&redaction.DiagnosticWriter{Policy: policy, Sink: redaction.Terminal, Out: os.Stderr})
 	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
@@ -104,13 +110,23 @@ func serve(ctx context.Context, c config.Config, policy *redaction.Policy, bot *
 	if token == "" {
 		return fmt.Errorf("missing Telegram credential environment variable %s", c.Telegram.TokenEnv)
 	}
-	if c.Provider.Name != "ollama" && os.Getenv(c.Provider.APIKeyEnv) == "" {
+	providerKey, err := c.Provider.APIKey()
+	if err != nil {
+		return err
+	}
+	if c.Provider.Name != "ollama" && providerKey == "" {
+		if c.Provider.APIKeyPath != "" {
+			return fmt.Errorf("missing provider credential file %s (empty)", c.Provider.APIKeyPath)
+		}
 		return fmt.Errorf("missing provider credential environment variable %s", c.Provider.APIKeyEnv)
 	}
 	mode := state.ExecutionHost
 	var workspaces run.Workspaces = &workspace.HostManager{Dir: filepath.Join(c.StateDir, "host-workspaces")}
 	environment, removed := redaction.FilterEnvironment(os.Environ(), c.Telegram.TokenEnv, c.Provider.APIKeyEnv)
 	policy = policy.WithValues(removed)
+	if providerKey != "" {
+		policy = policy.WithValues([]string{providerKey})
+	}
 	var tools run.ToolFactory = func(root string) agent.Tools {
 		return &host.Runner{Options: localtools.Options{WorkingDir: root, Environment: environment, ShellTimeout: c.ShellDuration()}}
 	}
@@ -146,7 +162,7 @@ func serve(ctx context.Context, c config.Config, policy *redaction.Policy, bot *
 	// Every provider instance has its own routing identity and state, while all
 	// completions reuse this transport's connection pool.
 	httpClient := &http.Client{Transport: http.DefaultTransport.(*http.Transport).Clone()}
-	providerConfig := llm.Config{BaseURL: c.Provider.BaseURL, APIKey: os.Getenv(c.Provider.APIKeyEnv), HTTP: httpClient}
+	providerConfig := llm.Config{BaseURL: c.Provider.BaseURL, APIKey: providerKey, HTTP: httpClient}
 	rt := &run.Runtime{Config: c, Store: store, Workspaces: workspaces, Tools: tools, Sink: bot, Options: agent.Options{Model: c.Provider.Model, Thinking: c.Provider.Thinking, MaxSteps: c.Limits.MaxSteps, MaxToolCalls: c.Limits.MaxToolCalls, Redaction: policy}, Report: func(err error) { log.Print(err) }}
 	rt.Providers = func(conversation state.Conversation) (llm.Provider, error) {
 		p, err := llm.New(c.Provider.Name, providerConfig)

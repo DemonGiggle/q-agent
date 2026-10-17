@@ -7,6 +7,10 @@ base_url = "http://127.0.0.1:11434"
 # Credential variable defaults to OPENAI_API_KEY or OPENCODE_GO_API_KEY
 # for those providers. An empty value uses the provider default.
 api_key_env = ""
+# Optional file containing the provider key. Mutually exclusive with
+# api_key_env: clear api_key_env to use it. The file must be a regular
+# file owned by the service user with mode 0600 or 0400, without symlinks.
+# api_key_path = "~/.config/q-agent/provider.key"
 thinking = ""
 
 [telegram]

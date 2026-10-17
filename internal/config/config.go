@@ -6,7 +6,9 @@ import (
 	"io"
 	"os"
 	"path/filepath"
+	"runtime"
 	"strings"
+	"syscall"
 	"time"
 
 	"github.com/pelletier/go-toml/v2"
@@ -20,11 +22,12 @@ type Config struct {
 	Limits   Limits   `toml:"limits"`
 }
 type Provider struct {
-	Name      string `toml:"name"`
-	Model     string `toml:"model"`
-	BaseURL   string `toml:"base_url"`
-	APIKeyEnv string `toml:"api_key_env"`
-	Thinking  string `toml:"thinking"`
+	Name       string `toml:"name"`
+	Model      string `toml:"model"`
+	BaseURL    string `toml:"base_url"`
+	APIKeyEnv  string `toml:"api_key_env"`
+	APIKeyPath string `toml:"api_key_path"`
+	Thinking   string `toml:"thinking"`
 }
 type Telegram struct {
 	TokenEnv      string  `toml:"token_env"`
@@ -72,7 +75,15 @@ func Load(path string) (Config, error) {
 	if c.Provider.Name != "openai" && c.Provider.Name != "ollama" && c.Provider.Name != "opencode-go" {
 		return c, fmt.Errorf("unknown provider %q", c.Provider.Name)
 	}
-	if c.Provider.APIKeyEnv == "" {
+	if c.Provider.APIKeyPath != "" {
+		if c.Provider.APIKeyEnv != "" {
+			return c, fmt.Errorf("provider.api_key_env and provider.api_key_path are mutually exclusive")
+		}
+		c.Provider.APIKeyPath, err = absolute(c.Provider.APIKeyPath, filepath.Dir(path))
+		if err != nil {
+			return c, err
+		}
+	} else if c.Provider.APIKeyEnv == "" {
 		switch c.Provider.Name {
 		case "openai":
 			c.Provider.APIKeyEnv = "OPENAI_API_KEY"
@@ -129,6 +140,80 @@ func absolute(path, base string) (string, error) {
 		path = filepath.Join(base, path)
 	}
 	return filepath.Abs(path)
+}
+
+// maxAPIKeyFileSize bounds key-file reads. Provider keys are short bearer
+// tokens; the limit only guards against misconfigured paths.
+const maxAPIKeyFileSize = 64 * 1024
+
+// APIKey returns the provider credential from api_key_path when configured,
+// otherwise from api_key_env. An empty env name yields an empty key so
+// providers without credentials (ollama defaults) keep working.
+func (p Provider) APIKey() (string, error) {
+	if p.APIKeyPath == "" {
+		if p.APIKeyEnv == "" {
+			return "", nil
+		}
+		return os.Getenv(p.APIKeyEnv), nil
+	}
+	return readAPIKeyFile(p.APIKeyPath)
+}
+
+func checkKeyFile(stat os.FileInfo, path string) error {
+	if stat.Mode()&os.ModeSymlink != 0 {
+		return fmt.Errorf("provider api_key_path %q must not be a symlink", path)
+	}
+	if !stat.Mode().IsRegular() {
+		return fmt.Errorf("provider api_key_path %q must be a regular file", path)
+	}
+	if perm := stat.Mode().Perm(); perm != 0600 && perm != 0400 {
+		return fmt.Errorf("provider api_key_path %q must have mode 0600 or 0400 (has %04o)", path, perm)
+	}
+	if runtime.GOOS == "linux" {
+		native, ok := stat.Sys().(*syscall.Stat_t)
+		if !ok {
+			return fmt.Errorf("provider api_key_path %q ownership unknown", path)
+		}
+		if native.Uid != uint32(os.Getuid()) {
+			return fmt.Errorf("provider api_key_path %q must be owned by the current user", path)
+		}
+	}
+	if stat.Size() > maxAPIKeyFileSize {
+		return fmt.Errorf("provider api_key_path %q exceeds %d bytes", path, maxAPIKeyFileSize)
+	}
+	return nil
+}
+
+// readAPIKeyFile loads a bearer token with owner-only permission checks.
+// Error messages describe the path and the failed check, never the secret.
+func readAPIKeyFile(path string) (string, error) {
+	link, err := os.Lstat(path)
+	if err != nil {
+		return "", fmt.Errorf("provider api_key_path: %w", err)
+	}
+	if err := checkKeyFile(link, path); err != nil {
+		return "", err
+	}
+	f, err := os.Open(path)
+	if err != nil {
+		return "", fmt.Errorf("provider api_key_path: %w", err)
+	}
+	defer f.Close()
+	live, err := f.Stat()
+	if err != nil {
+		return "", fmt.Errorf("provider api_key_path: %w", err)
+	}
+	if err := checkKeyFile(live, path); err != nil {
+		return "", err
+	}
+	data, err := io.ReadAll(io.LimitReader(f, maxAPIKeyFileSize+1))
+	if err != nil {
+		return "", fmt.Errorf("provider api_key_path: %w", err)
+	}
+	if len(data) > maxAPIKeyFileSize {
+		return "", fmt.Errorf("provider api_key_path %q exceeds %d bytes", path, maxAPIKeyFileSize)
+	}
+	return strings.TrimSpace(string(data)), nil
 }
 func (c Config) TaskDuration() time.Duration {
 	d, _ := time.ParseDuration(c.Limits.TaskTimeout)

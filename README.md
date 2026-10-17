@@ -333,3 +333,18 @@ Ollama endpoints with a real sandbox; it checks polling, authorization, tool
 continuation, topic replies, and host state. These tests send no live Telegram
 messages. Test-created rootfs directories are removed through the mapped worker.
 See [VALIDATION.md](VALIDATION.md) for measured results and limitations.
+
+### GitHub Actions CI
+
+The `CI` workflow runs on pull requests targeting `main`, pushes to `main`, and
+manual dispatch. Checks cover the minimum Go version (1.22) and the latest stable
+Go release: formatting, uncached tests (including the mocked host service
+integration), vet, and the static Linux build. A separate Linux amd64 job runs
+uncached race tests with the latest stable Go release and CGO enabled.
+
+CI needs no Telegram/provider credentials and makes no live model requests.
+The opt-in rootless sandbox integration (`make integration`) is not included:
+it requires a Debian image, namespace support, and UID/GID mapping helpers.
+The workflow only validates code; it does not publish binaries or deploy.
+Required-check branch protection must be configured separately in GitHub if
+merges should be blocked by failing CI.

@@ -80,6 +80,12 @@ func mainRun() error {
 			values = append(values, fileKey)
 		}
 	}
+	if c.Telegram.TokenPath != "" {
+		// Best effort for early diagnostics; serve() enforces the file strictly.
+		if fileToken, err := c.Telegram.Token(); err == nil && fileToken != "" {
+			values = append(values, fileToken)
+		}
+	}
 	policy, _ := redaction.New(redaction.Config{}, values)
 	log.SetOutput(&redaction.DiagnosticWriter{Policy: policy, Sink: redaction.Terminal, Out: os.Stderr})
 	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
@@ -96,7 +102,16 @@ func mainRun() error {
 		fmt.Println("Base image ready:", c.Sandbox.BaseImage)
 		return nil
 	}
-	return serve(ctx, c, policy, telegram.New(os.Getenv(c.Telegram.TokenEnv)))
+	return serve(ctx, c, policy, telegram.New(botToken(c)))
+}
+
+func botToken(c config.Config) string {
+	// Best effort for client construction; serve() resolves strictly and
+	// reports permission errors before any network work.
+	if token, err := c.Telegram.Token(); err == nil {
+		return token
+	}
+	return ""
 }
 
 func serve(ctx context.Context, c config.Config, policy *redaction.Policy, bot *telegram.Client) error {
@@ -106,8 +121,14 @@ func serve(ctx context.Context, c config.Config, policy *redaction.Policy, bot *
 	if len(c.Telegram.ApprovedUsers) == 0 || len(c.Telegram.ApprovedChats) == 0 {
 		return fmt.Errorf("approved_user_ids and approved_chat_ids are both required")
 	}
-	token := os.Getenv(c.Telegram.TokenEnv)
+	token, err := c.Telegram.Token()
+	if err != nil {
+		return err
+	}
 	if token == "" {
+		if c.Telegram.TokenPath != "" {
+			return fmt.Errorf("missing Telegram credential file %s (empty)", c.Telegram.TokenPath)
+		}
 		return fmt.Errorf("missing Telegram credential environment variable %s", c.Telegram.TokenEnv)
 	}
 	providerKey, err := c.Provider.APIKey()
@@ -124,6 +145,9 @@ func serve(ctx context.Context, c config.Config, policy *redaction.Policy, bot *
 	var workspaces run.Workspaces = &workspace.HostManager{Dir: filepath.Join(c.StateDir, "host-workspaces")}
 	environment, removed := redaction.FilterEnvironment(os.Environ(), c.Telegram.TokenEnv, c.Provider.APIKeyEnv)
 	policy = policy.WithValues(removed)
+	if token != "" {
+		policy = policy.WithValues([]string{token})
+	}
 	if providerKey != "" {
 		policy = policy.WithValues([]string{providerKey})
 	}

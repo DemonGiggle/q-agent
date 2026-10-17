@@ -31,6 +31,7 @@ type Provider struct {
 }
 type Telegram struct {
 	TokenEnv      string  `toml:"token_env"`
+	TokenPath     string  `toml:"token_path"`
 	ApprovedUsers []int64 `toml:"approved_user_ids"`
 	ApprovedChats []int64 `toml:"approved_chat_ids"`
 }
@@ -56,6 +57,11 @@ func Defaults() Config {
 }
 func Load(path string) (Config, error) {
 	c := Defaults()
+	// Clear the default credential name before decoding so an omitted
+	// token_env stays empty and can be distinguished from an explicitly
+	// configured one. The default is restored below when no token_path
+	// is configured.
+	c.Telegram.TokenEnv = ""
 	f, err := os.Open(path)
 	if err != nil {
 		return c, err
@@ -90,6 +96,17 @@ func Load(path string) (Config, error) {
 		case "opencode-go":
 			c.Provider.APIKeyEnv = "OPENCODE_GO_API_KEY"
 		}
+	}
+	if c.Telegram.TokenPath != "" {
+		if c.Telegram.TokenEnv != "" {
+			return c, fmt.Errorf("telegram.token_env and telegram.token_path are mutually exclusive")
+		}
+		c.Telegram.TokenPath, err = absolute(c.Telegram.TokenPath, filepath.Dir(path))
+		if err != nil {
+			return c, err
+		}
+	} else if c.Telegram.TokenEnv == "" {
+		c.Telegram.TokenEnv = "TELEGRAM_BOT_TOKEN"
 	}
 	if c.Provider.Model == "" {
 		return c, fmt.Errorf("provider.model is required")
@@ -142,9 +159,13 @@ func absolute(path, base string) (string, error) {
 	return filepath.Abs(path)
 }
 
-// maxAPIKeyFileSize bounds key-file reads. Provider keys are short bearer
-// tokens; the limit only guards against misconfigured paths.
-const maxAPIKeyFileSize = 64 * 1024
+// maxCredentialFileSize bounds credential-file reads. Provider keys and
+// Telegram tokens are short bearer tokens; the limit only guards against
+// misconfigured paths.
+const maxCredentialFileSize = 64 * 1024
+
+// maxAPIKeyFileSize is retained for compatibility with existing callers.
+const maxAPIKeyFileSize = maxCredentialFileSize
 
 // APIKey returns the provider credential from api_key_path when configured,
 // otherwise from api_key_env. An empty env name yields an empty key so
@@ -156,64 +177,86 @@ func (p Provider) APIKey() (string, error) {
 		}
 		return os.Getenv(p.APIKeyEnv), nil
 	}
-	return readAPIKeyFile(p.APIKeyPath)
+	return readCredentialFile(p.APIKeyPath, "provider api_key_path")
 }
 
-func checkKeyFile(stat os.FileInfo, path string) error {
+// Token returns the Telegram credential from token_path when configured,
+// otherwise from token_env.
+func (t Telegram) Token() (string, error) {
+	if t.TokenPath == "" {
+		if t.TokenEnv == "" {
+			return "", nil
+		}
+		return os.Getenv(t.TokenEnv), nil
+	}
+	return readCredentialFile(t.TokenPath, "telegram token_path")
+}
+
+func checkCredentialFile(stat os.FileInfo, path, label string) error {
 	if stat.Mode()&os.ModeSymlink != 0 {
-		return fmt.Errorf("provider api_key_path %q must not be a symlink", path)
+		return fmt.Errorf("%s %q must not be a symlink", label, path)
 	}
 	if !stat.Mode().IsRegular() {
-		return fmt.Errorf("provider api_key_path %q must be a regular file", path)
+		return fmt.Errorf("%s %q must be a regular file", label, path)
 	}
 	if perm := stat.Mode().Perm(); perm != 0600 && perm != 0400 {
-		return fmt.Errorf("provider api_key_path %q must have mode 0600 or 0400 (has %04o)", path, perm)
+		return fmt.Errorf("%s %q must have mode 0600 or 0400 (has %04o)", label, path, perm)
 	}
 	if runtime.GOOS == "linux" {
 		native, ok := stat.Sys().(*syscall.Stat_t)
 		if !ok {
-			return fmt.Errorf("provider api_key_path %q ownership unknown", path)
+			return fmt.Errorf("%s %q ownership unknown", label, path)
 		}
 		if native.Uid != uint32(os.Getuid()) {
-			return fmt.Errorf("provider api_key_path %q must be owned by the current user", path)
+			return fmt.Errorf("%s %q must be owned by the current user", label, path)
 		}
 	}
-	if stat.Size() > maxAPIKeyFileSize {
-		return fmt.Errorf("provider api_key_path %q exceeds %d bytes", path, maxAPIKeyFileSize)
+	if stat.Size() > maxCredentialFileSize {
+		return fmt.Errorf("%s %q exceeds %d bytes", label, path, maxCredentialFileSize)
 	}
 	return nil
+}
+
+func checkKeyFile(stat os.FileInfo, path string) error {
+	return checkCredentialFile(stat, path, "provider api_key_path")
+}
+
+// readCredentialFile loads a bearer token with owner-only permission checks.
+// Error messages describe the path and the failed check, never the secret.
+func readCredentialFile(path, label string) (string, error) {
+	link, err := os.Lstat(path)
+	if err != nil {
+		return "", fmt.Errorf("%s: %w", label, err)
+	}
+	if err := checkCredentialFile(link, path, label); err != nil {
+		return "", err
+	}
+	f, err := os.Open(path)
+	if err != nil {
+		return "", fmt.Errorf("%s: %w", label, err)
+	}
+	defer f.Close()
+	live, err := f.Stat()
+	if err != nil {
+		return "", fmt.Errorf("%s: %w", label, err)
+	}
+	if err := checkCredentialFile(live, path, label); err != nil {
+		return "", err
+	}
+	data, err := io.ReadAll(io.LimitReader(f, maxCredentialFileSize+1))
+	if err != nil {
+		return "", fmt.Errorf("%s: %w", label, err)
+	}
+	if len(data) > maxCredentialFileSize {
+		return "", fmt.Errorf("%s %q exceeds %d bytes", label, path, maxCredentialFileSize)
+	}
+	return strings.TrimSpace(string(data)), nil
 }
 
 // readAPIKeyFile loads a bearer token with owner-only permission checks.
 // Error messages describe the path and the failed check, never the secret.
 func readAPIKeyFile(path string) (string, error) {
-	link, err := os.Lstat(path)
-	if err != nil {
-		return "", fmt.Errorf("provider api_key_path: %w", err)
-	}
-	if err := checkKeyFile(link, path); err != nil {
-		return "", err
-	}
-	f, err := os.Open(path)
-	if err != nil {
-		return "", fmt.Errorf("provider api_key_path: %w", err)
-	}
-	defer f.Close()
-	live, err := f.Stat()
-	if err != nil {
-		return "", fmt.Errorf("provider api_key_path: %w", err)
-	}
-	if err := checkKeyFile(live, path); err != nil {
-		return "", err
-	}
-	data, err := io.ReadAll(io.LimitReader(f, maxAPIKeyFileSize+1))
-	if err != nil {
-		return "", fmt.Errorf("provider api_key_path: %w", err)
-	}
-	if len(data) > maxAPIKeyFileSize {
-		return "", fmt.Errorf("provider api_key_path %q exceeds %d bytes", path, maxAPIKeyFileSize)
-	}
-	return strings.TrimSpace(string(data)), nil
+	return readCredentialFile(path, "provider api_key_path")
 }
 func (c Config) TaskDuration() time.Duration {
 	d, _ := time.ParseDuration(c.Limits.TaskTimeout)

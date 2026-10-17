@@ -37,6 +37,10 @@ export TELEGRAM_BOT_TOKEN='your BotFather token'
 ./bin/q-agent serve --config config.toml
 ```
 
+Alternatively, set `telegram.token_path` to a file containing the bot token
+and clear `token_env`; the two settings are mutually exclusive. The token
+file follows the same strict rules as the provider key file.
+
 `sandbox.enabled` defaults to `false`. Omitting it selects host execution even
 when other sandbox settings are present. Only the TOML boolean `true` enables
 sandbox execution; strings and other types are rejected.

@@ -15,6 +15,9 @@ thinking = ""
 
 [telegram]
 token_env = "TELEGRAM_BOT_TOKEN"
+# Optional file containing the Telegram bot token. Mutually exclusive with
+# token_env: clear token_env to use it. Same strict file rules as api_key_path.
+# token_path = "~/.config/q-agent/telegram.token"
 approved_user_ids = [123456789]
 approved_chat_ids = [123456789, -1001234567890]
 

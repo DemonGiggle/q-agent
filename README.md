@@ -94,7 +94,7 @@ export TELEGRAM_BOT_TOKEN='your BotFather token'
 ./bin/q-agent serve
 ```
 
-All commands use `~/.config/q-agent/config.toml` by default. Use `--config FILE`
+Runtime and configuration commands use `~/.config/q-agent/config.toml` by default. Use `--config FILE`
 to select another configuration file.
 
 Open your bot's private chat and send a message. Try `/status` to see your setup
@@ -105,6 +105,21 @@ reply to it, or send `/ask@your_bot <request>`. Replies stay in the original top
 See the [group setup details](docs/operations.md#setup).
 
 ## Your everyday controls
+
+### Upgrade q-agent
+
+```sh
+q-agent version
+q-agent update
+```
+
+The update command installs the latest GitHub Release for Linux amd64 or arm64
+over the executable you invoked. If you run from the source checkout, use
+`./bin/q-agent update`. It preserves configuration and chat data; restart your
+running service when ready to use the new version. See the
+[upgrade guide](docs/operations.md#upgrading) for permissions and release details.
+
+### Telegram commands
 
 | Command | What it does |
 | --- | --- |

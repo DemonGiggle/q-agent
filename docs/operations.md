@@ -378,6 +378,70 @@ continuation, topic replies, and host state. These tests send no live Telegram
 messages. Test-created rootfs directories are removed through the mapped worker.
 See [VALIDATION.md](../VALIDATION.md) for measured results and limitations.
 
+## Upgrading
+
+Like qcode, q-agent can replace its own executable with the latest published
+GitHub Release:
+
+```sh
+q-agent version                 # --version is also supported
+q-agent update
+q-agent update --arch arm64      # optional architecture override
+q-agent update --help
+```
+
+The default architecture is the running binary's architecture. Only Linux
+amd64 and arm64 releases are supported. `--arch` also accepts aliases such as
+`aarch64` and `x86_64`, or `linux/arm64`; a different OS is rejected. An override
+can install a binary that cannot run on your current host, so normally omit it.
+
+The updater queries `DemonGiggle/q-agent` on GitHub, compares semantic versions,
+and downloads the matching `q-agent_linux_amd64` or `q-agent_linux_arm64` asset.
+An equal or newer installed version is left unchanged. Untagged source builds
+report `dev` and can update to the latest release. No published release, missing
+asset, network failure, or a non-writable installation produces an error rather
+than falling back to another source or invoking sudo.
+
+Use the executable path you actually run (for example `./bin/q-agent update`).
+Symlinks are preserved and their resolved executable is replaced. The account
+running the update needs write access to the executable's directory. A completed
+download is synced and atomically renamed over the old binary, preserving its
+permission bits. Failed or empty downloads leave the installed binary intact.
+Download URLs must belong to this repository's HTTPS GitHub release path. As in
+qcode, trust is in GitHub HTTPS and the release publisher, not a separate
+signature or checksum verification step.
+
+Updates never read or change your TOML, credentials, chat state, workspaces, or
+base image, and do not stop or restart the running service. That process keeps
+running the old executable until restarted. Wait for active tasks to finish,
+then restart using your usual service manager. When sandbox mode is enabled,
+stop the service before upgrading so newly spawned workers cannot differ from
+the running host version; update any separately configured worker binary too.
+
+### Building and publishing releases
+
+`make build` injects an exact HEAD tag, or `dev` for an untagged checkout.
+`make build VERSION=v1.2.3` overrides that value. `make release VERSION=v1.2.3`
+builds static binaries in `dist/` for both supported architectures.
+
+After merging, maintainers can publish a stable `vMAJOR.MINOR.PATCH` tag
+(two-component tags such as `v0.1` also work) and attach both raw binaries:
+
+```sh
+go test -race -count=1 -timeout 5m ./...
+go vet ./...
+git tag v0.1.0
+make release VERSION=v0.1.0
+git push origin v0.1.0
+gh release create v0.1.0 dist/q-agent_linux_amd64 dist/q-agent_linux_arm64 \
+  --verify-tag --generate-notes
+```
+
+Run this from the reviewed main commit you intend to release, substituting
+your version for `v0.1.0`. CI and `make release` do not publish anything by
+themselves. `q-agent update` needs at least one published stable release;
+it cannot bootstrap a binary that predates the update command.
+
 ### GitHub Actions CI
 
 The `CI` workflow runs on pull requests targeting `main`, pushes to `main`, and

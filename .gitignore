@@ -1,4 +1,5 @@
 /bin/
+/dist/
 /.test-state/
 /config.json
 /.test-config.json

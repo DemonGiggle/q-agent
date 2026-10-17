@@ -8,9 +8,23 @@ sandbox use the same unit. There is no separate daemon process or root service.
 
 ## Install and configure
 
-Build or download a Linux release binary, then put it at a permanent,
-user-writable path. Run these commands **as the intended service account,
-without sudo**:
+The recommended executable location is **`~/.local/bin/q-agent`**. It keeps the
+binary outside your source checkout or Downloads folder, at a permanent path
+owned by the service account. Configuration and state stay separately in
+`~/.config/q-agent/` and `~/.local/share/q-agent/`.
+
+Run the following commands **as the intended service account, without sudo**.
+For a downloaded release, extract the archive matching your architecture, then
+install the executable. This example uses v0.1.0 for x86_64:
+
+```sh
+tar -xzf q-agent_v0.1.0_linux_amd64.tar.gz
+install -D -m 0755 ./q-agent "$HOME/.local/bin/q-agent"
+"$HOME/.local/bin/q-agent" service install
+```
+
+For aarch64, use `q-agent_v0.1.0_linux_arm64.tar.gz` instead. The binary is named
+`q-agent` inside either archive. If building from a source checkout, use:
 
 ```sh
 make build
@@ -191,13 +205,19 @@ outside; networking deliberately remains available through the host network.
 
 ## Upgrade or remove the unit
 
-Wait for active tasks, stop the service, update the installed binary, and restart:
+For an archive release, extract the new package matching your architecture in a
+download directory. Wait for active tasks, then stop the service, replace the
+installed executable from that directory, and restart:
 
 ```sh
 systemctl --user stop q-agent.service
-"$HOME/.local/bin/q-agent" update
+install -D -m 0755 ./q-agent "$HOME/.local/bin/q-agent"
 systemctl --user start q-agent.service
 ```
+
+Keep your existing configuration and state; do not replace them with the
+archive's example configuration. The updater in v0.1.0 expects raw binary assets
+and cannot install the `.tar.gz` release packages, so use this manual procedure.
 
 A binary/config change at the same path needs a restart, not a daemon reload.
 A unit-file change needs `daemon-reload` too. If moving the binary/config, review

@@ -106,10 +106,16 @@ See the [group setup details](docs/operations.md#setup).
 
 ### Keep it running with systemd
 
+Use **`~/.local/bin/q-agent`** as the permanent executable location. From a source
+checkout:
+
 ```sh
 install -D -m 0755 ./bin/q-agent "$HOME/.local/bin/q-agent"
 "$HOME/.local/bin/q-agent" service install
 ```
+
+For an extracted release archive, use `./q-agent` instead of `./bin/q-agent`.
+Run the installer as your normal service account, without `sudo`.
 
 This installs a **user service** and creates a private config template only if
 missing. Review the config, allowlists and credential files, then enable it with

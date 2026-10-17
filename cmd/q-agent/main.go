@@ -187,7 +187,7 @@ func serve(ctx context.Context, c config.Config, policy *redaction.Policy, bot *
 	// completions reuse this transport's connection pool.
 	httpClient := &http.Client{Transport: http.DefaultTransport.(*http.Transport).Clone()}
 	providerConfig := llm.Config{BaseURL: c.Provider.BaseURL, APIKey: providerKey, HTTP: httpClient}
-	rt := &run.Runtime{Config: c, Store: store, Workspaces: workspaces, Tools: tools, Sink: bot, Options: agent.Options{Model: c.Provider.Model, Thinking: c.Provider.Thinking, MaxSteps: c.Limits.MaxSteps, MaxToolCalls: c.Limits.MaxToolCalls, Redaction: policy}, Report: func(err error) { log.Print(err) }}
+	rt := &run.Runtime{Config: c, Store: store, Workspaces: workspaces, Tools: tools, Sink: bot, Options: agent.Options{Model: c.Provider.Model, Thinking: c.Provider.Thinking, MaxSteps: c.Limits.MaxSteps, MaxToolCalls: c.Limits.MaxToolCalls, Redaction: policy, Logger: log.Default()}, Report: func(err error) { log.Print(err) }}
 	rt.Providers = func(conversation state.Conversation) (llm.Provider, error) {
 		p, err := llm.New(c.Provider.Name, providerConfig)
 		if err != nil {
@@ -228,11 +228,17 @@ func serve(ctx context.Context, c config.Config, policy *redaction.Policy, bot *
 			continue
 		}
 		sort.Slice(updates, func(i, j int) bool { return updates[i].ID < updates[j].ID })
+		if len(updates) > 0 {
+			log.Printf("telegram poll updates=%d cursor=%d", len(updates), store.Cursor())
+		}
 		for _, update := range updates {
 			message, ok := telegram.Normalize(update, identity)
 			if ok {
 				err = rt.Handle(ctx, message)
 			} else {
+				// Console-only: group messages without a mention/reply and
+				// non-text updates are filtered here and never reach Handle.
+				log.Printf("telegram update=%d ignored (not addressed to @%s or non-text)", update.ID, identity.Username)
 				_, err = store.Accept(update.ID)
 			}
 			if err != nil {

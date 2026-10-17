@@ -4,6 +4,9 @@ package runtime
 import (
 	"context"
 	"fmt"
+	"strings"
+	"time"
+
 	"q-agent/internal/agent"
 	"q-agent/internal/config"
 	"q-agent/internal/llm"
@@ -56,20 +59,47 @@ func (r *Runtime) report(err error) {
 		r.Report(err)
 	}
 }
+
+// logf writes to the console only via Options.Logger. It never reaches
+// Telegram: Telegram output flows only through Store.Queue in reply().
+func (r *Runtime) logf(format string, args ...any) {
+	if r.Options.Logger == nil {
+		return
+	}
+	r.Options.Logger.Printf(format, args...)
+}
+
+func preview(text string) string {
+	text = strings.TrimSpace(text)
+	text = strings.Join(strings.Fields(text), " ")
+	const limit = 120
+	if len(text) > limit {
+		return text[:limit] + "…"
+	}
+	return text
+}
 func (r *Runtime) reply(m platform.Message, text string) error {
 	return r.Store.Queue(m, telegram.Split(text))
 }
 
 // Handle commits the update before doing work. Authorized commands use the
 // same path as prompts, and provisioning consumes the same concurrency slot.
+// All progress logs here are console-only; user-visible replies go through reply().
 func (r *Runtime) Handle(ctx context.Context, m platform.Message) error {
 	accepted, err := r.Store.Accept(m.UpdateID)
-	if err != nil || !accepted {
+	if err != nil {
+		r.logf("telegram update=%d accept error: %q", m.UpdateID, r.Options.Redaction.Text(redaction.Terminal, err.Error()))
 		return err
 	}
-	if !r.allowed(m) {
+	if !accepted {
+		r.logf("telegram update=%d duplicate, skipping", m.UpdateID)
 		return nil
 	}
+	if !r.allowed(m) {
+		r.logf("telegram update=%d chat=%d topic=%d user=%d rejected (not approved)", m.UpdateID, m.ChatID, m.TopicID, m.UserID)
+		return nil
+	}
+	r.logf("telegram update=%d chat=%d topic=%d user=%d text=%q", m.UpdateID, m.ChatID, m.TopicID, m.UserID, r.Options.Redaction.Text(redaction.Terminal, preview(m.Text)))
 	r.mu.Lock()
 	if r.active == nil {
 		r.active = map[string]task{}
@@ -84,21 +114,26 @@ func (r *Runtime) Handle(ctx context.Context, m platform.Message) error {
 	case "/cancel":
 		if busy && active.topic == m.TopicID {
 			active.cancel()
+			r.logf("telegram update=%d cancel accepted, stopping active task", m.UpdateID)
 			r.mu.Unlock()
 			return r.reply(m, "Cancellation requested.")
 		}
+		r.logf("telegram update=%d cancel with no active task", m.UpdateID)
 		r.mu.Unlock()
 		return r.reply(m, "No active task in this conversation.")
 	case "/new":
 		if busy && active.topic == m.TopicID {
+			r.logf("telegram update=%d /new rejected, conversation busy", m.UpdateID)
 			r.mu.Unlock()
 			return r.reply(m, "This conversation is busy. Use /cancel before /new.")
 		}
 		err := r.Store.Reset(m.ConversationKey())
 		r.mu.Unlock()
 		if err != nil {
+			r.logf("telegram update=%d /new reset error: %q", m.UpdateID, err.Error())
 			return err
 		}
+		r.logf("telegram update=%d /new cleared conversation", m.UpdateID)
 		return r.reply(m, "Conversation cleared. Workspace retained.")
 	}
 	limit := r.Config.Limits.MaxConcurrent
@@ -106,6 +141,7 @@ func (r *Runtime) Handle(ctx context.Context, m platform.Message) error {
 		limit = 2
 	}
 	if busy || len(r.active) >= limit {
+		r.logf("telegram update=%d busy (workspace busy=%t active=%d/%d), replying busy", m.UpdateID, busy, len(r.active), limit)
 		r.mu.Unlock()
 		return r.reply(m, "Busy. Try again when the active task finishes.")
 	}
@@ -113,6 +149,7 @@ func (r *Runtime) Handle(ctx context.Context, m platform.Message) error {
 	r.active[key] = task{topic: m.TopicID, cancel: cancel}
 	r.wg.Add(1)
 	r.mu.Unlock()
+	r.logf("telegram update=%d queued, starting run", m.UpdateID)
 	go func() {
 		defer r.wg.Done()
 		defer cancel()
@@ -127,15 +164,19 @@ func (r *Runtime) run(ctx context.Context, m platform.Message) {
 		stopTyping = startTyping(ctx, r.Sink, m)
 	}
 	defer stopTyping()
+	runStart := time.Now()
+	r.logf("run start update=%d chat=%d topic=%d model=%q", m.UpdateID, m.ChatID, m.TopicID, r.Config.Provider.Model)
 	answer := ""
 	var runErr error
 	root, err := r.Workspaces.Ensure(ctx, m)
 	if err != nil {
 		runErr = fmt.Errorf("workspace provisioning: %w", err)
+		r.logf("run update=%d provisioning error after=%s err=%q", m.UpdateID, time.Since(runStart).Truncate(time.Millisecond), r.Options.Redaction.Text(redaction.Terminal, runErr.Error()))
 	} else {
 		conversation, err := r.Store.Load(m.ConversationKey())
 		if err != nil {
 			runErr = err
+			r.logf("run update=%d load history error after=%s err=%q", m.UpdateID, time.Since(runStart).Truncate(time.Millisecond), r.Options.Redaction.Text(redaction.Terminal, err.Error()))
 		} else {
 			if conversation.Provider != r.Config.Provider.Name || conversation.Model != r.Config.Provider.Model {
 				conversation = state.Conversation{Provider: r.Config.Provider.Name, Model: r.Config.Provider.Model}
@@ -150,15 +191,20 @@ func (r *Runtime) run(ctx context.Context, m platform.Message) {
 				// Save routing identity before the first request, including empty history.
 				if err = r.Store.Save(m.ConversationKey(), conversation); err != nil {
 					runErr = err
+					r.logf("run update=%d save identity error after=%s err=%q", m.UpdateID, time.Since(runStart).Truncate(time.Millisecond), r.Options.Redaction.Text(redaction.Terminal, err.Error()))
 				} else {
 					result, err := agent.Run(ctx, provider, r.Tools(root), conversation.Messages(), m.Text, r.Options)
 					answer = result.Answer
 					runErr = err
 					if err == nil {
+						r.logf("run update=%d agent ok after=%s steps=%d tools=%d usage=%d/%d/%d answer_len=%d", m.UpdateID, time.Since(runStart).Truncate(time.Millisecond), result.ModelSteps, result.ToolCalls, result.Usage.InputTokens, result.Usage.OutputTokens, result.Usage.TotalTokens, len(answer))
 						conversation.Pairs = append(conversation.Pairs, state.Pair{User: m.Text, Answer: answer})
 						if err = r.Store.Save(m.ConversationKey(), conversation); err != nil {
 							runErr = fmt.Errorf("save history: %w", err)
+							r.logf("run update=%d save history error after=%s err=%q", m.UpdateID, time.Since(runStart).Truncate(time.Millisecond), r.Options.Redaction.Text(redaction.Terminal, err.Error()))
 						}
+					} else {
+						r.logf("run update=%d agent error after=%s err=%q", m.UpdateID, time.Since(runStart).Truncate(time.Millisecond), r.Options.Redaction.Text(redaction.Terminal, err.Error()))
 					}
 				}
 			}
@@ -173,8 +219,14 @@ func (r *Runtime) run(ctx context.Context, m platform.Message) {
 			answer = "Task failed: " + r.Options.Redaction.Text(redaction.Remote, runErr.Error())
 		}
 		r.report(runErr)
+		r.logf("run update=%d failed after=%s err=%q", m.UpdateID, time.Since(runStart).Truncate(time.Millisecond), r.Options.Redaction.Text(redaction.Terminal, runErr.Error()))
+	} else {
+		r.logf("run update=%d done after=%s answer_len=%d", m.UpdateID, time.Since(runStart).Truncate(time.Millisecond), len(answer))
 	}
-	r.report(r.reply(m, answer))
+	if err := r.reply(m, answer); err != nil {
+		r.logf("run update=%d reply queue error after=%s err=%q", m.UpdateID, time.Since(runStart).Truncate(time.Millisecond), r.Options.Redaction.Text(redaction.Terminal, err.Error()))
+		r.report(err)
+	}
 }
 func (r *Runtime) Close() {
 	r.mu.Lock()

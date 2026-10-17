@@ -108,7 +108,8 @@ explains rootless operation and subordinate IDs.
 - `/cancel` (or `/cancel@your_bot`): cancel this conversation's active request.
   Changes already made to its filesystem persist.
 
-The model can call `read`, `list`, `search`, `write`, `edit`, and `shell`. In host
+The model can call `read`, `list`, `search`, `write`, `edit`, and `shell`, plus
+the host-managed `schedule_create`, `schedule_list`, and `schedule_delete` tools. In host
 mode, relative paths resolve under the chat's persistent folder and absolute
 paths refer to the host filesystem. In sandbox mode, absolute paths refer to the
 sandbox root and relative paths resolve under `/workspace`. The system prompt
@@ -175,7 +176,8 @@ workspaces/<chat-hash>/owner.json        permanent ownership
 workspaces/<chat-hash>/rootfs/           independently writable Debian tree
 conversations/<conversation-hash>.json  provider identity and bounded text pairs
 cursor.json                            last accepted Telegram update ID
-outbox.json                            completed replies and delivery progress
+outbox.json                            completed interactive replies and delivery progress
+schedules.json                         schedules, durable runs, scheduled reply progress
 mapping.json                           permanent service/subordinate mapping
 execution.json                         last execution mode
 serve.lock                             exclusive process lock
@@ -193,7 +195,8 @@ separate, and files are never migrated between modes.
 Update IDs are committed before agent work; duplicates and interrupted tasks do
 not execute again after restart. Completed replies retry through the outbox and
 resume at the last committed chunk. A lost network acknowledgement can duplicate
-a reply chunk; it cannot rerun the task. There is no durable task queue.
+a reply chunk; it cannot rerun the task. Interactive tasks still have no durable task queue; scheduled tasks use the
+durable run queue described below.
 
 Defaults are two concurrent requests across different chats, one request per
 chat including provisioning, eight model steps, sixteen tool calls, a five-minute
@@ -209,7 +212,79 @@ allocations unchanged when restoring. Updating the base image affects future
 sandbox workspaces; existing rootfs changes remain in place. Runtime requires Linux; the core, provider interfaces,
 normalized messages, and HTTP adapter compile independently of that requirement.
 LINE, UI, multi-agent orchestration, skills, learning, web tools, attachments,
-streaming replies, durable jobs, and container orchestration are deferred.
+streaming replies, distributed jobs, and container orchestration are deferred.
+
+## Persistent schedules
+
+Ask the agent in an authorized chat/topic, for example:
+
+- “Remind me to pick up my keyboard today at 12:30, Asia/Taipei.”
+- “Every day at 09:00 Asia/Taipei, inspect this repo and summarize changes.”
+- “List my schedules” or “Delete schedule <id>.”
+
+The agent uses host-managed tools (also available in sandbox mode):
+
+- `schedule_create`: `kind` (`reminder` or `agent`), `text` (up to 8192 bytes),
+  `at` (first occurrence, a future RFC3339 timestamp with explicit UTC offset),
+  `repeat` (`once`, `daily`, `weekly`), and `timezone` (IANA name).
+- `schedule_list`: this user's schedules in this topic (10 per page, optional
+  `offset`, follow `next_offset` until -1) and the last 5 retained runs, including
+  statuses and reply delivery cursors. Text is previewed to keep output bounded.
+- `schedule_delete`: remove an owned schedule by `id`, cancelling pending runs.
+  Already running work is unaffected; `/cancel` in its topic stops it. `/new`
+  clears conversation history, not schedules. Delete completed one-time
+  schedules when no longer needed.
+
+Schedules retain their creating user, chat, and topic. Tool callers cannot
+supply another destination or inspect/delete another user's schedules.
+Authorization is checked again before execution. Revoked pending tasks become
+`cancelled` without sending a notification. Scheduled work uses the current
+provider, execution mode, and conversation history at execution time. Pure
+reminders bypass the model and tools entirely; agent jobs share provisioning,
+workspace exclusion (one task per chat across topics), global concurrency limits,
+timeouts, history, and cancellation with interactive requests. Busy scheduled
+jobs remain queued; interactive requests retain the existing Busy behavior.
+
+A single goroutine scans immediately on startup and on each wall-clock minute
+boundary. Expected scan lateness is 0–60 seconds, plus any worker or network
+wait. A task finishing wakes the dispatcher so queued work need not wait for the
+next minute. Only occurrences up to five minutes late are admitted after missed
+scans/restarts. Daily/weekly downtime is coalesced to the latest due occurrence;
+older occurrences are not replayed. Stale/overlapping occurrences are recorded
+as `missed`, and the schedule advances from its wall-clock cadence, never from
+completion time. One pending/running occurrence per schedule prevents overlap.
+Once admitted, a run does not expire while waiting for capacity. Recurrences use
+the specified timezone and local wall time; nonexistent DST times are skipped
+and ambiguous DST times run once. The first occurrence is exactly `at`; the next
+weekly occurrence uses its local weekday.
+
+Schedules and runs live in one atomically replaced, synced `schedules.json`.
+Advancing `next_run_at` and enqueuing the unique `(schedule ID, scheduled time)`
+run are a single commit. Channels only wake dispatch; they never hold the sole
+copy of a task. Successful repeated identical create calls return the same
+schedule. The store permits 100 schedules per conversation, applies backpressure
+at 1000 outstanding runs/replies, and retains up to 1000 fully delivered
+terminal run records globally. Pending work and undelivered output are never pruned.
+At capacity, unadmitted schedules remain due; the normal grace policy applies
+when capacity returns. Missed counters count recorded/coalesced occurrences,
+not every historical recurrence during a long outage.
+
+Workers persist `running` before agent work. A crash at that point has unknown
+side effects: startup marks it `interrupted`, queues a notification, and **does
+not automatically retry it**. Failed/timed-out agent runs also do not retry.
+Pending runs survive restart. A completed run and its reply chunks are committed
+in the same record; scheduled reply IDs are independent of Telegram UpdateIDs.
+Delivery resumes from its saved chunk, alternating ordinary and scheduled output
+so one failed destination does not block the other queue. Network acknowledgement
+ambiguity can still duplicate a reply chunk. This is not an exactly-once guarantee
+for external side effects. State write errors are reported to the service log;
+if an agent's final commit fails, its persisted running record is conservatively
+recovered as interrupted on restart, not executed again.
+
+No Redis, database service, OS cron, or additional Go dependency is required.
+This is a bounded, single-process scheduler, protected by the existing serve
+lock; arbitrary cron expressions, automatic retries, second-level timing, and
+multi-process workers are outside this version.
 
 ## Verification
 

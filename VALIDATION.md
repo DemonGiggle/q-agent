@@ -162,3 +162,30 @@ isolation, provisioning-failure, process-cleanup, and package-persistence checks
 
 All Telegram and provider endpoints in service tests were mocked. No live messages
 or paid model requests were sent, and qcode's working tree remained unchanged.
+
+## Persistent scheduler (2026-10-17)
+
+Added deterministic store/runtime coverage for durable due admission and
+idempotency, five-minute grace boundaries, long-downtime daily/weekly coalescing,
+local-time/DST recurrence, pending/running restart recovery, scheduled reply
+chunk resumption, failed atomic-write rollback, chat/topic/user ownership,
+delete/cancel/authorization revocation, workspace/global concurrency limits,
+worker-completion wakeups, no-LLM reminders, failed-job non-retry, queue
+backpressure, terminal-history retention, bounded list pagination, and fairness
+between scheduled and ordinary reply queues.
+
+Validation on the implementation host:
+
+- `go test ./...`: passed.
+- `go vet ./...`: passed.
+- `make build`: passed.
+- `make integration-host`: passed (mock Telegram/Ollama, real host tools).
+- `go test -race ./...`: unavailable on this host; every instrumented binary
+  exited before tests with `ThreadSanitizer: unsupported VMA range` / `Found 47 -
+  Supported 48`. This is not a passing race check; rerun on a supported host.
+- Full rootless sandbox integration was not run for this change. Existing
+  ordinary sandbox unit tests passed; scheduler tools execute in the host and
+  preserve the wrapped runner's execution-mode system prompt.
+
+Tests create local temporary state and send no live Telegram messages. No
+production service, configuration, or schedule was changed during validation.

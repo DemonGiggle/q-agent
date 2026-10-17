@@ -26,22 +26,26 @@ type Sink interface {
 	Typing(context.Context, platform.Message) error
 }
 type task struct {
-	topic  int64
-	cancel context.CancelFunc
+	topic         int64
+	cancel        context.CancelFunc
+	userCancelled bool
 }
 type Runtime struct {
-	Config     config.Config
-	Store      *state.Store
-	Workspaces Workspaces
-	Providers  ProviderFactory
-	Tools      ToolFactory
-	Sink       Sink
-	Options    agent.Options
-	Report     func(error)
-	mu         sync.Mutex
-	active     map[string]task
-	wg         sync.WaitGroup
-	closed     bool
+	Config         config.Config
+	Store          *state.Store
+	Workspaces     Workspaces
+	Providers      ProviderFactory
+	Tools          ToolFactory
+	Sink           Sink
+	Options        agent.Options
+	Report         func(error)
+	mu             sync.Mutex
+	active         map[string]task
+	wg             sync.WaitGroup
+	closed         bool
+	scheduleCancel context.CancelFunc
+	scheduleDone   chan struct{}
+	scheduleWake   chan struct{}
 }
 
 func (r *Runtime) allowed(m platform.Message) bool {
@@ -113,6 +117,8 @@ func (r *Runtime) Handle(ctx context.Context, m platform.Message) error {
 	switch m.Text {
 	case "/cancel":
 		if busy && active.topic == m.TopicID {
+			active.userCancelled = true
+			r.active[key] = active
 			active.cancel()
 			r.logf("telegram update=%d cancel accepted, stopping active task", m.UpdateID)
 			r.mu.Unlock()
@@ -145,20 +151,12 @@ func (r *Runtime) Handle(ctx context.Context, m platform.Message) error {
 		r.mu.Unlock()
 		return r.reply(m, "Busy. Try again when the active task finishes.")
 	}
-	taskCtx, cancel := context.WithTimeout(ctx, r.Config.TaskDuration())
-	r.active[key] = task{topic: m.TopicID, cancel: cancel}
-	r.wg.Add(1)
+	err = r.startLocked(ctx, m, "")
 	r.mu.Unlock()
-	r.logf("telegram update=%d queued, starting run", m.UpdateID)
-	go func() {
-		defer r.wg.Done()
-		defer cancel()
-		defer func() { r.mu.Lock(); delete(r.active, key); r.mu.Unlock() }()
-		r.run(taskCtx, m)
-	}()
-	return nil
+	return err
 }
-func (r *Runtime) run(ctx context.Context, m platform.Message) {
+
+func (r *Runtime) run(ctx context.Context, m platform.Message, runID string) {
 	stopTyping := func() {}
 	if r.Sink != nil {
 		stopTyping = startTyping(ctx, r.Sink, m)
@@ -193,7 +191,7 @@ func (r *Runtime) run(ctx context.Context, m platform.Message) {
 					runErr = err
 					r.logf("run update=%d save identity error after=%s err=%q", m.UpdateID, time.Since(runStart).Truncate(time.Millisecond), r.Options.Redaction.Text(redaction.Terminal, err.Error()))
 				} else {
-					result, err := agent.Run(ctx, provider, r.Tools(root), conversation.Messages(), m.Text, r.Options)
+					result, err := agent.Run(ctx, provider, &scheduleTools{base: r.Tools(root), runtime: r, owner: m}, conversation.Messages(), m.Text, r.Options)
 					answer = result.Answer
 					runErr = err
 					if err == nil {
@@ -223,7 +221,25 @@ func (r *Runtime) run(ctx context.Context, m platform.Message) {
 	} else {
 		r.logf("run update=%d done after=%s answer_len=%d", m.UpdateID, time.Since(runStart).Truncate(time.Millisecond), len(answer))
 	}
-	if err := r.reply(m, answer); err != nil {
+	var replyErr error
+	if runID == "" {
+		replyErr = r.reply(m, answer)
+	} else {
+		status := "succeeded"
+		if runErr != nil {
+			status = "failed"
+		}
+		if ctx.Err() == context.Canceled {
+			status = "interrupted"
+			r.mu.Lock()
+			if r.active[m.WorkspaceKey()].userCancelled {
+				status = "cancelled"
+			}
+			r.mu.Unlock()
+		}
+		replyErr = r.Store.FinishRun(runID, status, telegram.Split(answer))
+	}
+	if err := replyErr; err != nil {
 		r.logf("run update=%d reply queue error after=%s err=%q", m.UpdateID, time.Since(runStart).Truncate(time.Millisecond), r.Options.Redaction.Text(redaction.Terminal, err.Error()))
 		r.report(err)
 	}
@@ -231,10 +247,17 @@ func (r *Runtime) run(ctx context.Context, m platform.Message) {
 func (r *Runtime) Close() {
 	r.mu.Lock()
 	r.closed = true
+	if r.scheduleCancel != nil {
+		r.scheduleCancel()
+	}
 	for _, t := range r.active {
 		t.cancel()
 	}
+	done := r.scheduleDone
 	r.mu.Unlock()
+	if done != nil {
+		<-done
+	}
 	r.wg.Wait()
 }
 func (r *Runtime) Wait() { r.wg.Wait() }

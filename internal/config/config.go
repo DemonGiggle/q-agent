@@ -14,6 +14,9 @@ import (
 	"github.com/pelletier/go-toml/v2"
 )
 
+// DefaultPath is the configuration file used when --config is omitted.
+const DefaultPath = "~/.config/q-agent/config.toml"
+
 type Config struct {
 	StateDir string   `toml:"state_dir"`
 	Provider Provider `toml:"provider"`
@@ -57,6 +60,10 @@ func Defaults() Config {
 }
 func Load(path string) (Config, error) {
 	c := Defaults()
+	path, err := absolute(path, ".")
+	if err != nil {
+		return c, err
+	}
 	// Clear the default credential name before decoding so an omitted
 	// token_env stays empty and can be distinguished from an explicitly
 	// configured one. The default is restored below when no token_path

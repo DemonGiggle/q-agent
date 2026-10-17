@@ -87,6 +87,51 @@ func (c *Client) Typing(ctx context.Context, m platform.Message) error {
 	return c.call(ctx, "sendChatAction", input, nil)
 }
 
+// SendLive sends a best-effort live preview message and returns its Telegram
+// message ID for later edits. Test stubs that return `true` yield ID 0,
+// which disables later edits but still counts as sent.
+func (c *Client) SendLive(ctx context.Context, m platform.Message, text string) (int64, error) {
+	input := map[string]any{"chat_id": m.ChatID, "text": text}
+	if m.TopicID != 0 {
+		input["message_thread_id"] = m.TopicID
+	}
+	var raw json.RawMessage
+	if err := c.call(ctx, "sendMessage", input, &raw); err != nil {
+		return 0, err
+	}
+	if len(raw) == 0 || string(raw) == "true" {
+		return 0, nil
+	}
+	var msg struct {
+		MessageID int64 `json:"message_id"`
+	}
+	if err := json.Unmarshal(raw, &msg); err != nil {
+		return 0, nil
+	}
+	return msg.MessageID, nil
+}
+
+// EditLive edits a live preview message. Edits that leave text unchanged
+// succeed silently. An ID of 0 (boolean test stub) is a no-op success.
+func (c *Client) EditLive(ctx context.Context, m platform.Message, messageID int64, text string) error {
+	if messageID == 0 {
+		return nil
+	}
+	err := c.call(ctx, "editMessageText", map[string]any{"chat_id": m.ChatID, "message_id": messageID, "text": text}, nil)
+	if api, ok := err.(*APIError); ok && api.Code == 400 && strings.Contains(api.Description, "message is not modified") {
+		return nil
+	}
+	return err
+}
+
+// DeleteLive removes a live preview message. Best effort: callers ignore errors.
+func (c *Client) DeleteLive(ctx context.Context, m platform.Message, messageID int64) error {
+	if messageID == 0 {
+		return nil
+	}
+	return c.call(ctx, "deleteMessage", map[string]any{"chat_id": m.ChatID, "message_id": messageID}, nil)
+}
+
 func (c *Client) EditModels(ctx context.Context, m platform.Message, text string, keyboard *platform.InlineKeyboard) error {
 	err := c.call(ctx, "editMessageText", map[string]any{"chat_id": m.ChatID, "message_id": m.MessageID, "text": text, "reply_markup": keyboard}, nil)
 	if api, ok := err.(*APIError); ok && api.Code == 400 && strings.Contains(api.Description, "message is not modified") {

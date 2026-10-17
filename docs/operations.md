@@ -26,21 +26,27 @@ ID allocations. Build a static native binary with Go 1.22 or newer:
 
 ```sh
 make build
-cp config.example.toml config.toml
+mkdir -p ~/.config/q-agent
+cp config.example.toml ~/.config/q-agent/config.toml
 ```
 
-Edit `config.toml`: set the model, approved Telegram user IDs, and approved chat
-IDs. **Both allowlists must match every prompt and command.** For a private chat,
-the chat ID normally equals the user's ID; group chat IDs are usually negative.
+Edit `~/.config/q-agent/config.toml`: set the model, approved Telegram user IDs,
+and approved chat IDs. **Both allowlists must match every prompt and command.**
+For a private chat, the chat ID normally equals the user's ID; group chat IDs are
+usually negative.
 Configuration uses TOML, rejects unknown fields, and resolves relative paths
 against the configuration file's directory. Credentials are environment values,
 not configuration values.
+
+All commands use `~/.config/q-agent/config.toml` by default. Select another file
+with `--config FILE`, for example `--config ./config.toml` for an existing local
+configuration.
 
 Export credentials and start polling:
 
 ```sh
 export TELEGRAM_BOT_TOKEN='your BotFather token'
-./bin/q-agent serve --config config.toml
+./bin/q-agent serve
 ```
 
 Alternatively, set `telegram.token_path` to a file containing the bot token
@@ -131,8 +137,8 @@ least 65,536 IDs to the service account, for example `agent:100000:65536`.
 Build the cached base image once before serving in sandbox mode:
 
 ```sh
-./bin/q-agent image build --config config.toml
-./bin/q-agent serve --config config.toml
+./bin/q-agent image build
+./bin/q-agent serve
 ```
 
 The image command runs rootless mmdebstrap with `--mode=unshare`, `--variant=apt`,
@@ -165,6 +171,15 @@ File edits are limited to 8 MiB. Tool output is capped at 8 KiB, including an
 explicit `[output truncated]` marker. Shell commands use `/bin/sh -c` with an
 explicit per-command working directory and environment. In sandbox mode,
 ordinary `apt-get update && apt-get install -y ...` installations persist.
+
+While a task runs, the bot keeps one best-effort live preview message in the
+same chat/topic: a `Working…` status during provisioning and tool calls
+(`🔧`/`✅`/`⚠️` with a tool count), then paragraph-flushed streaming of the
+final answer as provider tokens arrive (throttled to ~1 edit/sec, truncated
+to Telegram's 4096 UTF-16 limit). Thinking traces and raw tool output are
+never streamed. The preview is deleted on success or edited to the terminal
+status on failure/cancel; the durable outbox reply that follows remains the
+authoritative answer and still resumes after restart.
 
 ## Isolation and state
 

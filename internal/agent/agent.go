@@ -40,6 +40,15 @@ type Options struct {
 	// provider, or tool input: only Result.Answer reaches Telegram.
 	// Nil disables progress logging.
 	Logger *log.Logger
+	// OnStream forwards provider text stream events (output and thinking)
+	// while Complete is running. It is console/live-preview only; final
+	// history and Telegram replies still use Result.Answer.
+	OnStream llm.StreamCallback
+	// OnToolStart/OnToolEnd report tool execution for live progress.
+	// They must not block, mutate arguments, or send Telegram messages
+	// directly; the runtime formats the preview.
+	OnToolStart func(name string)
+	OnToolEnd   func(name string, err error)
 }
 
 func (o Options) logf(format string, args ...any) {
@@ -128,7 +137,7 @@ func Run(ctx context.Context, provider llm.Provider, tools Tools, history []llm.
 		result.ModelSteps++
 		o.logf("agent step %d/%d start messages=%d recovery=%t", step+1, o.MaxSteps, len(requestMessages), recoveryInjected)
 		modelStart := time.Now()
-		response, err := provider.Complete(ctx, llm.Request{Model: o.Model, Thinking: o.Thinking, Messages: requestMessages, Tools: tools.Schemas(), Temperature: 0.2}, nil)
+		response, err := provider.Complete(ctx, llm.Request{Model: o.Model, Thinking: o.Thinking, Messages: requestMessages, Tools: tools.Schemas(), Temperature: 0.2}, o.OnStream)
 		modelElapsed := time.Since(modelStart)
 		if response.Usage == nil {
 			result.Usage.Missing++
@@ -183,8 +192,14 @@ func Run(ctx context.Context, provider llm.Provider, tools Tools, history []llm.
 			}
 			result.ToolCalls++
 			o.logf("agent tool %q start step=%d call=%d/%d args=%s", call.Name, step+1, result.ToolCalls, o.MaxToolCalls, o.redactTerminal(summarizeArgs(call)))
+			if o.OnToolStart != nil {
+				o.OnToolStart(call.Name)
+			}
 			toolStart := time.Now()
 			output, toolErr := tools.Execute(ctx, call)
+			if o.OnToolEnd != nil {
+				o.OnToolEnd(call.Name, toolErr)
+			}
 			toolElapsed := time.Since(toolStart)
 			if ctx.Err() != nil {
 				o.logf("agent tool %q cancelled after=%s tool_elapsed=%s", call.Name, time.Since(runStart).Truncate(time.Millisecond), toolElapsed.Truncate(time.Millisecond))

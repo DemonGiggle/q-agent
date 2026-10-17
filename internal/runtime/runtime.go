@@ -178,6 +178,8 @@ func (r *Runtime) run(ctx context.Context, m platform.Message, runID string) {
 	defer stopTyping()
 	runStart := time.Now()
 	r.logf("run start update=%d chat=%d topic=%d", m.UpdateID, m.ChatID, m.TopicID)
+	live := newLiveReporter(r.Sink, m, r.Options.Redaction)
+	live.SetStatus("Working\u2026 preparing workspace")
 	answer := ""
 	var runErr error
 	root, err := r.Workspaces.Ensure(ctx, m)
@@ -205,6 +207,14 @@ func (r *Runtime) run(ctx context.Context, m platform.Message, runID string) {
 				} else {
 					options := r.Options
 					options.Model = conversation.Model
+					live.SetStatus("Working\u2026 contacting model")
+					toolCount := 0
+					options.OnStream = func(ev llm.StreamEvent) { live.StreamEvent(ev) }
+					options.OnToolStart = func(name string) {
+						toolCount++
+						live.ToolStart(name, toolCount)
+					}
+					options.OnToolEnd = func(name string, toolErr error) { live.ToolEnd(name, toolCount, toolErr) }
 					result, err := agent.Run(ctx, provider, &scheduleTools{base: r.Tools(root), runtime: r, owner: m}, conversation.Messages(), m.Text, options)
 					answer = result.Answer
 					runErr = err
@@ -234,6 +244,11 @@ func (r *Runtime) run(ctx context.Context, m platform.Message, runID string) {
 		r.logf("run update=%d failed after=%s err=%q", m.UpdateID, time.Since(runStart).Truncate(time.Millisecond), r.Options.Redaction.Text(redaction.Terminal, runErr.Error()))
 	} else {
 		r.logf("run update=%d done after=%s answer_len=%d", m.UpdateID, time.Since(runStart).Truncate(time.Millisecond), len(answer))
+	}
+	if runErr != nil {
+		live.FinishError(answer)
+	} else {
+		live.FinishSuccess()
 	}
 	var replyErr error
 	if runID == "" {

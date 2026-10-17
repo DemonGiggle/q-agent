@@ -56,7 +56,7 @@ func mainRun() error {
 	}
 	if command == "image" {
 		if len(args) == 0 || args[0] != "build" {
-			return fmt.Errorf("usage: q-agent image build --config config.toml")
+			return fmt.Errorf("usage: q-agent image build [--config FILE]")
 		}
 		command = "image build"
 		args = args[1:]
@@ -65,7 +65,7 @@ func mainRun() error {
 		return fmt.Errorf("unknown command %q; use q-agent --help", command)
 	}
 	flags := flag.NewFlagSet(command, flag.ContinueOnError)
-	path := flags.String("config", "config.toml", "TOML configuration")
+	path := flags.String("config", config.DefaultPath, "TOML configuration")
 	if err := flags.Parse(args); err != nil {
 		return err
 	}

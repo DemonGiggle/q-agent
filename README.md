@@ -72,12 +72,13 @@ another provider in the [setup guide](docs/operations.md#setup).
 git clone https://github.com/DemonGiggle/q-agent.git
 cd q-agent
 make build
-cp config.example.toml config.toml
+mkdir -p ~/.config/q-agent
+cp config.example.toml ~/.config/q-agent/config.toml
 ```
 
 ### 2. Make it yours
 
-Edit `config.toml` to choose your provider and model, then set
+Edit `~/.config/q-agent/config.toml` to choose your provider and model, then set
 `approved_user_ids` and `approved_chat_ids` under `[telegram]`.
 **Both your user ID and the chat ID must be approved.** For a private chat,
 they normally match. Keep the bot token out of the config file.
@@ -90,8 +91,11 @@ before you save. [Console guide →](docs/console.md)
 
 ```sh
 export TELEGRAM_BOT_TOKEN='your BotFather token'
-./bin/q-agent serve --config config.toml
+./bin/q-agent serve
 ```
+
+All commands use `~/.config/q-agent/config.toml` by default. Use `--config FILE`
+to select another configuration file.
 
 Open your bot's private chat and send a message. Try `/status` to see your setup
 or `/help` to see the available commands.

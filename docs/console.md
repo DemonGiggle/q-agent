@@ -36,7 +36,7 @@ Examples assume `q-agent` is on PATH; from a source checkout use
 
 ## Choose your configuration
 
-The default is `config.toml` in the current directory. For either path, select
+The default is `~/.config/q-agent/config.toml`. For either path, select
 another existing file with `--config FILE`:
 
 ```sh

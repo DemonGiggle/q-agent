@@ -156,11 +156,22 @@ func testServe(t *testing.T, isolated bool) {
 			json.Unmarshal(raw["chat_id"], &message.ChatID)
 			json.Unmarshal(raw["message_thread_id"], &message.Topic)
 			json.Unmarshal(raw["text"], &message.Text)
-			if message.ChatID != -10 || message.Topic != 7 || message.Text != "completed😀" || raw["parse_mode"] != nil {
-				t.Errorf("reply: %+v", message)
+			if message.Text == "completed😀" {
+				if message.ChatID != -10 || message.Topic != 7 || raw["parse_mode"] != nil {
+					t.Errorf("reply: %+v", message)
+				}
+				fmt.Fprintln(w, `{"ok":true,"result":true}`)
+				delivered <- struct{}{}
+				break
 			}
+			// Best-effort live preview: return an ID so edits work, no delivery signal.
+			if message.ChatID != -10 || message.Topic != 7 {
+				t.Errorf("live route: %+v", message)
+			}
+			fmt.Fprintln(w, `{"ok":true,"result":{"message_id":99}}`)
+		case "editMessageText", "deleteMessage":
+			// Live preview maintenance: best effort, never completes delivery.
 			fmt.Fprintln(w, `{"ok":true,"result":true}`)
-			delivered <- struct{}{}
 		default:
 			t.Errorf("method: %s", r.URL.Path)
 		}

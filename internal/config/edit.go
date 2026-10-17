@@ -183,7 +183,7 @@ func patch(data []byte, changes map[string]any) ([]byte, error) {
 // directory (so relative paths keep their meaning), then atomically replaces it.
 // No credential files are read and no running service is touched.
 func Update(path string, changes map[string]any) error {
-	path, err := filepath.Abs(path)
+	path, err := absolute(path, ".")
 	if err != nil {
 		return err
 	}

@@ -32,6 +32,40 @@ func execute(t *testing.T, path, input string, terminal bool, args ...string) (s
 	}
 	return out.String(), stderr.String(), err
 }
+
+func TestDefaultConfigPath(t *testing.T) {
+	home := t.TempDir()
+	t.Setenv("HOME", home)
+	dir := filepath.Join(home, ".config", "q-agent")
+	if err := os.MkdirAll(dir, 0700); err != nil {
+		t.Fatal(err)
+	}
+	path := filepath.Join(dir, "config.toml")
+	if err := os.WriteFile(path, []byte("state_dir = 'state'\n[provider]\nmodel = 'home-model'\n"), 0600); err != nil {
+		t.Fatal(err)
+	}
+	override := consoleConfig(t)
+	for _, test := range []struct {
+		args []string
+		want string
+	}{
+		{[]string{"config", "get", "provider.model", "--json"}, `"home-model"`},
+		{[]string{"models", "show", "--json"}, `"provider.model":"home-model"`},
+		{[]string{"config", "get", "state_dir", "--json"}, fmt.Sprintf("%q", filepath.Join(dir, "state"))},
+		{[]string{"config", "set", "provider.model", "config-model", "--json"}, `"saved":true`},
+		{[]string{"config", "get", "provider.model", "--json"}, `"config-model"`},
+		{[]string{"models", "set", "--model", "models-model", "--json"}, `"saved":true`},
+		{[]string{"config", "get", "provider.model", "--json"}, `"models-model"`},
+		{[]string{"config", "get", "provider.model", "--config", override, "--json"}, `"before"`},
+	} {
+		var out bytes.Buffer
+		handled, err := run(test.args, noRead{t}, &out, &out, false)
+		if !handled || err != nil || !strings.Contains(out.String(), test.want) {
+			t.Fatalf("%v: handled=%v err=%v out=%s; want %s", test.args, handled, err, &out, test.want)
+		}
+	}
+}
+
 func TestExplicitCommandsNeverReadStdin(t *testing.T) {
 	path := consoleConfig(t)
 	for _, args := range [][]string{

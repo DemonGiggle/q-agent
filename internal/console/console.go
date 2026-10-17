@@ -37,12 +37,13 @@ Automation (never prompts; --json for machine-readable output):
   q-agent config set KEY VALUE [--config FILE] [--json]
 
 Runtime commands (non-interactive):
-  q-agent serve --config FILE
-  q-agent image build --config FILE
+  q-agent serve [--config FILE]
+  q-agent image build [--config FILE]
   q-agent version
 
-Config defaults to config.toml. Configuration edits apply at the next start;
-these commands never restart the service. Use --help for this command list.
+Config defaults to ` + config.DefaultPath + `.
+Configuration edits apply at the next start; these commands never restart the
+service. Use --help for this command list.
 `
 
 type console struct {
@@ -67,7 +68,7 @@ func run(args []string, in io.Reader, out, errOut io.Writer, terminal bool) (boo
 	if group != "models" && group != "config" {
 		return false, nil
 	}
-	c := &console{in: bufio.NewReader(in), out: out, errOut: errOut, terminal: terminal, path: "config.toml"}
+	c := &console{in: bufio.NewReader(in), out: out, errOut: errOut, terminal: terminal, path: config.DefaultPath}
 	rest, err := c.options(args[1:])
 	if err != nil {
 		return true, err

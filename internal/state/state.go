@@ -1,4 +1,4 @@
-// Package state stores host-only conversation state and completed reply delivery.
+// Package state stores host-only conversations, scheduled work, and reply delivery.
 package state
 
 import (
@@ -9,6 +9,7 @@ import (
 	"q-agent/internal/llm"
 	"q-agent/internal/platform"
 	"q-agent/internal/redaction"
+	"strings"
 	"sync"
 )
 
@@ -50,11 +51,13 @@ type Reply struct {
 	Next  int              `json:"next"`
 }
 type Store struct {
-	mu     sync.Mutex
-	dir    string
-	cursor int64
-	policy *redaction.Policy
-	outbox []Reply
+	mu              sync.Mutex
+	dir             string
+	cursor          int64
+	policy          *redaction.Policy
+	outbox          []Reply
+	schedules       scheduleState
+	preferSchedules bool
 }
 
 func Open(dir string, policy *redaction.Policy) (*Store, error) {
@@ -77,6 +80,12 @@ func Open(dir string, policy *redaction.Policy) (*Store, error) {
 		if r.Next < 0 || r.Next >= len(r.Parts) || len(r.Parts) == 0 {
 			return nil, fmt.Errorf("invalid outbox cursor")
 		}
+	}
+	if err := read(filepath.Join(dir, "schedules.json"), &s.schedules); err != nil {
+		return nil, err
+	}
+	if err := s.validateSchedules(); err != nil {
+		return nil, fmt.Errorf("invalid schedules: %w", err)
 	}
 	return s, nil
 }
@@ -198,8 +207,13 @@ func (s *Store) Queue(route platform.Message, parts []string) error {
 func (s *Store) Pending() (Reply, bool) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
+	if s.preferSchedules {
+		if reply, ok := s.pendingScheduleReply(); ok {
+			return reply, true
+		}
+	}
 	if len(s.outbox) == 0 {
-		return Reply{}, false
+		return s.pendingScheduleReply()
 	}
 	r := s.outbox[0]
 	r.Parts = append([]string(nil), r.Parts...)
@@ -208,6 +222,13 @@ func (s *Store) Pending() (Reply, bool) {
 func (s *Store) Delivered(id string) error {
 	s.mu.Lock()
 	defer s.mu.Unlock()
+	if strings.HasPrefix(id, "schedule:") {
+		err := s.deliveredScheduleReply(id)
+		if err == nil {
+			s.preferSchedules = false
+		}
+		return err
+	}
 	if len(s.outbox) == 0 || s.outbox[0].ID != id {
 		return fmt.Errorf("outbox changed")
 	}
@@ -220,16 +241,25 @@ func (s *Store) Delivered(id string) error {
 		return err
 	}
 	s.outbox = next
+	s.preferSchedules = true
 	return nil
 }
 
 func (s *Store) DeferReply(id string) error {
 	s.mu.Lock()
 	defer s.mu.Unlock()
+	if strings.HasPrefix(id, "schedule:") {
+		err := s.deferScheduleReply(id)
+		if err == nil {
+			s.preferSchedules = false
+		}
+		return err
+	}
 	if len(s.outbox) == 0 || s.outbox[0].ID != id {
 		return fmt.Errorf("outbox changed")
 	}
 	if len(s.outbox) == 1 {
+		s.preferSchedules = true
 		return nil
 	}
 	next := append(append([]Reply(nil), s.outbox[1:]...), s.outbox[0])
@@ -237,5 +267,6 @@ func (s *Store) DeferReply(id string) error {
 		return err
 	}
 	s.outbox = next
+	s.preferSchedules = true
 	return nil
 }

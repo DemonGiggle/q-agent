@@ -202,6 +202,9 @@ func serve(ctx context.Context, c config.Config, policy *redaction.Policy, bot *
 		}
 		return p, nil
 	}
+	if err := rt.StartScheduler(ctx); err != nil {
+		return fmt.Errorf("start scheduler: %w", err)
+	}
 	deliveryCtx, cancelDelivery := context.WithCancel(context.Background())
 	defer cancelDelivery()
 	deliveryDone := make(chan struct{})

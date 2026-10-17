@@ -16,6 +16,11 @@ the pinned qcode protocol routing and reasoning replay behavior.
 
 ## Setup
 
+For a persistent systemd user service (host or sandbox), see the
+[systemd deployment guide](systemd.md). `q-agent service install` creates the
+unit and a missing config template without overwriting existing settings or
+starting the bot.
+
 For guided model/settings menus or prompt-free commands for automation, see
 the [console guide](console.md). These edit the same TOML file and do not restart
 the running service.

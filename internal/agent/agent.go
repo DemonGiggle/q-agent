@@ -73,6 +73,7 @@ func summarizeArgs(call llm.ToolCall) string {
 	}
 	return raw
 }
+
 type Result struct {
 	Answer     string           `json:"answer"`
 	Usage      llm.SessionUsage `json:"usage"`

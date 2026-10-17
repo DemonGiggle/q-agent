@@ -13,6 +13,7 @@ import (
 	"path/filepath"
 	"q-agent/internal/agent"
 	"q-agent/internal/config"
+	"q-agent/internal/console"
 	"q-agent/internal/host"
 	"q-agent/internal/llm"
 	"q-agent/internal/localtools"
@@ -38,6 +39,9 @@ func main() {
 }
 func mainRun() error {
 	args := os.Args[1:]
+	if handled, err := console.Run(args, os.Stdin, os.Stdout, os.Stderr); handled {
+		return err
+	}
 	if len(args) >= 2 && args[0] == "worker" {
 		return sandbox.Worker(args[1], os.Stdin, os.Stdout)
 	}
@@ -58,7 +62,7 @@ func mainRun() error {
 		args = args[1:]
 	}
 	if command != "serve" && command != "image build" {
-		return fmt.Errorf("usage: q-agent {serve|image build} --config config.toml")
+		return fmt.Errorf("unknown command %q; use q-agent --help", command)
 	}
 	flags := flag.NewFlagSet(command, flag.ContinueOnError)
 	path := flags.String("config", "config.toml", "TOML configuration")

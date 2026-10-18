@@ -119,6 +119,13 @@ selections remain readable; no migration of the state directory is required.
 
 ### Telegram commands
 
+- `/update`: install the latest stable GitHub Release and restart the systemd
+  user service; configured administrator in an approved private chat only.
+- `/restart`: restart that service without updating; same restrictions.
+  Both bypass the model, work in host/sandbox modes, and reject requests while
+  any agent task is active. They are disabled until `telegram.admin_user_ids`
+  is configured. See [Telegram administration](systemd.md#telegram-administration)
+  for the independent helper, startup checks and recovery behavior.
 - `/provider <name|default>`: select a provider for this chat/group. `/provider`
   lists configured choices. `default` follows the global provider again.
   Changing providers clears this chat's model override and uses the selected
@@ -532,7 +539,10 @@ amd64 and arm64 releases are supported. `--arch` also accepts aliases such as
 can install a binary that cannot run on your current host, so normally omit it.
 
 The updater queries `DemonGiggle/q-agent` on GitHub, compares semantic versions,
-and downloads the matching `q-agent_linux_amd64` or `q-agent_linux_arm64` asset.
+and downloads the matching `q-agent_linux_amd64` or `q-agent_linux_arm64` asset,
+or falls back to `q-agent_<tag>_linux_<arch>.tar.gz`. Archive extraction copies
+only one top-level regular `q-agent` entry, verifies gzip integrity, and bounds
+compressed/unpacked sizes; it never installs the archive's config or other files.
 An equal or newer installed version is left unchanged. Untagged source builds
 report `dev` and can update to the latest release. No published release, missing
 asset, network failure, or a non-writable installation produces an error rather
@@ -547,12 +557,18 @@ Download URLs must belong to this repository's HTTPS GitHub release path. As in
 qcode, trust is in GitHub HTTPS and the release publisher, not a separate
 signature or checksum verification step.
 
-Updates never read or change your TOML, credentials, chat state, workspaces, or
+CLI updates never read or change your TOML, credentials, chat state, workspaces, or
 base image, and do not stop or restart the running service. That process keeps
 running the old executable until restarted. Wait for active tasks to finish,
 then restart using your usual service manager. When sandbox mode is enabled,
 stop the service before upgrading so newly spawned workers cannot differ from
 the running host version; update any separately configured worker binary too.
+
+Telegram `/update` is a separate administrator-only service lifecycle operation:
+it stops the bot first, invokes this updater from an independent helper, checks
+readiness after startup and attempts executable rollback on failure. See the
+[systemd guide](systemd.md#telegram-administration). Updating from `main` is not
+supported by either entry point; maintainers must publish a stable Release.
 
 ### Building and publishing releases
 

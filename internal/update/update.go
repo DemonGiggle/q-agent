@@ -2,7 +2,10 @@
 package update
 
 import (
+	"archive/tar"
+	"compress/gzip"
 	"context"
+	"debug/elf"
 	"encoding/json"
 	"errors"
 	"flag"
@@ -35,6 +38,8 @@ type Options struct {
 	Client         *http.Client
 	Stdout         io.Writer
 	Stderr         io.Writer
+	// Service maintenance requires a native static executable before replacing it.
+	ValidateExecutable bool
 
 	// DownloadURLValidator overrides the production GitHub URL validation for
 	// tests. A nil validator requires an HTTPS github.com release URL.
@@ -109,7 +114,7 @@ func Run(ctx context.Context, arguments []string, options Options) error {
 		}
 	}
 
-	targetAsset, ok := findAsset(latest.Assets, targetOS, targetArch)
+	targetAsset, ok := findReleaseAsset(latest.Assets, latest.TagName, targetOS, targetArch)
 	if !ok {
 		return fmt.Errorf("release %s has no asset for %s/%s", latest.TagName, targetOS, targetArch)
 	}
@@ -133,6 +138,19 @@ func Run(ctx context.Context, arguments []string, options Options) error {
 		return err
 	}
 	defer os.Remove(temporary)
+	if strings.HasSuffix(targetAsset.Name, ".tar.gz") {
+		extracted, err := unpackArchive(temporary, mode)
+		if err != nil {
+			return err
+		}
+		defer os.Remove(extracted)
+		temporary = extracted
+	}
+	if options.ValidateExecutable {
+		if err := validateELF(temporary, targetArch); err != nil {
+			return err
+		}
+	}
 
 	if err := installUnix(temporary, target, mode); err != nil {
 		return err
@@ -236,6 +254,105 @@ func findAsset(assets []asset, goos, goarch string) (asset, bool) {
 		}
 	}
 	return asset{}, false
+}
+
+func findReleaseAsset(assets []asset, tag, goos, goarch string) (asset, bool) {
+	if raw, ok := findAsset(assets, goos, goarch); ok {
+		return raw, true
+	}
+	wanted := fmt.Sprintf("q-agent_%s_%s_%s.tar.gz", tag, goos, goarch)
+	for _, candidate := range assets {
+		if candidate.Name == wanted {
+			return candidate, true
+		}
+	}
+	return asset{}, false
+}
+
+// Only the top-level regular q-agent entry is copied, never arbitrary paths,
+// permissions, links, credentials or configuration from a release archive.
+func unpackArchive(path string, mode os.FileMode) (result string, err error) {
+	in, err := os.Open(path)
+	if err != nil {
+		return "", err
+	}
+	defer in.Close()
+	z, err := gzip.NewReader(in)
+	if err != nil {
+		return "", fmt.Errorf("open release archive: %w", err)
+	}
+	defer z.Close()
+	bounded := &io.LimitedReader{R: z, N: 2*maxUpdateSize + 1}
+	archive := tar.NewReader(bounded)
+	out, err := os.CreateTemp(filepath.Dir(path), ".q-agent-unpack-*")
+	if err != nil {
+		return "", err
+	}
+	defer out.Close()
+	defer func() {
+		if err != nil {
+			_ = os.Remove(out.Name())
+		}
+	}()
+	found := false
+	for entries := 0; ; entries++ {
+		header, nextErr := archive.Next()
+		if nextErr == io.EOF {
+			break
+		}
+		if nextErr != nil {
+			return "", fmt.Errorf("read release archive: %w", nextErr)
+		}
+		if entries >= 1024 || header.Size < 0 || header.Size > maxUpdateSize {
+			return "", errors.New("release archive exceeds entry or size limit")
+		}
+		if header.Name == "q-agent" || header.Name == "./q-agent" {
+			if found || header.Typeflag != tar.TypeReg || header.Size == 0 {
+				return "", errors.New("release archive must contain one nonempty regular q-agent executable")
+			}
+			found = true
+			if _, err = io.Copy(out, archive); err != nil {
+				return "", err
+			}
+		} else if _, err = io.Copy(io.Discard, archive); err != nil {
+			return "", err
+		}
+	}
+	// Drain through EOF to verify gzip's checksum and the total inflation bound.
+	if _, err = io.Copy(io.Discard, bounded); err != nil {
+		return "", fmt.Errorf("verify release archive: %w", err)
+	}
+	if !found || bounded.N <= 0 {
+		return "", errors.New("release archive missing q-agent or exceeds unpacked size limit")
+	}
+	if err = out.Chmod(mode); err != nil {
+		return "", err
+	}
+	if err = out.Sync(); err != nil {
+		return "", err
+	}
+	if err = out.Close(); err != nil {
+		return "", err
+	}
+	return out.Name(), nil
+}
+
+func validateELF(path, arch string) error {
+	f, err := elf.Open(path)
+	if err != nil {
+		return fmt.Errorf("update is not an ELF executable: %w", err)
+	}
+	defer f.Close()
+	wanted := map[string]elf.Machine{"amd64": elf.EM_X86_64, "arm64": elf.EM_AARCH64}[arch]
+	if f.Machine != wanted || f.Class != elf.ELFCLASS64 || (f.Type != elf.ET_EXEC && f.Type != elf.ET_DYN) {
+		return errors.New("update executable has an incompatible architecture or type")
+	}
+	for _, p := range f.Progs {
+		if p.Type == elf.PT_INTERP {
+			return errors.New("service updates require a statically linked executable")
+		}
+	}
+	return nil
 }
 
 func validateDownloadURL(raw string) error {

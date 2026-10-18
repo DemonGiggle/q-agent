@@ -1,5 +1,40 @@
 # Validation and initial performance baseline
 
+## Systemd Telegram maintenance (2026-10-18)
+
+Added private-administrator `/update` and `/restart` commands, dispatched by the
+host without model or workspace access in both execution modes. Tests cover
+administrator/allowlist checks, group rejection, duplicate Telegram updates,
+global active-task rejection, new-task admission gating and durable scheduled
+work resumption. Controller tests cover the separate transient service,
+notification-before-arming, request replay rejection, update/restart success,
+download failure, failed new-version readiness, executable rollback, stop timeout,
+failed recovery, interrupted-helper reporting and persistent result delivery.
+
+On Linux arm64 with Go 1.24.4 and Go 1.22.12, full uncached unit/service suites
+passed. Vet and the native static build passed. The opt-in
+`Q_AGENT_MAINTENANCE_SYSTEMD_TEST=1` test passed against a real user manager:
+the disposable probe's old MainPID was replaced, its independent helper survived
+the bot cgroup stop, and notification/private-state assertions passed. It used no
+live Telegram/provider endpoints and did not touch the installed q-agent service.
+Mocked update tests, not that probe, exercise download replacement and rollback.
+Static Linux amd64 and arm64 release builds also passed with the explicit
+`v0.0.0-maintenance-check` test version; `file` confirmed both architectures and
+the native executable reported the embedded version. Release script syntax,
+formatting and diff whitespace checks passed.
+
+Archive tests cover the published `.tar.gz` naming contract, extraction of only
+the top-level executable, preservation of installed mode, duplicate/missing/
+nested/link/empty entries, truncation, a bad gzip checksum after the executable,
+temporary cleanup and incompatible executable rejection. The CLI still supports
+raw assets and leaves equal/newer semantic versions unchanged.
+
+Local hosted-release installation, a live Telegram command exchange and a full
+rootless sandbox integration were not performed for this change. CI provides
+the Linux amd64 race gate. GitHub's latest stable Release observed during this
+work was `v0.1.0`; it predates maintenance/readiness support. No tag or Release
+was published and no existing bot was upgraded or restarted.
+
 Validated on 2026-10-10 with Go 1.23.12, Linux amd64,
 WSL2 kernel 6.6.87.2-microsoft-standard-WSL2, an Intel i7-13650HX,
 and an ext4 workspace. The implementation was extracted from qcode `e9389fa`;

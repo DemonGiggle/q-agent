@@ -203,6 +203,83 @@ itself the filesystem isolation boundary. Sandbox mode mounts only the chat
 rootfs and trusted worker while host-side config, credentials and state remain
 outside; networking deliberately remains available through the host network.
 
+## Telegram administration
+
+`/restart` and `/update` are handled directly by the host, not the model or its
+shell tool, in both host and sandbox modes. They require the running process to
+be the actual `MainPID` of the same account's **user** `q-agent.service`.
+Foreground processes, system-wide units and differently named units are rejected.
+The account needs `systemctl`, `systemd-run`, a working user manager, and write
+access to the installed executable's directory for updates. No sudo is used.
+
+Administration is disabled by default. Add the operator to all three lists:
+
+```toml
+[telegram]
+approved_user_ids = [123456789]
+approved_chat_ids = [123456789]
+admin_user_ids = [123456789]
+```
+
+Keep existing entries and credential settings. Administrator IDs must be positive
+and also occur in `approved_user_ids`; the private chat must be approved too.
+You can edit an existing configuration without discarding comments:
+
+```sh
+q-agent config set telegram.admin_user_ids '[123456789]'
+```
+
+Restart once through systemd after first installing this feature or changing its
+configuration. Afterwards send either command, with no arguments, in the
+administrator's **private** chat. Group/topic administration is rejected, even
+for an administrator. Neither command invokes the model or provisions a workspace.
+
+- If any interactive or scheduled agent task is active, the command is refused;
+  wait for completion or cancel the tasks first. While maintenance is pending,
+  new agent work is refused and scheduled work remains durably queued.
+- An independent transient `q-agent-maintenance-<id>.service` is launched with
+  `systemd-run --user`. It belongs to a separate cgroup, so stopping the bot
+  cannot kill its updater. The bot arms the request only after Telegram confirms
+  delivery of the pre-stop notice; notification failure cancels the operation.
+- `/restart` stops and starts the service, then waits up to 60 seconds for a
+  new MainPID and q-agent's readiness marker. Readiness means normal startup
+  checks, Telegram identity lookup, store and scheduler initialization succeeded;
+  it does not prove a model completion or sandbox tool execution.
+- `/update` preserves a same-directory executable backup, stops the service,
+  installs the latest **stable GitHub Release**, and starts it. It never builds
+  or pulls `main`, accepts no architecture/URL override, and validates the native
+  static ELF before replacement. Download or readiness failure restores the
+  previous executable and attempts startup again. A separately configured
+  `sandbox.worker` must resolve to the service executable, otherwise `/update`
+  is refused; `/restart` is still available.
+- The restarted bot queues the result and running/previous versions through its
+  normal persistent, redacted reply outbox. Duplicate Telegram updates and
+  concurrent maintenance requests cannot launch the operation twice. No
+  configuration, credentials, chat files or base images are replaced.
+
+This feature must first be installed manually; an older binary does not recognize
+the commands or the new `admin_user_ids` setting. The selected Release must also
+contain the readiness protocol: an older Release such as `v0.1.0` fails readiness
+and is rolled back. Source `dev` builds are not ordered against stable tags, so
+they can attempt that older release. Equal/newer semantic versions are not
+downgraded, though the requested maintenance still restarts the service.
+
+Inspect failures without editing state while the helper is running:
+
+```sh
+journalctl --user -u q-agent.service -u 'q-agent-maintenance-*.service' -n 100 --no-pager
+systemctl --user list-units --all 'q-agent-maintenance-*'
+```
+
+The helper has a ten-minute lifetime limit and an independent start-on-exit
+fallback. The durable request and any retained backup location are recorded in
+`state_dir/maintenance/request.json`. After a killed helper, a surviving or
+restarted bot reports interruption, not success. If automatic recovery cannot
+start the bot, no Telegram result can be delivered until the operator restores
+it; inspect the journal and saved backup. Executable rollback does not reverse
+state/config migrations a future release may have made. A power failure or
+forced helper kill is not a transactional rollback guarantee.
+
 ## Upgrade or remove the unit
 
 For an archive release, extract the new package matching your architecture in a
@@ -218,6 +295,10 @@ systemctl --user start q-agent.service
 Keep your existing configuration and state; do not replace them with the
 archive's example configuration. The updater in v0.1.0 expects raw binary assets
 and cannot install the `.tar.gz` release packages, so use this manual procedure.
+Newer updaters containing archive support accept either the raw binary or
+`q-agent_<tag>_linux_<arch>.tar.gz`, extracting only the top-level executable.
+Once this administration feature is installed and enabled, `/update` automates
+the stop, install, readiness check and recovery sequence above.
 
 A binary/config change at the same path needs a restart, not a daemon reload.
 A unit-file change needs `daemon-reload` too. If moving the binary/config, review
@@ -250,3 +331,15 @@ and removes those units afterwards. It also verifies credential-file lookup,
 The sandbox probe uses a minimal tar and the actual static worker/mapping helpers,
 not a downloaded Debian image. It does not validate mmdebstrap/package setup,
 contact Telegram/providers, or touch `q-agent.service` or its state.
+
+The maintenance controller has a separate opt-in real-systemd test:
+
+```sh
+Q_AGENT_MAINTENANCE_SYSTEMD_TEST=1 go test -count=1 -v ./internal/maintenance \
+  -run TestSystemdMaintenanceSurvivesBotCgroupStop -timeout 1m
+```
+
+It restarts an offline disposable probe through the production controller and
+checks a new MainPID, a delivered local notice, private request state, and helper
+survival after the probe's cgroup is stopped. It does not contact Telegram or
+GitHub, install a release, or touch the real `q-agent.service`.

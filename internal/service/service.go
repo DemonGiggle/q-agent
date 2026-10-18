@@ -41,6 +41,8 @@ base_url = "http://127.0.0.1:11434"
 token_path = "telegram.token"
 approved_user_ids = []
 approved_chat_ids = []
+# Optional private-chat /update and /restart administrators (also approved users).
+admin_user_ids = []
 
 [sandbox]
 enabled = false

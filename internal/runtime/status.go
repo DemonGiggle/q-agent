@@ -12,6 +12,9 @@ import (
 // settings are exposed: never serialize Config, credentials, URLs, or paths.
 func (r *Runtime) statusLocked(m platform.Message) string {
 	activity := "Idle"
+	if r.Maintenance != nil && r.Maintenance.Busy() {
+		activity = "Maintenance (new tasks paused)"
+	}
 	if active, ok := r.active[m.WorkspaceKey()]; ok {
 		activity = "Busy (another topic in this chat)"
 		if active.topic == m.TopicID {

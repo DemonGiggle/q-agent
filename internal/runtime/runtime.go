@@ -51,6 +51,7 @@ type Runtime struct {
 	Maintenance    Maintenance
 	mu             sync.Mutex
 	active         map[string]task
+	shellPrompts   map[string]*shellDecision
 	wg             sync.WaitGroup
 	closed         bool
 	modelMenus     map[string]modelMenu
@@ -131,12 +132,46 @@ func (r *Runtime) Handle(ctx context.Context, m platform.Message) error {
 	if r.active == nil {
 		r.active = map[string]task{}
 	}
+	if r.shellPrompts == nil {
+		r.shellPrompts = map[string]*shellDecision{}
+	}
 	if r.closed {
 		r.mu.Unlock()
 		return context.Canceled
 	}
 	key := m.WorkspaceKey()
 	active, busy := r.active[key]
+	// A pending shell-timeout prompt owns this conversation until resolved.
+	// Allow status/help through; /cancel resolves as kill then cancels.
+	if dec, ok := r.shellPrompts[key]; ok && dec.owner.UserID == m.UserID && dec.owner.TopicID == m.TopicID {
+		if m.Text == "/cancel" {
+			delete(r.shellPrompts, key)
+			select {
+			case dec.ch <- false:
+			default:
+			}
+			// Fall through to normal cancellation below.
+		} else if m.Text == "/status" || m.Text == "/help" {
+			// Let the switch handle these without consuming the prompt.
+		} else if extend, isDecision := parseShellDecision(m.Text); isDecision {
+			delete(r.shellPrompts, key)
+			select {
+			case dec.ch <- extend:
+			default:
+			}
+			ack := "Shell termination requested."
+			if extend {
+				ack = "Shell continuing for another window."
+			}
+			r.mu.Unlock()
+			r.logf("telegram update=%d shell decision extend=%t", m.UpdateID, extend)
+			return r.reply(m, ack)
+		} else {
+			r.mu.Unlock()
+			return r.reply(m, "Shell is waiting: reply `extend` to continue or `kill` to stop it.")
+		}
+		active, busy = r.active[key]
+	}
 	switch m.Text {
 	case "/status":
 		text := r.statusLocked(m)
@@ -247,7 +282,27 @@ func (r *Runtime) run(ctx context.Context, m platform.Message, runID string) boo
 						live.ToolStart(name, toolCount)
 					}
 					options.OnToolEnd = func(name string, toolErr error) { live.ToolEnd(name, toolCount, toolErr) }
-					result, err := agent.Run(ctx, provider, &scheduleTools{base: r.Tools(root), runtime: r, owner: m}, conversation.Messages(), m.Text, options)
+					baseTools := r.Tools(root)
+					if setter, ok := baseTools.(shellHookSetter); ok {
+						hookOwner := m
+						hookRunID := runID
+						setter.SetShellTimeoutHook(func(hookCtx context.Context, command string, lastLines []string) bool {
+							return r.requestShellExtend(hookCtx, hookOwner, hookRunID, command, lastLines)
+						}, r.Config.ShellExtends())
+					}
+					// A cancelled run must not leave a shell prompt parked.
+					defer func() {
+						r.mu.Lock()
+						if dec, ok := r.shellPrompts[m.WorkspaceKey()]; ok && dec.owner.UpdateID == m.UpdateID {
+							delete(r.shellPrompts, m.WorkspaceKey())
+							select {
+							case dec.ch <- false:
+							default:
+							}
+						}
+						r.mu.Unlock()
+					}()
+					result, err := agent.Run(ctx, provider, &scheduleTools{base: baseTools, runtime: r, owner: m}, conversation.Messages(), m.Text, options)
 					answer = result.Answer
 					runErr = err
 					if err == nil {

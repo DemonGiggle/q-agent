@@ -236,6 +236,14 @@ explicit `[output truncated]` marker. Shell commands use `/bin/sh -c` with an
 explicit per-command working directory and environment. In sandbox mode,
 ordinary `apt-get update && apt-get install -y ...` installations persist.
 
+In host mode, a shell that hits `shell_timeout` but already produced output
+does not die silently: the bot replies with the last 3 output lines and waits
+`shell_prompt_timeout` (default 90s) for `extend` or `kill`. `extend` continues
+the same process for another `shell_timeout` window (up to `shell_max_extends`,
+default 2); `kill` or no reply terminates it. `/cancel` also terminates it.
+Scheduled runs never prompt and terminate. Sandbox shells keep the old
+terminate-on-timeout behavior.
+
 ### Web tools
 
 Ask the agent to search or read a URL in normal Telegram messages (including

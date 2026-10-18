@@ -55,10 +55,16 @@ type Limits struct {
 	MaxConcurrent int    `toml:"max_concurrent"`
 	TaskTimeout   string `toml:"task_timeout"`
 	ShellTimeout  string `toml:"shell_timeout"`
+	// How long to wait for an extend/kill reply after a shell timeout prompt.
+	// Empty defaults to 90s. Must parse as a positive duration when set.
+	ShellPromptTimeout string `toml:"shell_prompt_timeout"`
+	// How many user-approved extensions a single shell call may take.
+	// Values <=0 default to 2.
+	ShellMaxExtends int `toml:"shell_max_extends"`
 }
 
 func Defaults() Config {
-	return Config{StateDir: "~/.local/share/q-agent", Provider: Provider{Name: "ollama", Model: "qwen3"}, Telegram: Telegram{TokenEnv: "TELEGRAM_BOT_TOKEN"}, Sandbox: Sandbox{Bubblewrap: "bwrap", NewUIDMap: "newuidmap", NewGIDMap: "newgidmap", MMdebstrap: "mmdebstrap"}, Limits: Limits{MaxSteps: 8, MaxToolCalls: 16, MaxConcurrent: 2, TaskTimeout: "5m", ShellTimeout: "2m"}}
+	return Config{StateDir: "~/.local/share/q-agent", Provider: Provider{Name: "ollama", Model: "qwen3"}, Telegram: Telegram{TokenEnv: "TELEGRAM_BOT_TOKEN"}, Sandbox: Sandbox{Bubblewrap: "bwrap", NewUIDMap: "newuidmap", NewGIDMap: "newgidmap", MMdebstrap: "mmdebstrap"}, Limits: Limits{MaxSteps: 8, MaxToolCalls: 16, MaxConcurrent: 2, TaskTimeout: "5m", ShellTimeout: "2m", ShellPromptTimeout: "90s", ShellMaxExtends: 2}}
 }
 func Load(path string) (Config, error) {
 	c := Defaults()
@@ -130,6 +136,14 @@ func Load(path string) (Config, error) {
 		if d, e := time.ParseDuration(s); e != nil || d <= 0 {
 			return c, fmt.Errorf("invalid positive duration %q", s)
 		}
+	}
+	if c.Limits.ShellPromptTimeout != "" {
+		if d, e := time.ParseDuration(c.Limits.ShellPromptTimeout); e != nil || d <= 0 {
+			return c, fmt.Errorf("invalid positive duration %q", c.Limits.ShellPromptTimeout)
+		}
+	}
+	if c.Limits.ShellMaxExtends < 0 {
+		return c, fmt.Errorf("shell_max_extends must not be negative")
 	}
 	c.StateDir, err = absolute(c.StateDir, filepath.Dir(path))
 	if err != nil {
@@ -277,6 +291,25 @@ func (c Config) TaskDuration() time.Duration {
 func (c Config) ShellDuration() time.Duration {
 	d, _ := time.ParseDuration(c.Limits.ShellTimeout)
 	return d
+}
+
+// ShellPromptWait bounds how long a shell-timeout prompt waits for extend/kill.
+func (c Config) ShellPromptWait() time.Duration {
+	if c.Limits.ShellPromptTimeout == "" {
+		return 90 * time.Second
+	}
+	if d, err := time.ParseDuration(c.Limits.ShellPromptTimeout); err == nil && d > 0 {
+		return d
+	}
+	return 90 * time.Second
+}
+
+// ShellExtends caps user-approved shell extensions per call.
+func (c Config) ShellExtends() int {
+	if c.Limits.ShellMaxExtends <= 0 {
+		return 2
+	}
+	return c.Limits.ShellMaxExtends
 }
 
 // ProviderByName only permits providers configured by the operator.

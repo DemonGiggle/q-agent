@@ -20,3 +20,10 @@ func (r *Runner) SystemPrompt() string {
 func (r *Runner) Execute(ctx context.Context, call llm.ToolCall) (string, error) {
 	return localtools.Execute(ctx, call, r.Options)
 }
+
+// SetShellTimeoutHook installs the interactive shell-timeout decision callback
+// for host shells. Sandbox runners do not implement this interface.
+func (r *Runner) SetShellTimeoutHook(fn func(context.Context, string, []string) bool, maxExtends int) {
+	r.Options.OnShellTimeout = fn
+	r.Options.MaxShellExtends = maxExtends
+}

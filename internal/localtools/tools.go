@@ -78,6 +78,39 @@ func (b *Buffer) String() string {
 	return Limit(s)
 }
 func (b *Buffer) Full() bool { b.mu.Lock(); defer b.mu.Unlock(); return len(b.data) > OutputLimit }
+
+// Len reports buffered bytes.
+func (b *Buffer) Len() int { b.mu.Lock(); defer b.mu.Unlock(); return len(b.data) }
+
+// LastLines returns up to the last n output lines for timeout prompts.
+// It snapshots under lock, splits on '\n', trims trailing '\r', and drops a
+// single trailing empty line from a final newline. Order is preserved.
+func (b *Buffer) LastLines(n int) []string {
+	if n <= 0 {
+		return nil
+	}
+	b.mu.Lock()
+	s := string(b.data)
+	b.mu.Unlock()
+	s = strings.ReplaceAll(s, "\r\n", "\n")
+	lines := strings.Split(s, "\n")
+	if len(lines) > 0 && lines[len(lines)-1] == "" {
+		lines = lines[:len(lines)-1]
+	}
+	for i := range lines {
+		lines[i] = strings.TrimSuffix(lines[i], "\r")
+	}
+	// Drop leading empty lines so a prompt shows real output.
+	for len(lines) > 0 && strings.TrimSpace(lines[0]) == "" {
+		lines = lines[1:]
+	}
+	if len(lines) > n {
+		lines = lines[len(lines)-n:]
+	}
+	out := make([]string, len(lines))
+	copy(out, lines)
+	return out
+}
 func schema(name, description string, props map[string]any, required ...string) llm.Tool {
 	if required == nil {
 		required = []string{}
@@ -123,6 +156,15 @@ type Options struct {
 	WorkingDir   string
 	Environment  []string
 	ShellTimeout time.Duration
+	// OnShellTimeout decides whether a timed-out shell with output keeps
+	// running for another ShellTimeout window. It receives the command and
+	// up to the last 3 output lines. True extends, false terminates.
+	// Nil preserves the old behavior: terminate on timeout. It must respect
+	// ctx cancellation while waiting for a user decision.
+	OnShellTimeout func(ctx context.Context, command string, lastLines []string) bool
+	// MaxShellExtends caps user-approved extensions per shell call.
+	// Values <=0 default to 2 when OnShellTimeout is set.
+	MaxShellExtends int
 }
 
 type Request struct {

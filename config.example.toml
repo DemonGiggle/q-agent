@@ -46,3 +46,10 @@ max_tool_calls = 16
 max_concurrent = 2
 task_timeout = "5m"
 shell_timeout = "2m"
+# Interactive shell-timeout prompt: when a host shell with output hits
+# shell_timeout, the bot sends the last 3 lines and waits this long for
+# `extend` or `kill`. Scheduled runs never prompt and terminate.
+shell_prompt_timeout = "90s"
+# Max user-approved extensions per shell call. Each extend adds one
+# shell_timeout window; the overall task_timeout still caps the run.
+shell_max_extends = 2

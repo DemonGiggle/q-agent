@@ -24,6 +24,7 @@ type Config struct {
 	Telegram  Telegram            `toml:"telegram"`
 	Sandbox   Sandbox             `toml:"sandbox"`
 	Limits    Limits              `toml:"limits"`
+	Memory    Memory              `toml:"memory"`
 }
 type Provider struct {
 	Name       string `toml:"name"`
@@ -63,8 +64,21 @@ type Limits struct {
 	ShellMaxExtends int `toml:"shell_max_extends"`
 }
 
+// Memory configures the nightly long-term memory digest. The sweep distills
+// each chat/group's day into workspace-scoped notes shared by its topics.
+// Timezone empty means server-local midnight. MaxBytes caps the stored
+// notes; MaxContextBytes caps how much memory each chat turn may consume.
+type Memory struct {
+	Enabled         bool   `toml:"enabled"`
+	Timezone        string `toml:"timezone"`
+	DigestAt        string `toml:"digest_at"`
+	MaxBytes        int    `toml:"max_bytes"`
+	MaxContextBytes int    `toml:"max_context_bytes"`
+	Model           string `toml:"model"`
+}
+
 func Defaults() Config {
-	return Config{StateDir: "~/.local/share/q-agent", Provider: Provider{Name: "ollama", Model: "qwen3"}, Telegram: Telegram{TokenEnv: "TELEGRAM_BOT_TOKEN"}, Sandbox: Sandbox{Bubblewrap: "bwrap", NewUIDMap: "newuidmap", NewGIDMap: "newgidmap", MMdebstrap: "mmdebstrap"}, Limits: Limits{MaxSteps: 8, MaxToolCalls: 16, MaxConcurrent: 2, TaskTimeout: "5m", ShellTimeout: "2m", ShellPromptTimeout: "90s", ShellMaxExtends: 2}}
+	return Config{StateDir: "~/.local/share/q-agent", Provider: Provider{Name: "ollama", Model: "qwen3"}, Telegram: Telegram{TokenEnv: "TELEGRAM_BOT_TOKEN"}, Sandbox: Sandbox{Bubblewrap: "bwrap", NewUIDMap: "newuidmap", NewGIDMap: "newgidmap", MMdebstrap: "mmdebstrap"}, Limits: Limits{MaxSteps: 8, MaxToolCalls: 16, MaxConcurrent: 2, TaskTimeout: "5m", ShellTimeout: "2m", ShellPromptTimeout: "90s", ShellMaxExtends: 2}, Memory: Memory{Enabled: true, DigestAt: "00:00", MaxBytes: 8192, MaxContextBytes: 2000}}
 }
 func Load(path string) (Config, error) {
 	c := Defaults()
@@ -145,6 +159,23 @@ func Load(path string) (Config, error) {
 	if c.Limits.ShellMaxExtends < 0 {
 		return c, fmt.Errorf("shell_max_extends must not be negative")
 	}
+	if c.Memory.DigestAt == "" {
+		c.Memory.DigestAt = "00:00"
+	}
+	if _, _, err := parseDigestAt(c.Memory.DigestAt); err != nil {
+		return c, err
+	}
+	if c.Memory.Timezone != "" {
+		if _, err := time.LoadLocation(c.Memory.Timezone); err != nil {
+			return c, fmt.Errorf("invalid memory timezone: %w", err)
+		}
+	}
+	if c.Memory.MaxBytes <= 0 {
+		return c, fmt.Errorf("memory.max_bytes must be positive")
+	}
+	if c.Memory.MaxContextBytes <= 0 {
+		return c, fmt.Errorf("memory.max_context_bytes must be positive")
+	}
 	c.StateDir, err = absolute(c.StateDir, filepath.Dir(path))
 	if err != nil {
 		return c, err
@@ -167,6 +198,19 @@ func Load(path string) (Config, error) {
 	}
 	return c, nil
 }
+
+// parseDigestAt parses a daily HH:MM wall time for the memory digest sweep.
+func parseDigestAt(s string) (hour, min int, err error) {
+	var h, m int
+	if _, err := fmt.Sscanf(s, "%d:%d", &h, &m); err != nil {
+		return 0, 0, fmt.Errorf("invalid memory digest_at %q: want HH:MM", s)
+	}
+	if h < 0 || h > 23 || m < 0 || m > 59 || len(s) != 5 || s[2] != ':' {
+		return 0, 0, fmt.Errorf("invalid memory digest_at %q: want HH:MM", s)
+	}
+	return h, m, nil
+}
+
 func absolute(path, base string) (string, error) {
 	if path == "~" || strings.HasPrefix(path, "~/") {
 		home, err := os.UserHomeDir()

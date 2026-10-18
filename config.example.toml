@@ -53,3 +53,18 @@ shell_prompt_timeout = "90s"
 # Max user-approved extensions per shell call. Each extend adds one
 # shell_timeout window; the overall task_timeout still caps the run.
 shell_max_extends = 2
+
+[memory]
+# Nightly long-term memory digest. Each night the bot distills the day's
+# conversations per chat/group into durable notes shared by that chat's topics.
+enabled = true
+# IANA timezone for the digest midnight; empty means server-local time.
+timezone = ""
+# Daily wall time for the digest sweep (HH:MM, 24-hour).
+digest_at = "00:00"
+# Stored-notes cap per chat/group in bytes; oldest entries compact first.
+max_bytes = 8192
+# Cap on memory text injected into each chat turn (characters, newest first).
+max_context_bytes = 2000
+# Optional digest model override; empty uses each chat's own model.
+model = ""

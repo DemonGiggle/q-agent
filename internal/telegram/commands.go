@@ -22,6 +22,8 @@ func DefaultCommands() []BotCommand {
 		{Command: "model", Description: "Set this chat's model"},
 		{Command: "think", Description: "Set this chat's thinking level"},
 		{Command: "settings", Description: "Show settings or restore defaults"},
+		{Command: "memory", Description: "Show this chat's long-term memory"},
+		{Command: "forget", Description: "Clear this chat's long-term memory"},
 		{Command: "help", Description: "Show command list"},
 		{Command: "new", Description: "Clear topic conversation, keep workspace"},
 		{Command: "cancel", Description: "Cancel active task"},

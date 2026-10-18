@@ -139,6 +139,9 @@ selections remain readable; no migration of the state directory is required.
   global thinking; `/status` reports the configured choice, not resolved behavior.
 - `/settings [reset]`: show effective settings, or clear all overrides for this
   chat/group and follow global defaults again.
+- `/memory`: show this chat/group's long-term memory and its byte budget usage.
+- `/forget`: clear this chat/group's long-term memory. Workspace files,
+  conversation history, schedules, and settings are retained.
 - `/status`: read-only snapshot of provider, model, thinking setting, host/sandbox
   mode, this topic's activity, global task concurrency, scheduler lifecycle,
   and step/tool/timeout limits. It reports configured routing, not a provider
@@ -176,6 +179,19 @@ keyboards and selection confirmations. Page edits and callback acknowledgements
 are best-effort Telegram requests, not durable deliveries. Status deliberately excludes
 credentials, credential sources/paths, provider URLs, filesystem paths, allowlists,
 and other conversations' content. It does not test provider/network health.
+
+### Long-term memory
+
+Every night at the configured `[memory]` time (local midnight by default), the
+bot distills each active chat/group's day into durable notes stored per chat
+(shared by that chat's topics) and notifies the chat with the learned summary.
+Memory is isolated per chat/group and injected into later turns newest-first
+within `max_context_bytes`, so it cannot grow context without bound; stored
+notes are capped at `max_bytes` with automatic compaction of older entries.
+`/memory` shows the stored notes and budget usage; `/forget` clears them while
+keeping workspace files, history, schedules, and settings. Digests run on each
+chat's own provider/model without tools, skip busy chats until the next night,
+and never send Telegram output on failure.
 
 On startup q-agent syncs its default Telegram command menu (`getMyCommands` /
 `setMyCommands`), overwriting a stale menu left by a previous bot on the same

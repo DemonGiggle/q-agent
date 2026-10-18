@@ -34,6 +34,9 @@ approved_chat_ids = [123456789, -1001234567890]
 	if c.Sandbox.Enabled || c.Provider.APIKeyEnv != "OPENCODE_GO_API_KEY" || c.StateDir != filepath.Join(dir, "state") || c.Limits.MaxSteps != 8 || c.TaskDuration() != 5*time.Minute || c.ShellDuration() != 2*time.Minute {
 		t.Fatalf("%+v", c)
 	}
+	if !c.Memory.Enabled || c.Memory.DigestAt != "00:00" || c.Memory.MaxBytes != 8192 || c.Memory.MaxContextBytes != 2000 {
+		t.Fatalf("memory defaults: %+v", c.Memory)
+	}
 	if len(c.Telegram.ApprovedUsers) != 1 || len(c.Telegram.ApprovedChats) != 2 || c.Telegram.ApprovedChats[1] != -1001234567890 {
 		t.Fatalf("allowlists: %+v", c.Telegram)
 	}
@@ -43,6 +46,9 @@ approved_chat_ids = [123456789, -1001234567890]
 		{"unknown field", "unexpected = true"},
 		{"unknown nested field", "[provider]\napi_key = 'not a configuration field'"},
 		{"unapproved administrator", "[telegram]\napproved_user_ids = [1]\nadmin_user_ids = [2]"},
+		{"memory digest_at", "[memory]\ndigest_at = '25:00'"},
+		{"memory timezone", "[memory]\ntimezone = 'Nope/Nowhere'"},
+		{"memory max_bytes", "[memory]\nmax_bytes = 0"},
 		{"nonpositive administrator", "[telegram]\napproved_user_ids = [0]\nadmin_user_ids = [0]"},
 		{"duplicate key", "state_dir = 'one'\nstate_dir = 'two'"},
 		{"invalid syntax", "[provider"},

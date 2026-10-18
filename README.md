@@ -164,6 +164,8 @@ the model and also work in sandbox mode. See the
 | `/model <id\|default>` | Set this chat/group’s model, or inherit the selected provider’s default. |
 | `/think <level\|auto\|default>` | Set thinking, use the provider’s automatic behavior, or inherit configured defaults. |
 | `/settings [reset]` | Show effective settings, or clear this chat/group’s overrides. |
+| `/memory` | Show this chat’s long-term memory and budget usage. |
+| `/forget` | Clear this chat’s long-term memory. Files and history stay. |
 | `/help` | Show the command list. |
 | `/new` | Start a fresh conversation in this topic. Your files and schedules stay. |
 | `/cancel` | Ask the current task to stop. Changes already made stay in place. |

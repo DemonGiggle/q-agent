@@ -37,7 +37,7 @@ func TestDefaultCommandsMatchParser(t *testing.T) {
 	}
 	// Every slash command accepted by Normalize must be advertised, and every
 	// advertised command must be accepted (otherwise the menu misleads).
-	for _, want := range []string{"ask", "provider", "model", "think", "settings", "new", "cancel", "status", "help", "models", "update", "restart"} {
+	for _, want := range []string{"ask", "provider", "model", "think", "settings", "memory", "forget", "new", "cancel", "status", "help", "models", "update", "restart"} {
 		if !seen[want] {
 			t.Fatalf("menu missing /%s", want)
 		}

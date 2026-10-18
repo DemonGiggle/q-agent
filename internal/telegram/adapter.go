@@ -117,7 +117,7 @@ func Normalize(update Update, bot User) (platform.Message, bool) {
 				return platform.Message{}, false
 			}
 			text = command + " " + strings.TrimSpace(strings.TrimPrefix(text, first))
-		case "/new", "/cancel", "/status", "/help", "/models":
+		case "/new", "/cancel", "/status", "/help", "/models", "/memory", "/forget":
 			if !addressed {
 				return platform.Message{}, false
 			}

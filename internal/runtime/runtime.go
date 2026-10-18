@@ -59,6 +59,8 @@ type Runtime struct {
 	scheduleCancel context.CancelFunc
 	scheduleDone   chan struct{}
 	scheduleWake   chan struct{}
+	digestCancel   context.CancelFunc
+	digestDone     chan struct{}
 }
 
 func (r *Runtime) allowed(m platform.Message) bool {
@@ -117,6 +119,9 @@ func (r *Runtime) Handle(ctx context.Context, m platform.Message) error {
 		return nil
 	}
 	r.logf("telegram update=%d chat=%d topic=%d user=%d text=%q", m.UpdateID, m.ChatID, m.TopicID, m.UserID, r.Options.Redaction.Text(redaction.Terminal, preview(m.Text)))
+	if err := r.Store.RecordChat(m, time.Now()); err != nil {
+		r.logf("telegram update=%d record chat error: %q", m.UpdateID, r.Options.Redaction.Text(redaction.Terminal, err.Error()))
+	}
 	if m.CallbackID != "" {
 		return r.handleModelCallback(ctx, m)
 	}
@@ -152,7 +157,7 @@ func (r *Runtime) Handle(ctx context.Context, m platform.Message) error {
 			default:
 			}
 			// Fall through to normal cancellation below.
-		} else if m.Text == "/status" || m.Text == "/help" {
+		} else if m.Text == "/status" || m.Text == "/help" || m.Text == "/memory" || m.Text == "/forget" {
 			// Let the switch handle these without consuming the prompt.
 		} else if extend, isDecision := parseShellDecision(m.Text); isDecision {
 			delete(r.shellPrompts, key)
@@ -180,7 +185,14 @@ func (r *Runtime) Handle(ctx context.Context, m platform.Message) error {
 		return r.reply(m, text)
 	case "/help":
 		r.mu.Unlock()
-		return r.reply(m, "**q-agent commands**\n`/update` — Install the latest stable Release and restart (private admin only).\n`/restart` — Restart the systemd user service (private admin only).\n`/status` — Show current runtime, process RSS memory, and safe settings (no model call).\n`/models` — Choose a model for this chat.\n`/provider` <name|default> — Choose this chat’s provider.\n`/model` <id|default> — Set this chat’s model.\n`/think` <level|auto|default> — Set this chat’s thinking.\n`/settings` [reset] — Show settings or restore defaults.\n`/help` — Show this help.\n`/new` — Clear this topic's conversation; keep workspace.\n`/cancel` — Cancel this topic's active task.\n`/ask` <prompt> — Ask the agent or steer your running task.\n\nSend follow-up text in the same topic to steer your task. `/cancel` stops the task and pending follow-ups.\n\nIn groups, address commands to @your_bot (e.g. `/status@your_bot`), mention the bot, or reply to it.")
+		return r.reply(m, "**q-agent commands**\n`/update` — Install the latest stable Release and restart (private admin only).\n`/restart` — Restart the systemd user service (private admin only).\n`/status` — Show current runtime, process RSS memory, and safe settings (no model call).\n`/models` — Choose a model for this chat.\n`/provider` <name|default> — Choose this chat’s provider.\n`/model` <id|default> — Set this chat’s model.\n`/think` <level|auto|default> — Set this chat’s thinking.\n`/settings` [reset] — Show settings or restore defaults.\n`/memory` — Show this chat’s long-term memory.\n`/forget` — Clear this chat’s long-term memory.\n`/help` — Show this help.\n`/new` — Clear this topic's conversation; keep workspace.\n`/cancel` — Cancel this topic's active task.\n`/ask` <prompt> — Ask the agent or steer your running task.\n\nSend follow-up text in the same topic to steer your task. `/cancel` stops the task and pending follow-ups.\n\nIn groups, address commands to @your_bot (e.g. `/status@your_bot`), mention the bot, or reply to it.")
+	case "/memory":
+		text := r.memoryShow(m)
+		r.mu.Unlock()
+		return r.reply(m, text)
+	case "/forget":
+		r.mu.Unlock()
+		return r.forgetMemory(m)
 	case "/cancel":
 		if busy && active.topic == m.TopicID {
 			active.userCancelled = true
@@ -303,7 +315,7 @@ func (r *Runtime) run(ctx context.Context, m platform.Message, runID string) boo
 						}
 						r.mu.Unlock()
 					}()
-					result, err := agent.Run(ctx, provider, &scheduleTools{base: baseTools, runtime: r, owner: m}, conversation.Messages(), m.Text, options)
+					result, err := agent.Run(ctx, provider, &scheduleTools{base: baseTools, runtime: r, owner: m}, r.memoryHistory(m, conversation), m.Text, options)
 					answer = result.Answer
 					runErr = err
 					if err == nil {
@@ -371,13 +383,20 @@ func (r *Runtime) Close() {
 	if r.scheduleCancel != nil {
 		r.scheduleCancel()
 	}
+	if r.digestCancel != nil {
+		r.digestCancel()
+	}
 	for _, t := range r.active {
 		t.cancel()
 	}
 	done := r.scheduleDone
+	digestDone := r.digestDone
 	r.mu.Unlock()
 	if done != nil {
 		<-done
+	}
+	if digestDone != nil {
+		<-digestDone
 	}
 	r.wg.Wait()
 }

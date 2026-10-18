@@ -137,6 +137,15 @@ func (r *Runtime) StartScheduler(ctx context.Context) error {
 			r.report(r.dispatchScheduled(schedulerCtx))
 		}
 	}()
+	if r.Config.Memory.Enabled {
+		digestCtx, digestCancel := context.WithCancel(ctx)
+		r.digestCancel = digestCancel
+		r.digestDone = make(chan struct{})
+		go func() {
+			defer close(r.digestDone)
+			r.digestLoop(digestCtx)
+		}()
+	}
 	return nil
 }
 

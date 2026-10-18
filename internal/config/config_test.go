@@ -42,6 +42,8 @@ approved_chat_ids = [123456789, -1001234567890]
 		{"duration", "[limits]\ntask_timeout = '0s'"},
 		{"unknown field", "unexpected = true"},
 		{"unknown nested field", "[provider]\napi_key = 'not a configuration field'"},
+		{"unapproved administrator", "[telegram]\napproved_user_ids = [1]\nadmin_user_ids = [2]"},
+		{"nonpositive administrator", "[telegram]\napproved_user_ids = [0]\nadmin_user_ids = [0]"},
 		{"duplicate key", "state_dir = 'one'\nstate_dir = 'two'"},
 		{"invalid syntax", "[provider"},
 		{"JSON", "{\"state_dir\":\"state\"}"},

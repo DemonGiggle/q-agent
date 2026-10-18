@@ -25,6 +25,10 @@ type ToolFactory func(string) agent.Tools
 type Sink interface {
 	Typing(context.Context, platform.Message) error
 }
+type Maintenance interface {
+	Request(context.Context, string, platform.Message) error
+	Busy() bool
+}
 type task struct {
 	topic         int64
 	user          int64
@@ -44,6 +48,7 @@ type Runtime struct {
 	Sink           Sink
 	Options        agent.Options
 	Report         func(error)
+	Maintenance    Maintenance
 	mu             sync.Mutex
 	active         map[string]task
 	wg             sync.WaitGroup
@@ -113,6 +118,9 @@ func (r *Runtime) Handle(ctx context.Context, m platform.Message) error {
 	if m.CallbackID != "" {
 		return r.handleModelCallback(ctx, m)
 	}
+	if fields := strings.Fields(m.Text); len(fields) > 0 && (fields[0] == "/update" || fields[0] == "/restart") {
+		return r.maintenanceCommand(ctx, m, fields)
+	}
 	if fields := strings.Fields(m.Text); len(fields) > 0 && (fields[0] == "/provider" || fields[0] == "/model" || fields[0] == "/think" || fields[0] == "/settings") {
 		return r.chatSettings(m, fields)
 	}
@@ -136,7 +144,7 @@ func (r *Runtime) Handle(ctx context.Context, m platform.Message) error {
 		return r.reply(m, text)
 	case "/help":
 		r.mu.Unlock()
-		return r.reply(m, "q-agent commands\n/status — Show current runtime, process RSS memory, and safe settings (no model call).\n/models — Choose a model for this chat.\n/provider <name|default> — Choose this chat’s provider.\n/model <id|default> — Set this chat’s model.\n/think <level|auto|default> — Set this chat’s thinking.\n/settings [reset] — Show settings or restore defaults.\n/help — Show this help.\n/new — Clear this topic's conversation; keep workspace.\n/cancel — Cancel this topic's active task.\n/ask <prompt> — Ask the agent or steer your running task.\n\nSend follow-up text in the same topic to steer your task. /cancel stops the task and pending follow-ups.\n\nIn groups, address commands to @your_bot (e.g. /status@your_bot), mention the bot, or reply to it.")
+		return r.reply(m, "q-agent commands\n/update — Install the latest stable Release and restart (private admin only).\n/restart — Restart the systemd user service (private admin only).\n/status — Show current runtime, process RSS memory, and safe settings (no model call).\n/models — Choose a model for this chat.\n/provider <name|default> — Choose this chat’s provider.\n/model <id|default> — Set this chat’s model.\n/think <level|auto|default> — Set this chat’s thinking.\n/settings [reset] — Show settings or restore defaults.\n/help — Show this help.\n/new — Clear this topic's conversation; keep workspace.\n/cancel — Cancel this topic's active task.\n/ask <prompt> — Ask the agent or steer your running task.\n\nSend follow-up text in the same topic to steer your task. /cancel stops the task and pending follow-ups.\n\nIn groups, address commands to @your_bot (e.g. /status@your_bot), mention the bot, or reply to it.")
 	case "/cancel":
 		if busy && active.topic == m.TopicID {
 			active.userCancelled = true
@@ -165,6 +173,10 @@ func (r *Runtime) Handle(ctx context.Context, m platform.Message) error {
 		return r.reply(m, "Conversation cleared. Workspace retained.")
 	}
 	limit := r.Config.Limits.MaxConcurrent
+	if r.Maintenance != nil && r.Maintenance.Busy() {
+		r.mu.Unlock()
+		return r.reply(m, "Service maintenance is in progress. Try again after startup completes.")
+	}
 	if limit <= 0 {
 		limit = 2
 	}

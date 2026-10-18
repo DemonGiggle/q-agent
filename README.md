@@ -147,10 +147,17 @@ over the executable you invoked. If you run from the source checkout, use
 running service when ready to use the new version. See the
 [upgrade guide](docs/operations.md#upgrading) for permissions and release details.
 
+For a systemd user service, configured administrators can instead send `/update`
+or `/restart` in a private Telegram chat. These host-side commands do not call
+the model and also work in sandbox mode. See the
+[service administration setup](docs/systemd.md#telegram-administration).
+
 ### Telegram commands
 
 | Command | What it does |
 | --- | --- |
+| `/update` | Install the latest stable GitHub Release and restart; private administrator only. |
+| `/restart` | Restart the systemd user service; private administrator only. |
 | `/status` | Show your provider, model, activity, process RSS memory, and current settings — even while busy. |
 | `/models` | Browse the selected provider’s models and switch this chat’s model. |
 | `/provider <name\|default>` | Select a configured provider for this chat/group; `/provider` lists choices. |

@@ -38,6 +38,7 @@ type Telegram struct {
 	TokenPath     string  `toml:"token_path"`
 	ApprovedUsers []int64 `toml:"approved_user_ids"`
 	ApprovedChats []int64 `toml:"approved_chat_ids"`
+	AdminUsers    []int64 `toml:"admin_user_ids"`
 }
 type Sandbox struct {
 	Enabled    bool   `toml:"enabled"`
@@ -112,6 +113,15 @@ func Load(path string) (Config, error) {
 		}
 	} else if c.Telegram.TokenEnv == "" {
 		c.Telegram.TokenEnv = "TELEGRAM_BOT_TOKEN"
+	}
+	for _, admin := range c.Telegram.AdminUsers {
+		approved := false
+		for _, user := range c.Telegram.ApprovedUsers {
+			approved = approved || admin == user
+		}
+		if admin <= 0 || !approved {
+			return c, fmt.Errorf("telegram.admin_user_ids must contain positive IDs from approved_user_ids")
+		}
 	}
 	if c.Limits.MaxSteps < 1 || c.Limits.MaxToolCalls < 1 || c.Limits.MaxConcurrent < 1 || c.Limits.MaxConcurrent > 2 {
 		return c, fmt.Errorf("positive limits required; max_concurrent must be 1 or 2")

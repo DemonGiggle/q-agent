@@ -17,6 +17,7 @@ import (
 	"q-agent/internal/host"
 	"q-agent/internal/llm"
 	"q-agent/internal/localtools"
+	"q-agent/internal/maintenance"
 	"q-agent/internal/redaction"
 	run "q-agent/internal/runtime"
 	"q-agent/internal/sandbox"
@@ -44,6 +45,20 @@ func main() {
 }
 func mainRun() error {
 	args := os.Args[1:]
+	if len(args) > 1 && args[0] == "service" && args[1] == "maintain" {
+		flags := flag.NewFlagSet("service maintain", flag.ContinueOnError)
+		dir := flags.String("state-dir", "", "absolute state directory")
+		id := flags.String("id", "", "armed maintenance request ID")
+		if err := flags.Parse(args[2:]); err != nil {
+			return err
+		}
+		if !filepath.IsAbs(*dir) || *id == "" || flags.NArg() != 0 {
+			return fmt.Errorf("internal maintenance requires --state-dir and --id")
+		}
+		ctx, cancel := context.WithTimeout(context.Background(), 9*time.Minute)
+		defer cancel()
+		return (&maintenance.Controller{StateDir: *dir}).Run(ctx, *id)
+	}
 	if len(args) > 0 && args[0] == "service" {
 		err := service.Run(args[1:], service.Options{Stdout: os.Stdout, Stderr: os.Stderr})
 		if errors.Is(err, flag.ErrHelp) {
@@ -222,10 +237,37 @@ func serve(ctx context.Context, c config.Config, policy *redaction.Policy, bot *
 	// completions reuse this transport's connection pool.
 	httpClient := &http.Client{Transport: http.DefaultTransport.(*http.Transport).Clone()}
 	rt := &run.Runtime{Config: c, Store: store, Workspaces: workspaces, Tools: tools, Sink: bot, Options: agent.Options{Model: c.Provider.Model, Thinking: c.Provider.Thinking, MaxSteps: c.Limits.MaxSteps, MaxToolCalls: c.Limits.MaxToolCalls, Redaction: policy, Logger: log.Default()}, Report: func(err error) { log.Print(err) }}
+	management := &maintenance.Controller{StateDir: c.StateDir, Version: version, Notify: bot.Send}
+	if c.Sandbox.Enabled {
+		management.Worker = c.Sandbox.Worker
+	}
+	rt.Maintenance = management
 	rt.Providers = configuredProviderFactory(c, providerKeys, httpClient)
 	if err := rt.StartScheduler(ctx); err != nil {
 		return fmt.Errorf("start scheduler: %w", err)
 	}
+	if err := management.MarkReady(); err != nil {
+		rt.Close()
+		return fmt.Errorf("maintenance readiness: %w", err)
+	}
+	managementCtx, cancelManagement := context.WithCancel(ctx)
+	managementDone := make(chan struct{})
+	go func() {
+		defer close(managementDone)
+		ticker := time.NewTicker(time.Second)
+		defer ticker.Stop()
+		for {
+			if err := management.Report(managementCtx, store); err != nil {
+				log.Print(err)
+			}
+			select {
+			case <-managementCtx.Done():
+				return
+			case <-ticker.C:
+			}
+		}
+	}()
+	defer func() { cancelManagement(); <-managementDone }()
 	deliveryCtx, cancelDelivery := context.WithCancel(context.Background())
 	defer cancelDelivery()
 	deliveryDone := make(chan struct{})

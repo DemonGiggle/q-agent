@@ -32,6 +32,9 @@ token_env = "TELEGRAM_BOT_TOKEN"
 # token_path = "~/.config/q-agent/telegram.token"
 approved_user_ids = [123456789]
 approved_chat_ids = [123456789, -1001234567890]
+# Optional: /update and /restart, only in approved private chats. Empty disables.
+# Administrators must also be listed in approved_user_ids.
+admin_user_ids = []
 
 [sandbox]
 enabled = false

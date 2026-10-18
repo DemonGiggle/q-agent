@@ -62,6 +62,9 @@ func (r *Runtime) dispatchScheduled(ctx context.Context) error {
 	if r.closed || ctx.Err() != nil {
 		return nil
 	}
+	if r.Maintenance != nil && r.Maintenance.Busy() {
+		return nil
+	}
 	if r.active == nil {
 		r.active = map[string]task{}
 	}

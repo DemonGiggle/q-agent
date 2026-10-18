@@ -161,6 +161,12 @@ func botToken(c config.Config) string {
 }
 
 func serve(ctx context.Context, c config.Config, policy *redaction.Policy, bot *telegram.Client) error {
+	return serveWithMaintenance(ctx, c, policy, bot, &maintenance.Controller{})
+}
+
+// Keep transport/process injection internal so lifecycle integration tests can
+// exercise the real serve loop against disposable units and offline endpoints.
+func serveWithMaintenance(ctx context.Context, c config.Config, policy *redaction.Policy, bot *telegram.Client, management *maintenance.Controller) error {
 	if runtime.GOOS != "linux" {
 		return fmt.Errorf("q-agent runtime requires Linux")
 	}
@@ -247,7 +253,7 @@ func serve(ctx context.Context, c config.Config, policy *redaction.Policy, bot *
 	// completions reuse this transport's connection pool.
 	httpClient := &http.Client{Transport: http.DefaultTransport.(*http.Transport).Clone()}
 	rt := &run.Runtime{Config: c, Store: store, Workspaces: workspaces, Tools: tools, Sink: bot, Options: agent.Options{Model: c.Provider.Model, Thinking: c.Provider.Thinking, MaxSteps: c.Limits.MaxSteps, MaxToolCalls: c.Limits.MaxToolCalls, Redaction: policy, Logger: log.Default()}, Report: func(err error) { log.Print(err) }}
-	management := &maintenance.Controller{StateDir: c.StateDir, Version: version, Notify: bot.Send}
+	management.StateDir, management.Version, management.Notify = c.StateDir, version, bot.Send
 	if c.Sandbox.Enabled {
 		management.Worker = c.Sandbox.Worker
 	}

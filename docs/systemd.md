@@ -343,3 +343,30 @@ It restarts an offline disposable probe through the production controller and
 checks a new MainPID, a delivered local notice, private request state, and helper
 survival after the probe's cgroup is stopped. It does not contact Telegram or
 GitHub, install a release, or touch the real `q-agent.service`.
+
+To validate the joined Telegram-to-systemd lifecycle, including archive upgrades
+and failed-start rollback, run:
+
+```sh
+Q_AGENT_LIFECYCLE_SYSTEMD_TEST=1 go test -count=1 -v ./cmd/q-agent \
+  -run '^TestIntegrationMaintenanceLifecycle$' -timeout 5m
+```
+
+Run as a non-root account with a running user manager, `go`, `bubblewrap`,
+`newuidmap`/`newgidmap`, and working subordinate ID allocations. The test builds
+two static, test-only executables with different versions. It runs restart,
+upgrade and rollback cases in **both host and real rootless sandbox modes**,
+using the production serve loop, Telegram transport, updater, independent helper
+and persistent outbox. Each case checks tool read/write before and after a new
+MainPID, persisted workspace contents, the reported version, installed executable
+bytes, and preserved configuration/credential files. Sandbox cases use a minimal
+local tar and the same executable as the service and worker.
+
+Telegram, model and Release APIs are loopback HTTP fixtures; no real bot, provider
+or hosted Release is contacted. A test-only controller remaps all service
+operations, including the helper's start-on-exit fallback, to uniquely named
+temporary runtime units and removes them afterwards. The rollback fixture is a
+valid native static executable that deliberately fails startup. The test does
+not install/start `q-agent.service`, publish a Release, download Debian packages,
+or prove a live Telegram/hosted GitHub upgrade. Ordinary `go test ./...` skips
+this opt-in test, so CI success alone is not evidence it ran.

@@ -233,6 +233,16 @@ func serve(ctx context.Context, c config.Config, policy *redaction.Policy, bot *
 	if identity.Username == "" {
 		return fmt.Errorf("Telegram bot username missing")
 	}
+	// Overwrite a stale command menu left by a previous bot implementation.
+	// The menu is server-side per bot token; Telegram clients fetch it on
+	// open. Best effort: polling still works with an empty menu.
+	func() {
+		syncCtx, cancel := context.WithTimeout(ctx, 15*time.Second)
+		defer cancel()
+		if err := bot.SyncCommands(syncCtx); err != nil {
+			log.Printf("telegram sync commands: %v", err)
+		}
+	}()
 	// Every provider instance has its own routing identity and state, while all
 	// completions reuse this transport's connection pool.
 	httpClient := &http.Client{Transport: http.DefaultTransport.(*http.Transport).Clone()}

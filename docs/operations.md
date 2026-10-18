@@ -177,6 +177,10 @@ are best-effort Telegram requests, not durable deliveries. Status deliberately e
 credentials, credential sources/paths, provider URLs, filesystem paths, allowlists,
 and other conversations' content. It does not test provider/network health.
 
+On startup q-agent syncs its default Telegram command menu (`getMyCommands` /
+`setMyCommands`), overwriting a stale menu left by a previous bot on the same
+token. The sync is best-effort: failures are logged and polling continues.
+
 ### Sandbox opt-in
 
 Set the execution mode explicitly:

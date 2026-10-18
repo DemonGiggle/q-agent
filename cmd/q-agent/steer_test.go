@@ -72,6 +72,10 @@ func TestServeTelegramFollowupSteersActiveTask(t *testing.T) {
 		switch filepath.Base(r.URL.Path) {
 		case "getMe":
 			fmt.Fprintln(w, `{"ok":true,"result":{"id":99,"username":"test_bot"}}`)
+		case "getMyCommands":
+			fmt.Fprintln(w, `{"ok":true,"result":[]}`)
+		case "setMyCommands":
+			fmt.Fprintln(w, `{"ok":true,"result":true}`)
 		case "getUpdates":
 			var body struct{ Offset int64 }
 			if err := json.NewDecoder(r.Body).Decode(&body); err != nil {

@@ -31,6 +31,10 @@ func TestAddressing(t *testing.T) {
 		{"targeted help", "group", "/help@our_bot", false, true, "/help"},
 		{"unaddressed help", "group", "/help", false, false, ""},
 		{"wrong help target", "private", "/help@other", false, false, ""},
+		{"private update", "private", "/update", false, true, "/update"},
+		{"targeted restart", "group", "/restart@our_bot", false, true, "/restart"},
+		{"update args preserved", "private", "/update --arch arm64", false, true, "/update --arch arm64"},
+		{"unaddressed update", "group", "/update", false, false, ""},
 		{"private", "private", "hello", false, true, "hello"}, {"group ignored", "group", "hello", false, false, ""}, {"mention", "supergroup", "hello @our_bot", false, true, "hello"}, {"wrong mention", "group", "@our_bot2 hi", false, false, ""}, {"ask", "group", "/ask@our_bot do this", false, true, "do this"}, {"ask mention", "group", "/ask do this @our_bot", false, true, "do this"}, {"wrong target", "private", "/ask@other hi", false, false, ""}, {"reply", "group", "hello", true, true, "hello"}, {"new", "group", "/new@our_bot", false, true, "/new"}, {"new mention", "group", "/new @our_bot", false, true, "/new"}, {"unaddressed cancel", "group", "/cancel", false, false, ""}, {"private cancel", "private", "/cancel", false, true, "/cancel"},
 	} {
 		t.Run(tc.name, func(t *testing.T) {

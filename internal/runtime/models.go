@@ -16,6 +16,7 @@ import (
 	"q-agent/internal/platform"
 	"q-agent/internal/redaction"
 	"q-agent/internal/state"
+	"q-agent/internal/telegram"
 )
 
 const modelsPerPage = 8
@@ -166,7 +167,8 @@ func modelPage(token string, menu modelMenu, current string, page int) (string, 
 	if len(nav) > 0 {
 		keyboard.Rows = append(keyboard.Rows, nav)
 	}
-	return fmt.Sprintf("Choose a model · %s\nCurrent: %s\nPage %d/%d\n\nApplies to this entire chat (all topics). Switching starts fresh model history. Menus expire after 15 minutes.", menu.Provider, current, page+1, pages), keyboard
+	raw := fmt.Sprintf("Choose a model · %s\nCurrent: %s\nPage %d/%d\n\nApplies to this entire chat (all topics). Switching starts fresh model history. Menus expire after 15 minutes.", menu.Provider, current, page+1, pages)
+	return telegram.Format(raw), keyboard
 }
 
 func (r *Runtime) handleModelCallback(ctx context.Context, m platform.Message) error {
@@ -253,7 +255,7 @@ func (r *Runtime) handleModelCallback(ctx context.Context, m platform.Message) e
 		if err = r.reply(m, text); err != nil {
 			return err
 		}
-		editText, editKeyboard = text, &platform.InlineKeyboard{Rows: [][]platform.InlineButton{}}
+		editText, editKeyboard = telegram.Format(text), &platform.InlineKeyboard{Rows: [][]platform.InlineButton{}}
 	}
 	return nil
 }

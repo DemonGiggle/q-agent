@@ -161,7 +161,7 @@ func testServe(t *testing.T, isolated bool) {
 			json.Unmarshal(raw["message_thread_id"], &message.Topic)
 			json.Unmarshal(raw["text"], &message.Text)
 			if message.Text == "completed😀" {
-				if message.ChatID != -10 || message.Topic != 7 || raw["parse_mode"] != nil {
+				if message.ChatID != -10 || message.Topic != 7 || string(raw["parse_mode"]) != `"HTML"` {
 					t.Errorf("reply: %+v", message)
 				}
 				fmt.Fprintln(w, `{"ok":true,"result":true}`)

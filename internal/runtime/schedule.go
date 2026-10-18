@@ -80,7 +80,7 @@ func (r *Runtime) dispatchScheduled(ctx context.Context) error {
 			continue
 		}
 		if run.Kind == "reminder" {
-			if err := r.Store.FinishRun(run.ID, "succeeded", telegram.Split(run.Text)); err != nil {
+			if err := r.Store.FinishRun(run.ID, "succeeded", telegram.FormatAndSplit(run.Text)); err != nil {
 				return err
 			}
 			continue

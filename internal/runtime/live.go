@@ -85,16 +85,20 @@ func (l *liveReporter) renderLocked() string {
 		stream = nilPolicy.Text(redaction.Remote, stream)
 	}
 	stream = truncateLive(stream, livePreviewLimit-len(l.status)-2)
+	var plain string
 	if l.status != "" && stream != "" {
-		return l.status + "\n\n" + stream
+		plain = l.status + "\n\n" + stream
+	} else if stream != "" {
+		plain = stream
+	} else if l.status != "" {
+		plain = l.status
+	} else {
+		plain = "Working…"
 	}
-	if stream != "" {
-		return stream
-	}
-	if l.status != "" {
-		return l.status
-	}
-	return "Working…"
+	// Live previews share the HTML send path: escape so stray &, <, >
+	// in partial markdown never fail entity parsing. Final answers use
+	// full Format for rich styling.
+	return telegram.Escape(plain)
 }
 
 func (l *liveReporter) ensureLocked() bool {
@@ -301,11 +305,24 @@ func (l *liveReporter) FinishError(text string) {
 		return
 	}
 	text = truncateLive(text, livePreviewLimit)
-	if text == "" {
+	formatted := telegram.Format(text)
+	if parts := telegram.SplitHTML(formatted); len(parts) > 0 {
+		formatted = parts[0]
+	}
+	if strings.TrimSpace(formatted) == "" {
 		return
 	}
 	l.status = ""
 	l.stream.Reset()
-	l.stream.WriteString(text)
-	l.editLocked(true)
+	l.stream.WriteString(formatted)
+	// formatted is already HTML; bypass renderLocked escaping by editing directly.
+	if l.disabled || !l.sent || l.id == 0 {
+		return
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), liveTimeout)
+	defer cancel()
+	_ = l.sink.EditLive(ctx, l.route, l.id, formatted)
+	l.lastText = formatted
+	l.lastEdit = time.Now()
+	return
 }

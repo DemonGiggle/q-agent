@@ -65,23 +65,29 @@ func (r *Runtime) requestShellExtend(ctx context.Context, owner platform.Message
 		close(old.ch)
 		delete(r.shellPrompts, key)
 	}
-	dec := &shellDecision{ch: make(chan bool, 1), owner: owner, command: command}
-	r.shellPrompts[key] = dec
 	wait := r.Config.ShellPromptWait()
 	r.mu.Unlock()
 
 	prompt := shellDecisionText(r.Config.ShellDuration(), lastLines)
 	prompt = r.Options.Redaction.Text(redaction.Remote, prompt)
-	// Best effort: if the outbox is unavailable the tool must not hang.
+	// Queue first so observers seeing shellPrompts always find the prompt
+	// already in the outbox (reply formatting must not widen the race).
 	if err := r.reply(owner, prompt); err != nil {
-		r.mu.Lock()
-		if cur, ok := r.shellPrompts[key]; ok && cur == dec {
-			delete(r.shellPrompts, key)
-		}
-		r.mu.Unlock()
 		r.logf("shell prompt queue failed: %q", r.Options.Redaction.Text(redaction.Terminal, err.Error()))
 		return false
 	}
+	dec := &shellDecision{ch: make(chan bool, 1), owner: owner, command: command}
+	r.mu.Lock()
+	if r.closed {
+		r.mu.Unlock()
+		return false
+	}
+	if old, ok := r.shellPrompts[key]; ok {
+		close(old.ch)
+		delete(r.shellPrompts, key)
+	}
+	r.shellPrompts[key] = dec
+	r.mu.Unlock()
 	r.logf("shell timeout prompt workspace=%s command=%.60q lines=%d", key, command, len(lastLines))
 
 	timer := time.NewTimer(wait)

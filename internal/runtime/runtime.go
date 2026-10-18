@@ -95,7 +95,7 @@ func preview(text string) string {
 	return text
 }
 func (r *Runtime) reply(m platform.Message, text string) error {
-	return r.Store.Queue(m, telegram.Split(text))
+	return r.Store.Queue(m, telegram.FormatAndSplit(text))
 }
 
 // Handle commits the update before doing work. Authorized commands use the
@@ -179,7 +179,7 @@ func (r *Runtime) Handle(ctx context.Context, m platform.Message) error {
 		return r.reply(m, text)
 	case "/help":
 		r.mu.Unlock()
-		return r.reply(m, "q-agent commands\n/update — Install the latest stable Release and restart (private admin only).\n/restart — Restart the systemd user service (private admin only).\n/status — Show current runtime, process RSS memory, and safe settings (no model call).\n/models — Choose a model for this chat.\n/provider <name|default> — Choose this chat’s provider.\n/model <id|default> — Set this chat’s model.\n/think <level|auto|default> — Set this chat’s thinking.\n/settings [reset] — Show settings or restore defaults.\n/help — Show this help.\n/new — Clear this topic's conversation; keep workspace.\n/cancel — Cancel this topic's active task.\n/ask <prompt> — Ask the agent or steer your running task.\n\nSend follow-up text in the same topic to steer your task. /cancel stops the task and pending follow-ups.\n\nIn groups, address commands to @your_bot (e.g. /status@your_bot), mention the bot, or reply to it.")
+		return r.reply(m, "**q-agent commands**\n`/update` — Install the latest stable Release and restart (private admin only).\n`/restart` — Restart the systemd user service (private admin only).\n`/status` — Show current runtime, process RSS memory, and safe settings (no model call).\n`/models` — Choose a model for this chat.\n`/provider` <name|default> — Choose this chat’s provider.\n`/model` <id|default> — Set this chat’s model.\n`/think` <level|auto|default> — Set this chat’s thinking.\n`/settings` [reset] — Show settings or restore defaults.\n`/help` — Show this help.\n`/new` — Clear this topic's conversation; keep workspace.\n`/cancel` — Cancel this topic's active task.\n`/ask` <prompt> — Ask the agent or steer your running task.\n\nSend follow-up text in the same topic to steer your task. `/cancel` stops the task and pending follow-ups.\n\nIn groups, address commands to @your_bot (e.g. `/status@your_bot`), mention the bot, or reply to it.")
 	case "/cancel":
 		if busy && active.topic == m.TopicID {
 			active.userCancelled = true
@@ -356,7 +356,7 @@ func (r *Runtime) run(ctx context.Context, m platform.Message, runID string) boo
 			}
 			r.mu.Unlock()
 		}
-		replyErr = r.Store.FinishRun(runID, status, telegram.Split(answer))
+		replyErr = r.Store.FinishRun(runID, status, telegram.FormatAndSplit(answer))
 	}
 	if err := replyErr; err != nil {
 		r.logf("run update=%d reply queue error after=%s err=%q", m.UpdateID, time.Since(runStart).Truncate(time.Millisecond), r.Options.Redaction.Text(redaction.Terminal, err.Error()))

@@ -31,7 +31,12 @@ func TestClientRoutesAndPolling(t *testing.T) {
 				t.Errorf("poll: %+v", body)
 			}
 			w.Write([]byte(`{"ok":true,"result":[{"update_id":11,"message":{"message_id":1,"from":{"id":1},"chat":{"id":-10,"type":"supergroup"},"message_thread_id":7,"text":"hello"}}]}`))
-		case "sendMessage", "sendChatAction":
+		case "sendMessage":
+			if body["chat_id"] != float64(-10) || body["message_thread_id"] != float64(7) || body["parse_mode"] != "HTML" {
+				t.Errorf("route: %+v", body)
+			}
+			w.Write([]byte(`{"ok":true,"result":true}`))
+		case "sendChatAction":
 			if body["chat_id"] != float64(-10) || body["message_thread_id"] != float64(7) || body["parse_mode"] != nil {
 				t.Errorf("route: %+v", body)
 			}
@@ -146,7 +151,7 @@ func TestModelKeyboardAPIs(t *testing.T) {
 			w.Write([]byte(`{"ok":true,"result":[{"update_id":2,"callback_query":{"id":"q","from":{"id":1},"message":{"message_id":5,"message_thread_id":7,"from":{"id":99},"chat":{"id":10,"type":"supergroup"}},"data":"models:token:p:1"}}]}`))
 			return
 		case "sendMessage", "editMessageText":
-			if body["chat_id"] != float64(10) || body["parse_mode"] != nil || body["reply_markup"] == nil {
+			if body["chat_id"] != float64(10) || body["parse_mode"] != "HTML" || body["reply_markup"] == nil {
 				t.Errorf("keyboard: %+v", body)
 			}
 			if method == "sendMessage" && body["message_thread_id"] != float64(7) {
@@ -242,4 +247,37 @@ func TestKeyboardOutboxSurvivesRestart(t *testing.T) {
 	}
 	cancel()
 	<-done
+}
+
+func TestSendFallbackOnParseError(t *testing.T) {
+	calls := 0
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		var body map[string]any
+		_ = json.NewDecoder(r.Body).Decode(&body)
+		calls++
+		if calls == 1 {
+			if body["parse_mode"] != "HTML" {
+				t.Errorf("first try should be HTML: %+v", body)
+			}
+			w.Write([]byte(`{"ok":false,"error_code":400,"description":"Bad Request: can't parse entities: test"}`))
+			return
+		}
+		if body["parse_mode"] != nil {
+			t.Errorf("fallback should drop parse_mode: %+v", body)
+		}
+		if body["text"] != "bold and plain" {
+			t.Errorf("fallback should strip tags: %+v", body)
+		}
+		w.Write([]byte(`{"ok":true,"result":true}`))
+	}))
+	defer server.Close()
+	c := New("token")
+	c.BaseURL = server.URL
+	c.HTTP = server.Client()
+	if err := c.Send(context.Background(), platform.Message{ChatID: 1}, "<b>bold</b> and plain"); err != nil {
+		t.Fatal(err)
+	}
+	if calls != 2 {
+		t.Fatalf("calls=%d", calls)
+	}
 }

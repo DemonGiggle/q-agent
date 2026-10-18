@@ -198,3 +198,36 @@ func TestThinkingValidationAndRepeatedSettingsRetainHistory(t *testing.T) {
 		t.Fatal("reset did not recover missing provider")
 	}
 }
+
+func TestBareThinkListsLevelsForCurrentModel(t *testing.T) {
+	r, _, p := pickerFixture(t)
+	r.Providers = func(state.Conversation) (llm.Provider, error) { return &thinkingPickerProvider{p}, nil }
+	must(t, r.Handle(context.Background(), input(1, 10, 0, 1, "/think")))
+	reply, ok := r.Store.Pending()
+	if !ok {
+		t.Fatal("missing /think reply")
+	}
+	text := strings.Join(reply.Parts, "\n")
+	for _, want := range []string{"Supported levels", "low", "high", "auto"} {
+		if !strings.Contains(text, want) {
+			t.Fatalf("bare /think missing %q: %s", want, text)
+		}
+	}
+	if strings.Contains(text, "Active tasks") {
+		t.Fatalf("bare /think dumped status: %s", text)
+	}
+	must(t, r.Store.Delivered(reply.ID))
+	must(t, r.Handle(context.Background(), input(2, 10, 0, 1, "/think high")))
+	for old, ok := r.Store.Pending(); ok; old, ok = r.Store.Pending() {
+		must(t, r.Store.Delivered(old.ID))
+	}
+	must(t, r.Handle(context.Background(), input(3, 10, 0, 1, "/think")))
+	reply, ok = r.Store.Pending()
+	if !ok {
+		t.Fatal("missing /think reply after set")
+	}
+	text = strings.Join(reply.Parts, "\n")
+	if !strings.Contains(text, "high") || !strings.Contains(text, "✓") {
+		t.Fatalf("bare /think missing current marker: %s", text)
+	}
+}

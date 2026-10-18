@@ -49,6 +49,7 @@ type Runtime struct {
 	Options        agent.Options
 	Report         func(error)
 	Maintenance    Maintenance
+	Version        string
 	mu             sync.Mutex
 	active         map[string]task
 	shellPrompts   map[string]*shellDecision

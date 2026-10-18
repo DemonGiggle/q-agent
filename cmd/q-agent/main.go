@@ -252,7 +252,7 @@ func serveWithMaintenance(ctx context.Context, c config.Config, policy *redactio
 	// Every provider instance has its own routing identity and state, while all
 	// completions reuse this transport's connection pool.
 	httpClient := &http.Client{Transport: http.DefaultTransport.(*http.Transport).Clone()}
-	rt := &run.Runtime{Config: c, Store: store, Workspaces: workspaces, Tools: tools, Sink: bot, Options: agent.Options{Model: c.Provider.Model, Thinking: c.Provider.Thinking, MaxSteps: c.Limits.MaxSteps, MaxToolCalls: c.Limits.MaxToolCalls, Redaction: policy, Logger: log.Default()}, Report: func(err error) { log.Print(err) }}
+	rt := &run.Runtime{Config: c, Store: store, Workspaces: workspaces, Tools: tools, Sink: bot, Version: version, Options: agent.Options{Model: c.Provider.Model, Thinking: c.Provider.Thinking, MaxSteps: c.Limits.MaxSteps, MaxToolCalls: c.Limits.MaxToolCalls, Redaction: policy, Logger: log.Default()}, Report: func(err error) { log.Print(err) }}
 	management.StateDir, management.Version, management.Notify = c.StateDir, version, bot.Send
 	if c.Sandbox.Enabled {
 		management.Worker = c.Sandbox.Worker

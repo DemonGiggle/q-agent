@@ -33,6 +33,8 @@ then bring the result back to your conversation.
   just by asking. Results return to the chat and topic where you scheduled them.
 - **Bring your model.** Use Ollama for a local model, or connect OpenAI or
   OpenCode Go.
+- **Look things up.** Search with DuckDuckGo and read web pages, without a
+  search API key or extra setup.
 - **Stay in control.** Check the current setup with `/status`, stop a task with
   `/cancel`, or start a fresh conversation with `/new` without deleting files.
 
@@ -46,6 +48,11 @@ then bring the result back to your conversation.
 
 > Check this repo's changes and explain what I should review first.
 
+**Find and read something on the web**
+
+> Search DuckDuckGo for Go's latest release, read the official announcement,
+> and summarize the changes with source links.
+
 **Remember the small things**
 
 > Remind me to pick up my keyboard today at 12:30, Asia/Taipei.
@@ -56,8 +63,9 @@ then bring the result back to your conversation.
 
 You can also ask to list or delete your schedules. A reminder sends your saved
 message; a scheduled task calls the agent when it's time to do the work.
-Tasks can use files and services accessible from your host — q-agent doesn't
-include a dedicated web browser or stock-price feed.
+Tasks can use files and services accessible from your host, DuckDuckGo web search,
+and text-only web fetching. Pages requiring JavaScript, logins or bot challenges
+aren't supported; q-agent doesn't include an interactive browser or stock-price feed.
 
 ## Quick start
 

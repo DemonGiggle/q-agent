@@ -189,3 +189,42 @@ Validation on the implementation host:
 
 Tests create local temporary state and send no live Telegram messages. No
 production service, configuration, or schedule was changed during validation.
+
+## Web fetch and DuckDuckGo search (2026-10-18)
+
+Started from a fast-forward sync of `main` at `d410b3d`. Validated on Linux
+arm64 with Go 1.24.4:
+
+- Full `go test -count=1 -timeout 5m ./...`, `go vet ./...`, formatting,
+  `git diff --check`, and static `make build`: passed.
+- New deterministic web tests also passed on Go 1.22.12. HTTP timeouts use
+  `net.Error.Timeout()` for version-compatible classification, including both
+  waiting-for-headers and reading-the-response-body deadlines.
+- Deterministic web tests cover HTTP/HTTPS, standard TLS verification, readable
+  HTML and relative links, plain text/JSON, character encodings, gzip and input/
+  UTF-8 output limits, URL validation, redirect limits, cancellation, recoverable
+  site timeouts, DuckDuckGo Lite/HTML results, URL unwrapping, duplicate filtering,
+  requested result count, bot challenges, HTTP failures, and unknown page formats.
+- Live host-side search returned real DuckDuckGo results, including `https://go.dev/`;
+  HTTPS fetching of that site passed.
+- A real static sandbox worker passed HTTP fetching, argument validation, live
+  DuckDuckGo search and verified HTTPS fetching. This test uses a temporary
+  minimal rootfs with public CA certificates and DNS settings, real bubblewrap,
+  subordinate UID/GID mapping, and worker cleanup; it does not substitute mocked
+  sandbox execution or change a deployed image. The full Debian/package-install
+  integration suite was not rerun for this change.
+
+Reproduce the opt-in live checks (ordinary CI remains offline):
+
+```sh
+Q_AGENT_WEB_LIVE_TEST=1 go test -v ./internal/localtools -run '^TestWebLive$' -count=1
+make build
+Q_AGENT_WEB_INTEGRATION=1 Q_AGENT_WEB_LIVE_TEST=1 \
+  Q_AGENT_WORKER="$PWD/bin/q-agent" \
+  go test -v ./internal/sandbox -run '^TestIntegrationWebTools$' -count=1 -timeout 2m
+```
+
+Omit `Q_AGENT_WEB_LIVE_TEST=1` in the sandbox command for a local HTTP-only
+check without external requests or a Debian image. Live checks may fail when
+DuckDuckGo rate-limits the host or presents a challenge. No live Telegram messages
+or model requests were sent, and no production configuration/service was changed.

@@ -7,6 +7,8 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"net/http"
+	"net/http/httptest"
 	"os"
 	"path/filepath"
 	"q-agent/internal/llm"
@@ -209,8 +211,8 @@ func TestHostShellCleanup(t *testing.T) {
 func TestHostToolSchemas(t *testing.T) {
 	runner := &Runner{Options: localtools.Options{WorkingDir: "/host/chat"}}
 	hostTools, sandboxTools := runner.Schemas(), localtools.Schemas()
-	if len(hostTools) != 6 {
-		t.Fatal("six tools required")
+	if len(hostTools) != 8 {
+		t.Fatal("six local tools and two web tools required")
 	}
 	for i := range hostTools {
 		if hostTools[i].Name != sandboxTools[i].Name || strings.Contains(hostTools[i].Description, "sandbox") {
@@ -227,5 +229,18 @@ func TestHostToolSchemas(t *testing.T) {
 	}
 	if !strings.Contains(runner.SystemPrompt(), "/host/chat") || !strings.Contains(runner.SystemPrompt(), "absolute paths refer to the host filesystem") {
 		t.Fatal("incorrect host system prompt")
+	}
+}
+
+func TestHostWebFetch(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "text/html; charset=utf-8")
+		fmt.Fprint(w, `<title>Host page</title><p>readable web content</p>`)
+	}))
+	defer server.Close()
+	runner := &Runner{Options: localtools.Options{WorkingDir: t.TempDir()}}
+	out, err := execute(t, runner, context.Background(), "web_fetch", map[string]string{"url": server.URL})
+	if err != nil || !strings.Contains(out, "readable web content") {
+		t.Fatalf("host fetch: %s %v", out, err)
 	}
 }

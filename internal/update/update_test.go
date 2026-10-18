@@ -87,6 +87,39 @@ func TestFindAsset(t *testing.T) {
 	}
 }
 
+func TestFindReleaseAssetTolerant(t *testing.T) {
+	for _, tc := range []struct {
+		name   string
+		tag    string
+		assets []asset
+		goos   string
+		arch   string
+		want   string
+	}{
+		{name: "versioned tar.gz", tag: "v0.1.1", assets: []asset{{Name: "q-agent_v0.1.1_linux_arm64.tar.gz"}}, goos: "linux", arch: "arm64", want: "q-agent_v0.1.1_linux_arm64.tar.gz"},
+		{name: "tag without v", tag: "v0.1.1", assets: []asset{{Name: "q-agent_0.1.1_linux_arm64.tar.gz"}}, goos: "linux", arch: "arm64", want: "q-agent_0.1.1_linux_arm64.tar.gz"},
+		{name: "aarch64 alias", tag: "v0.1.1", assets: []asset{{Name: "q-agent_v0.1.1_linux_aarch64.tar.gz"}}, goos: "linux", arch: "arm64", want: "q-agent_v0.1.1_linux_aarch64.tar.gz"},
+		{name: "x86_64 alias", tag: "v0.1.1", assets: []asset{{Name: "q-agent_v0.1.1_linux_x86_64.tar.gz"}}, goos: "linux", arch: "amd64", want: "q-agent_v0.1.1_linux_x86_64.tar.gz"},
+		{name: "dash separator", tag: "v0.1.1", assets: []asset{{Name: "q-agent-v0.1.1-linux-arm64.tar.gz"}}, goos: "linux", arch: "arm64", want: "q-agent-v0.1.1-linux-arm64.tar.gz"},
+		{name: "raw aarch64", tag: "v0.1.1", assets: []asset{{Name: "q-agent_linux_aarch64"}}, goos: "linux", arch: "arm64", want: "q-agent_linux_aarch64"},
+		{name: "unversioned archive", tag: "v0.1.1", assets: []asset{{Name: "q-agent_linux_arm64.tar.gz"}}, goos: "linux", arch: "arm64", want: "q-agent_linux_arm64.tar.gz"},
+		{name: "prefers raw", tag: "v0.1.1", assets: []asset{{Name: "q-agent_v0.1.1_linux_arm64.tar.gz"}, {Name: "q-agent_linux_arm64"}}, goos: "linux", arch: "arm64", want: "q-agent_linux_arm64"},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			got, ok := findReleaseAsset(tc.assets, tc.tag, tc.goos, tc.arch)
+			if !ok || got.Name != tc.want {
+				t.Fatalf("asset = %+v, %v; want %q", got, ok, tc.want)
+			}
+		})
+	}
+	if _, ok := findReleaseAsset([]asset{{Name: "q-agent_v0.1.1_linux_amd64.tar.gz"}}, "v0.1.1", "linux", "arm64"); ok {
+		t.Fatal("wrong arch matched")
+	}
+	if !isArchiveAsset("q-agent_v0.1.1_linux_arm64.TAR.GZ") || !isArchiveAsset("q-agent_linux_arm64.tgz") || isArchiveAsset("q-agent_linux_arm64") {
+		t.Fatal("archive detection wrong")
+	}
+}
+
 func TestRunDownloadsAndReplacesExecutable(t *testing.T) {
 	targetDir := t.TempDir()
 	target := filepath.Join(targetDir, "q-agent")

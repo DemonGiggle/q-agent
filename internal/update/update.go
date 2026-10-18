@@ -116,7 +116,7 @@ func Run(ctx context.Context, arguments []string, options Options) error {
 
 	targetAsset, ok := findReleaseAsset(latest.Assets, latest.TagName, targetOS, targetArch)
 	if !ok {
-		return fmt.Errorf("release %s has no asset for %s/%s", latest.TagName, targetOS, targetArch)
+		return fmt.Errorf("release %s has no asset for %s/%s (available: %s); if you are updating from v0.1.0, install v0.1.1 manually once — v0.1.0 only knows raw binaries while releases use .tar.gz", latest.TagName, targetOS, targetArch, assetNames(latest.Assets))
 	}
 	if targetAsset.BrowserDownloadURL == "" {
 		return fmt.Errorf("release asset %q has no download URL", targetAsset.Name)
@@ -138,7 +138,7 @@ func Run(ctx context.Context, arguments []string, options Options) error {
 		return err
 	}
 	defer os.Remove(temporary)
-	if strings.HasSuffix(targetAsset.Name, ".tar.gz") {
+	if isArchiveAsset(targetAsset.Name) {
 		extracted, err := unpackArchive(temporary, mode)
 		if err != nil {
 			return err
@@ -247,9 +247,12 @@ func fetchLatestRelease(ctx context.Context, client *http.Client, endpoint strin
 }
 
 func findAsset(assets []asset, goos, goarch string) (asset, bool) {
-	wanted := fmt.Sprintf("q-agent_%s_%s", goos, goarch)
+	wanted := map[string]bool{}
+	for _, arch := range archVariants(goarch) {
+		wanted[normalizeAssetName(fmt.Sprintf("q-agent_%s_%s", goos, arch))] = true
+	}
 	for _, candidate := range assets {
-		if candidate.Name == wanted {
+		if wanted[normalizeAssetName(candidate.Name)] {
 			return candidate, true
 		}
 	}
@@ -260,13 +263,73 @@ func findReleaseAsset(assets []asset, tag, goos, goarch string) (asset, bool) {
 	if raw, ok := findAsset(assets, goos, goarch); ok {
 		return raw, true
 	}
-	wanted := fmt.Sprintf("q-agent_%s_%s_%s.tar.gz", tag, goos, goarch)
+	wanted := map[string]bool{}
+	lowerOS := strings.ToLower(strings.TrimSpace(goos))
+	for _, tagVar := range tagVariants(tag) {
+		for _, arch := range archVariants(goarch) {
+			wanted[normalizeAssetName(fmt.Sprintf("q-agent_%s_%s_%s.tar.gz", tagVar, lowerOS, arch))] = true
+			wanted[normalizeAssetName(fmt.Sprintf("q-agent_%s_%s_%s.tgz", tagVar, lowerOS, arch))] = true
+		}
+	}
+	// Unversioned archives, e.g. q-agent_linux_arm64.tar.gz.
+	for _, arch := range archVariants(goarch) {
+		wanted[normalizeAssetName(fmt.Sprintf("q-agent_%s_%s.tar.gz", lowerOS, arch))] = true
+		wanted[normalizeAssetName(fmt.Sprintf("q-agent_%s_%s.tgz", lowerOS, arch))] = true
+	}
 	for _, candidate := range assets {
-		if candidate.Name == wanted {
+		if wanted[normalizeAssetName(candidate.Name)] {
 			return candidate, true
 		}
 	}
 	return asset{}, false
+}
+
+func normalizeAssetName(name string) string {
+	return strings.ReplaceAll(strings.ToLower(strings.TrimSpace(name)), "-", "_")
+}
+
+func archVariants(goarch string) []string {
+	switch normalizeArch(goarch) {
+	case "amd64":
+		return []string{"amd64", "x86_64"}
+	case "arm64":
+		return []string{"arm64", "aarch64"}
+	default:
+		return []string{strings.ToLower(strings.TrimSpace(goarch))}
+	}
+}
+
+func tagVariants(tag string) []string {
+	lower := strings.ToLower(strings.TrimSpace(tag))
+	trimmed := strings.TrimPrefix(lower, "v")
+	seen := map[string]bool{}
+	var out []string
+	for _, v := range []string{lower, trimmed, "v" + trimmed} {
+		if v == "" || seen[v] {
+			continue
+		}
+		seen[v] = true
+		out = append(out, v)
+	}
+	return out
+}
+
+func assetNames(assets []asset) string {
+	names := make([]string, 0, len(assets))
+	for _, a := range assets {
+		if strings.TrimSpace(a.Name) != "" {
+			names = append(names, a.Name)
+		}
+	}
+	if len(names) == 0 {
+		return "(none)"
+	}
+	return strings.Join(names, ", ")
+}
+
+func isArchiveAsset(name string) bool {
+	lower := strings.ToLower(strings.TrimSpace(name))
+	return strings.HasSuffix(lower, ".tar.gz") || strings.HasSuffix(lower, ".tgz")
 }
 
 // Only the top-level regular q-agent entry is copied, never arbitrary paths,

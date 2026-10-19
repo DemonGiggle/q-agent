@@ -264,6 +264,11 @@ func (s *Store) SnapshotDigest(key string) (ChatMemory, error) { return s.LoadMe
 // CommitDigest conditionally acknowledges exactly a prefix of the snapshot.
 // Appends survive; forget, eviction, and overlapping digest commits invalidate it.
 // Notes, cursor, journal removal, and delivery intent share one atomic write.
+//
+// Loss merge: reloaded mem already carries concurrent Lost/Truncated increments
+// from appends during model execution (appends don't bump Revision), so only
+// DroppedNotes deltas from this digest's compaction are added. Concurrent
+// eviction bumps Revision and correctly fails stale instead.
 func (s *Store) CommitDigest(key string, snapshot, result ChatMemory, count int, route platform.Message, parts []string, at time.Time, maxBytes int) error {
 	s.mu.Lock()
 	defer s.mu.Unlock()

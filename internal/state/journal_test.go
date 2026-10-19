@@ -613,3 +613,31 @@ func TestOverflowEpisodeEndsWhenJournalDrains(t *testing.T) {
 		t.Fatalf("second episode did not warn: %d %+v", warnings, mem.Notices)
 	}
 }
+
+func TestDigestPreservesConcurrentTruncationCounters(t *testing.T) {
+	s, _ := Open(t.TempDir(), nil)
+	route := testRoute(10, 0, 1)
+	key := route.WorkspaceKey()
+	journalExchange(t, s, route, "1", "first")
+	snap, _ := s.SnapshotDigest(key)
+	// Concurrent huge append truncates during model execution; it must not
+	// bump Revision, so the in-flight digest still commits and keeps its loss.
+	journalExchange(t, s, route, "huge", "HEAD"+strings.Repeat("y\n", 150000)+"TAIL")
+	mid, _ := s.LoadMemory(key)
+	if mid.Loss.TruncatedEvents != 1 {
+		t.Fatalf("concurrent truncation not recorded: %+v", mid.Loss)
+	}
+	if err := s.CommitDigest(key, snap, journalResult(snap), 1, route, []string{"notice"}, time.Now(), 8192); err != nil {
+		t.Fatal(err)
+	}
+	mem, _ := s.LoadMemory(key)
+	if len(mem.Pending) != 1 || mem.Pending[0].ID != "huge" {
+		t.Fatalf("concurrent append lost: %+v", mem)
+	}
+	if mem.Loss.TruncatedEvents != 1 || mem.Loss.TruncatedBytes == 0 {
+		t.Fatalf("concurrent truncation lost: %+v", mem.Loss)
+	}
+	if len(mem.Entries) != 1 {
+		t.Fatalf("digest note lost: %+v", mem)
+	}
+}

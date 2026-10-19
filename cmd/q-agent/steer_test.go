@@ -81,7 +81,7 @@ func TestServeTelegramFollowupSteersActiveTask(t *testing.T) {
 			if err := json.NewDecoder(r.Body).Decode(&body); err != nil {
 				t.Error(err)
 			}
-			id, text := int64(1), "/ask@test_bot original task"
+			id, text := int64(1), "original task @test_bot"
 			switch body.Offset {
 			case 0:
 			case 2:
@@ -98,7 +98,7 @@ func TestServeTelegramFollowupSteersActiveTask(t *testing.T) {
 			update := telegram.Update{ID: id, Message: &telegram.Message{ID: id, TopicID: 7, From: &telegram.User{ID: 1}, Chat: telegram.Chat{ID: -10, Type: "supergroup"}, Text: text}}
 			updates := []telegram.Update{update}
 			if id == 2 {
-				updates = append(updates, telegram.Update{ID: 3, Message: &telegram.Message{ID: 3, TopicID: 7, From: &telegram.User{ID: 1}, Chat: telegram.Chat{ID: -10, Type: "supergroup"}, Text: "/ask@test_bot with extra detail"}})
+				updates = append(updates, telegram.Update{ID: 3, Message: &telegram.Message{ID: 3, TopicID: 7, From: &telegram.User{ID: 1}, Chat: telegram.Chat{ID: -10, Type: "supergroup"}, Text: "with extra detail @test_bot"}})
 			}
 			json.NewEncoder(w).Encode(map[string]any{"ok": true, "result": updates})
 		case "sendMessage", "editMessageText":

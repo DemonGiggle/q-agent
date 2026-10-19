@@ -108,7 +108,7 @@ func TestServeModelsPaginationAndRouting(t *testing.T) {
 				case <-r.Context().Done():
 				}
 			case 4:
-				sendUpdate(w, 4, "/ask@test_bot test the chosen model", "")
+				sendUpdate(w, 4, "test the chosen model @test_bot", "")
 			default:
 				<-r.Context().Done()
 			}

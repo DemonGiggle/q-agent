@@ -28,7 +28,6 @@ func DefaultCommands() []BotCommand {
 		{Command: "help", Description: "Show command list"},
 		{Command: "new", Description: "Clear topic conversation, keep workspace"},
 		{Command: "cancel", Description: "Cancel active task"},
-		{Command: "ask", Description: "Ask the agent or steer running task"},
 	}
 }
 

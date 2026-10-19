@@ -111,7 +111,7 @@ Open your bot's private chat and send a message. Try `/status` to see your setup
 or `/help` to see the available commands.
 
 **Using a group?** Disable bot privacy through BotFather, then mention the bot,
-reply to it, or send `/ask@your_bot <request>`. Replies stay in the original topic.
+reply to it, or mention it (for example `<request> @your_bot`). Replies stay in the original topic.
 See the [group setup details](docs/operations.md#setup).
 
 ### Keep it running with systemd
@@ -172,9 +172,8 @@ the model and also work in sandbox mode. See the
 | `/help` | Show the command list. |
 | `/new` | Start a fresh conversation in this topic. Your files and schedules stay. |
 | `/cancel` | Ask the current task to stop. Changes already made stay in place. |
-| `/ask <request>` | Give the agent a task. Plain messages work in private chats too. |
 
-In groups, address commands to your bot, for example `/status@your_bot`.
+Send a message to give the agent a task. In groups, mention the bot or reply to it; private chats accept text directly. Address commands to your bot, for example `/status@your_bot`.
 
 **Per-chat model-step limit**
 

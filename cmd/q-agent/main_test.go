@@ -143,7 +143,7 @@ func testServe(t *testing.T, isolated bool) {
 				case <-r.Context().Done():
 					return
 				}
-				fmt.Fprintln(w, `{"ok":true,"result":[{"update_id":1,"message":{"message_id":1,"from":{"id":2},"chat":{"id":-99,"type":"supergroup"},"text":"/ask@test_bot unauthorized"}},{"update_id":2,"message":{"message_id":2,"message_thread_id":7,"from":{"id":1},"chat":{"id":-10,"type":"supergroup"},"text":"/ask@test_bot write a file"}}]}`)
+				fmt.Fprintln(w, `{"ok":true,"result":[{"update_id":1,"message":{"message_id":1,"from":{"id":2},"chat":{"id":-99,"type":"supergroup"},"text":"unauthorized @test_bot"}},{"update_id":2,"message":{"message_id":2,"message_thread_id":7,"from":{"id":1},"chat":{"id":-10,"type":"supergroup"},"text":"write a file @test_bot"}}]}`)
 			} else {
 				<-r.Context().Done()
 			}

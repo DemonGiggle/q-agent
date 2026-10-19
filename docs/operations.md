@@ -81,8 +81,8 @@ update. The providers share HTTP connections while each conversation retains its
 own persisted OpenCode session identity. `/new` discards that identity.
 
 For groups, disable privacy mode through BotFather (`/setprivacy` → Disable),
-then add or re-add the bot as instructed by Telegram. The adapter accepts mentions,
-replies to the bot, and `/ask@your_bot prompt`; it ignores unaddressed messages and
+then add or re-add the bot as instructed by Telegram. The adapter accepts mentions and
+replies to the bot; it ignores unaddressed messages and
 commands directed to another bot. Private chats accept text directly. See
 [Telegram's privacy rules](https://core.telegram.org/bots/faq#what-messages-will-my-bot-get).
 Replies and typing indicators retain the incoming topic ID. Text replies are split at a conservative 4096 UTF-16 units without splitting Unicode code
@@ -173,8 +173,6 @@ selections remain readable; no migration of the state directory is required.
 - `/help`: list available commands without calling the model.
 - `/new`: clear this topic's conversation, retaining its workspace.
 - `/cancel`: request cancellation of this topic's active task.
-- `/ask <prompt>`: submit a prompt or steer your active task (plain text also
-  works in private chats).
 
 All commands require an allowed private user or allowed group. In groups, use
 `/status@your_bot`, `/status @your_bot`, or reply to the bot with `/status`;
@@ -339,8 +337,7 @@ explains rootless operation and subordinate IDs.
 
 ## Commands and tools
 
-- `/ask@your_bot prompt`: start a request in a group or topic. `/ask prompt` also
-  works in private chats and addressed replies.
+- Send a message mentioning the bot or replying to it: start a request in a group or topic. Plain text works in private chats.
 - `/new` (or `/new@your_bot`): clear the current topic's history, keeping files and
   installed packages. An active conversation must finish or be cancelled first.
 - `/cancel` (or `/cancel@your_bot`): cancel this conversation's active request.
@@ -508,7 +505,7 @@ Changing a conversation's configured provider or model starts fresh history.
 
 ### Steering an active task
 
-New Telegram text (including `/ask`) from the task's original allowed sender
+New Telegram text from the task's original allowed sender
 in the same chat/topic is **steering**, not a new independent task. This also
 works during workspace provisioning and while an owned scheduled agent task is
 running. Normal group addressing and both allowlists still apply. Other topics

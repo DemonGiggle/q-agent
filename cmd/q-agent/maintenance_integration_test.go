@@ -405,7 +405,7 @@ func testMaintenanceLifecycle(t *testing.T, binaries map[string]string, isolated
 			t.Fatalf("start disposable unit: %s %v", out, err)
 		}
 	}
-	enqueue(1, "/ask create and read a persistent marker")
+	enqueue(1, "create and read a persistent marker")
 	waitMessage("before-complete")
 	oldPID, err := control("show", unit, "--property=MainPID", "--value")
 	if err != nil || oldPID == "0" {
@@ -432,7 +432,7 @@ func testMaintenanceLifecycle(t *testing.T, binaries map[string]string, isolated
 	if err != nil || newPID == "0" || newPID == oldPID {
 		t.Fatalf("no new MainPID: old=%s new=%s err=%v", oldPID, newPID, err)
 	}
-	enqueue(3, "/ask read the persistent marker and write it again")
+	enqueue(3, "read the persistent marker and write it again")
 	waitMessage("after-complete")
 	mu.Lock()
 	calls, fetched := modelCalls, downloads

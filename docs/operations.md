@@ -254,6 +254,10 @@ empty. **Pre-upgrade pending history is outside the new baseline and is not
 imported.** The bot queues a migration notice for registered chats and reports
 this boundary in `/memory`. Repeated restarts do not repeat the migration.
 
+A corrupt per-chat memory file is quarantined aside as
+`memory/<key>.corrupt-<timestamp>.json` so one bad chat cannot block
+startup; that chat restarts fresh while other chats keep their state.
+
 On startup q-agent syncs its default Telegram command menu (`getMyCommands` /
 `setMyCommands`), overwriting a stale menu left by a previous bot on the same
 token. The sync is best-effort: failures are logged and polling continues.

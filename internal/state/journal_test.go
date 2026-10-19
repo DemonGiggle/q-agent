@@ -486,3 +486,49 @@ func TestStartupRejectsUnreadableMemoryDirectory(t *testing.T) {
 		t.Fatal("startup skipped journal discovery failure")
 	}
 }
+
+func TestCorruptMemoryQuarantinedWithoutBlockingStartup(t *testing.T) {
+	dir := t.TempDir()
+	s, err := Open(dir, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	good := testRoute(10, 7, 1)
+	journalExchange(t, s, good, "1", "good source")
+	goodKey := good.WorkspaceKey()
+	badKey := "badchat"
+	if err := os.MkdirAll(filepath.Join(dir, "memory"), 0700); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(dir, "memory", badKey+".json"), []byte("{not json"), 0600); err != nil {
+		t.Fatal(err)
+	}
+	s, err = Open(dir, nil)
+	if err != nil {
+		t.Fatalf("corrupt chat blocked startup: %v", err)
+	}
+	mem, err := s.LoadMemory(goodKey)
+	if err != nil || len(mem.Pending) != 1 {
+		t.Fatalf("good chat lost: %+v %v", mem, err)
+	}
+	entries, err := os.ReadDir(filepath.Join(dir, "memory"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	quarantined := false
+	for _, e := range entries {
+		if strings.HasPrefix(e.Name(), badKey+".corrupt-") {
+			quarantined = true
+		}
+		if e.Name() == badKey+".json" {
+			t.Fatal("corrupt file still in place")
+		}
+	}
+	if !quarantined {
+		t.Fatal("corrupt file not quarantined")
+	}
+	fresh, err := s.LoadMemory(badKey)
+	if err != nil || len(fresh.Pending) != 0 || len(fresh.Entries) != 0 {
+		t.Fatalf("quarantined chat not fresh: %+v %v", fresh, err)
+	}
+}

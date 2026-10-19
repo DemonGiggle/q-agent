@@ -33,6 +33,17 @@ func (s *Store) recoverMemory() error {
 		key := strings.TrimSuffix(entry.Name(), ".json")
 		mem, err := s.loadMemory(key)
 		if err != nil {
+			// A single corrupt chat file must not block the whole bot.
+			// Quarantine JSON syntax failures aside and start that chat
+			// fresh; version and I/O errors still fail startup.
+			var syntax *json.SyntaxError
+			var typeErr *json.UnmarshalTypeError
+			if errors.As(err, &syntax) || errors.As(err, &typeErr) {
+				if qerr := s.quarantineMemory(key); qerr != nil {
+					return qerr
+				}
+				continue
+			}
 			return err
 		}
 		if err := s.recoverExchange(key, &mem); err != nil {
@@ -61,6 +72,19 @@ func (s *Store) recoverExchange(key string, mem *ChatMemory) error {
 	}
 	mem.Intent = nil
 	return s.writeMemory(key, *mem)
+}
+
+// quarantineMemory renames a corrupt per-chat memory file aside so one bad
+// chat cannot block startup for all chats. The chat restarts fresh; the
+// quarantined copy keeps the original bytes for manual inspection.
+func (s *Store) quarantineMemory(key string) error {
+	src := s.memoryPath(key)
+	dst := filepath.Join(s.dir, "memory", key+".corrupt-"+time.Now().UTC().Format("20060102T150405Z999999999")+".json")
+	if err := os.Rename(src, dst); err != nil {
+		return err
+	}
+	delete(s.memories, key)
+	return SyncDir(filepath.Join(s.dir, "memory"))
 }
 
 // recoverHistory runs before reads and every history mutation. A reset must

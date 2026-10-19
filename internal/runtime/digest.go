@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"strings"
 	"time"
+	"unicode/utf8"
 
 	"q-agent/internal/llm"
 	"q-agent/internal/platform"
@@ -192,6 +193,42 @@ func (r *Runtime) digestPass(ctx context.Context, sweep bool) (bool, error) {
 	return progress, nil
 }
 
+// splitDigestFragments splits text into labeled fragments, each within cap
+// bytes. It always makes progress, even for oversized labels or multi-byte
+// runes wider than the remaining budget, so callers cannot loop forever.
+func splitDigestFragments(text string, labelFor func(n int) string, cap int) []string {
+	var fragments []string
+	for len(text) > 0 {
+		label := labelFor(len(fragments) + 1)
+		avail := cap - len(label)
+		if avail < 4 {
+			// Reserve room for one rune; labels are small in practice.
+			label = state.UTF8Prefix(label, cap-4)
+			avail = cap - len(label)
+		}
+		if avail <= 0 {
+			_, size := utf8.DecodeRuneInString(text)
+			if size <= 0 || size > len(text) {
+				size = 1
+			}
+			fragments = append(fragments, label+text[:size])
+			text = text[size:]
+			continue
+		}
+		chunk := state.UTF8Prefix(text, avail)
+		if chunk == "" {
+			_, size := utf8.DecodeRuneInString(text)
+			if size <= 0 || size > len(text) {
+				size = 1
+			}
+			chunk = text[:size]
+		}
+		fragments = append(fragments, label+chunk)
+		text = text[len(chunk):]
+	}
+	return fragments
+}
+
 // digestBatch packs complete sources in sequence order. An exceptional large
 // source is processed as a group of labeled UTF-8 fragments in one transaction.
 func (r *Runtime) digestBatch(mem state.ChatMemory) ([]string, int) {
@@ -204,15 +241,11 @@ func (r *Runtime) digestBatch(mem state.ChatMemory) ([]string, int) {
 			if count > 0 {
 				break
 			}
-			var fragments []string
-			for len(text) > 0 {
-				label := r.Options.Redaction.Text(redaction.Remote, fmt.Sprintf("Source %d, topic %d, fragment %d:\n", event.Sequence, event.Topic, len(fragments)+1))
-				// A provider sees every fragment, including the final unprocessed tail.
-				chunk := state.UTF8Prefix(text, digestTranscriptCap-len(label))
-				fragments = append(fragments, label+chunk)
-				text = text[len(chunk):]
+			labelFor := func(n int) string {
+				return r.Options.Redaction.Text(redaction.Remote, fmt.Sprintf("Source %d, topic %d, fragment %d:\n", event.Sequence, event.Topic, n))
 			}
-			return fragments, 1
+			// A provider sees every fragment, including the final unprocessed tail.
+			return splitDigestFragments(text, labelFor, digestTranscriptCap), 1
 		}
 		b.WriteString(text)
 		count++

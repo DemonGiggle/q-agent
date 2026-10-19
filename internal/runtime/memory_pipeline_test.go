@@ -651,3 +651,57 @@ func TestDisabledMemoryRetainsJournalForReenable(t *testing.T) {
 		t.Fatalf("re-enable did not digest retained: %+v", mem)
 	}
 }
+
+func TestSplitFragmentsAlwaysMakesProgress(t *testing.T) {
+	const label = "Lxxxxxxxxxxxxxxxxxxxx"
+	labelFor := func(n int) string { return label }
+	lossless := []struct {
+		name string
+		text string
+		cap  int
+	}{
+		{"tiny cap with ascii", "hello world", 30},
+		{"tiny cap with multibyte", strings.Repeat("界\U0001F642", 10), 30},
+	}
+	for _, tc := range lossless {
+		frags := splitDigestFragments(tc.text, labelFor, tc.cap)
+		if len(frags) == 0 {
+			t.Fatalf("%s: no fragments", tc.name)
+		}
+		var got strings.Builder
+		for _, f := range frags {
+			if len(f) > tc.cap {
+				t.Fatalf("%s: fragment exceeds cap: %d > %d", tc.name, len(f), tc.cap)
+			}
+			if !utf8.ValidString(f) {
+				t.Fatalf("%s: invalid UTF-8", tc.name)
+			}
+			if !strings.HasPrefix(f, label) {
+				t.Fatalf("%s: missing label in %q", tc.name, f)
+			}
+			got.WriteString(strings.TrimPrefix(f, label))
+		}
+		if got.String() != tc.text {
+			t.Fatalf("%s: lossy split: %q want %q", tc.name, got.String(), tc.text)
+		}
+	}
+	// Defensive paths must terminate even when the label cannot fit.
+	for _, tc := range []struct {
+		name string
+		text string
+		cap  int
+	}{
+		{"label larger than cap", "tail", 5},
+		{"single rune wider than budget", "界tail", 6},
+	} {
+		frags := splitDigestFragments(tc.text, labelFor, tc.cap)
+		if len(frags) == 0 {
+			t.Fatalf("%s: no fragments", tc.name)
+		}
+		for _, f := range frags {
+			if len(f) == 0 || !utf8.ValidString(f) {
+				t.Fatalf("%s: invalid fragment %q", tc.name, f)
+			}
+		}
+	}
+}

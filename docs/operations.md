@@ -215,7 +215,8 @@ or another digest. Summaries, acknowledgement, journal removal, and the
 batch-specific notification intent share one atomic memory write. Delivery uses
 the durable outbox and resumes by chunk after restart; delivery failures never
 repeat committed distillation. As with other replies, ambiguous network delivery
-can repeat a chunk.
+can repeat a chunk. The per-chat delivery outbox keeps at most 16 notices,
+newest wins, so stalled delivery cannot grow disk without bound.
 
 The explicit byte budgets and loss policies are:
 

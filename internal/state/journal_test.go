@@ -532,3 +532,49 @@ func TestCorruptMemoryQuarantinedWithoutBlockingStartup(t *testing.T) {
 		t.Fatalf("quarantined chat not fresh: %+v %v", fresh, err)
 	}
 }
+
+func TestMemoryNoticesBoundedToNewest(t *testing.T) {
+	dir := t.TempDir()
+	s, err := Open(dir, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	route := testRoute(10, 0, 1)
+	key := route.WorkspaceKey()
+	journalExchange(t, s, route, "1", "source")
+	for i := 0; i < MaxMemoryNotices+5; i++ {
+		snap, _ := s.SnapshotDigest(key)
+		if err := s.CommitDigest(key, snap, journalResult(snap), 1, route, []string{"notice"}, time.Now(), 8192); err != nil {
+			// After the first commit pending is empty; re-add source.
+			journalExchange(t, s, route, fmt.Sprint("re", i), "source")
+			snap, _ = s.SnapshotDigest(key)
+			if err := s.CommitDigest(key, snap, journalResult(snap), 1, route, []string{"notice"}, time.Now(), 8192); err != nil {
+				t.Fatal(err)
+			}
+		} else {
+			journalExchange(t, s, route, fmt.Sprint("re", i), "source")
+		}
+	}
+	mem, _ := s.LoadMemory(key)
+	if len(mem.Notices) != MaxMemoryNotices {
+		t.Fatalf("notices unbounded: %d", len(mem.Notices))
+	}
+	// Restart trims oversized legacy outboxes without invalidating digests.
+	snap, _ := s.SnapshotDigest(key)
+	rev := snap.Revision
+	mem.Notices = append(mem.Notices, mem.Notices...)
+	if err := Atomic(s.memoryPath(key), mem); err != nil {
+		t.Fatal(err)
+	}
+	s, err = Open(dir, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	mem, _ = s.LoadMemory(key)
+	if len(mem.Notices) != MaxMemoryNotices {
+		t.Fatalf("restart did not trim notices: %d", len(mem.Notices))
+	}
+	if mem.Revision != rev && mem.Revision != rev+1 {
+		t.Fatalf("notice trim bumped revision unexpectedly: %d vs %d", mem.Revision, rev)
+	}
+}

@@ -52,9 +52,25 @@ func (s *Store) recoverMemory() error {
 		previous, _ := json.Marshal(mem)
 		s.boundMemory(&mem, s.memoryLimits.MaxBytes)
 		s.boundPending(key, &mem, mem.Route)
+		for len(mem.Notices) > MaxMemoryNotices {
+			mem.Notices = mem.Notices[1:]
+		}
 		current, _ := json.Marshal(mem)
 		if !bytes.Equal(previous, current) {
-			mem.Revision++
+			// Notice-only trimming must not invalidate in-flight digests,
+			// so only bump Revision when bounds/source state changed.
+			prevMem := ChatMemory{}
+			_ = json.Unmarshal(previous, &prevMem)
+			boundsChanged := prevMem.Cursor != mem.Cursor ||
+				prevMem.NextSequence != mem.NextSequence ||
+				prevMem.Epoch != mem.Epoch ||
+				len(prevMem.Pending) != len(mem.Pending) ||
+				prevMem.Bytes() != mem.Bytes() ||
+				prevMem.Loss != mem.Loss ||
+				prevMem.Overflow != mem.Overflow
+			if boundsChanged {
+				mem.Revision++
+			}
 			if err := s.writeMemory(key, mem); err != nil {
 				return err
 			}
@@ -270,6 +286,11 @@ func (s *Store) addMemoryNotice(mem *ChatMemory, route platform.Message, id stri
 		parts[i] = s.policy.Text(redaction.Remote, parts[i])
 	}
 	mem.Notices = append(mem.Notices, Reply{ID: id, Route: route, Parts: parts})
+	// Delivery can stall while digests succeed; bound the durable outbox so
+	// one chat cannot grow its memory file without bound. Keep newest.
+	for len(mem.Notices) > MaxMemoryNotices {
+		mem.Notices = mem.Notices[1:]
+	}
 }
 
 func (s *Store) pendingMemoryReply() (Reply, bool) {

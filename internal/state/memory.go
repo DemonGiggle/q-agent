@@ -36,6 +36,11 @@ const MemoryVersion = 1
 const DefaultMaxPendingBytes = 4 << 20
 const MaxSourceBytes = 256 << 10
 
+// MaxMemoryNotices bounds the durable per-chat delivery outbox. Digests can
+// succeed while Telegram delivery stalls; keep newest notices so disk stays
+// bounded and the latest summary still arrives.
+const MaxMemoryNotices = 16
+
 type MemoryLimits struct {
 	MaxBytes        int
 	MaxPendingBytes int

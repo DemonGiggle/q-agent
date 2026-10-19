@@ -164,15 +164,49 @@ func retainHeadTail(text string, n int) string {
 	return head + sourceOmission + text[start:]
 }
 
+// truncateSourceTranscript fits a base transcript into MaxSourceBytes for the
+// given event identity. It returns the stored transcript, the original
+// encoded size, and the final encoded size for loss accounting.
+func truncateSourceTranscript(base string, id string, topic int64, at time.Time, seq uint64) (string, int, int) {
+	event := SourceEvent{Sequence: seq, ID: id, Topic: topic, At: at, Transcript: base}
+	original := encodedSize(event)
+	if original <= MaxSourceBytes {
+		return base, original, original
+	}
+	low, high := 0, len(base)
+	for low < high {
+		mid := (low + high + 1) / 2
+		event.Transcript = retainHeadTail(base, mid)
+		if encodedSize(event) <= MaxSourceBytes {
+			low = mid
+		} else {
+			high = mid - 1
+		}
+	}
+	event.Transcript = retainHeadTail(base, low)
+	return event.Transcript, original, encodedSize(event)
+}
+
 // CommitExchange first durably commits the source and history intent in one
 // memory write. Recovery only applies the intent; it never re-enqueues a source
 // or reruns agent work. Eligibility is determined at completion, after forget.
+//
+// CPU-heavy transcript redaction/truncation happens before the store lock so a
+// huge exchange does not stall other chats; the lock still covers the sequence
+// allocation and the two synced writes required for durability.
 func (s *Store) CommitExchange(route platform.Message, sourceID string, c Conversation, at time.Time) error {
-	s.mu.Lock()
-	defer s.mu.Unlock()
 	if len(c.Pairs) == 0 || sourceID == "" {
 		return fmt.Errorf("exchange requires source identity and transcript")
 	}
+	// Immutable policy work outside the global lock.
+	cleaned := s.cleanConversation(c)
+	base := strings.ToValidUTF8(s.policy.Text(redaction.Persistence, sourceTranscript(c.Pairs[len(c.Pairs)-1])), "�")
+	at = at.UTC()
+	// Pre-truncate with a placeholder sequence; the in-lock check below only
+	// adjusts for a few digits of sequence growth.
+	preTruncated, _, _ := truncateSourceTranscript(base, sourceID, route.TopicID, at, 0)
+	s.mu.Lock()
+	defer s.mu.Unlock()
 	key := route.WorkspaceKey()
 	mem, err := s.loadMemory(key)
 	if err != nil {
@@ -184,30 +218,28 @@ func (s *Store) CommitExchange(route platform.Message, sourceID string, c Conver
 	if mem.LastSourceID == sourceID {
 		return nil
 	}
-	transcript := strings.ToValidUTF8(s.policy.Text(redaction.Persistence, sourceTranscript(c.Pairs[len(c.Pairs)-1])), "�")
+	// Re-validate with the real sequence; usually a no-op after pre-truncation.
 	mem.NextSequence++
-	event := SourceEvent{Sequence: mem.NextSequence, ID: sourceID, Topic: route.TopicID, At: at.UTC(), Transcript: transcript}
-	original := encodedSize(event)
+	stored := preTruncated
+	original := encodedSize(SourceEvent{Sequence: mem.NextSequence, ID: sourceID, Topic: route.TopicID, At: at, Transcript: base})
+	final := encodedSize(SourceEvent{Sequence: mem.NextSequence, ID: sourceID, Topic: route.TopicID, At: at, Transcript: stored})
+	if final > MaxSourceBytes {
+		// Sequence growth pushed a borderline event over; re-truncate.
+		// Rare: pre-truncation already fit for seq 0.
+		var orig int
+		stored, orig, final = truncateSourceTranscript(base, sourceID, route.TopicID, at, mem.NextSequence)
+		original = orig
+	}
+	event := SourceEvent{Sequence: mem.NextSequence, ID: sourceID, Topic: route.TopicID, At: at, Transcript: stored}
 	if original > MaxSourceBytes {
-		low, high := 0, len(transcript)
-		for low < high {
-			mid := (low + high + 1) / 2
-			event.Transcript = retainHeadTail(transcript, mid)
-			if encodedSize(event) <= MaxSourceBytes {
-				low = mid
-			} else {
-				high = mid - 1
-			}
-		}
-		event.Transcript = retainHeadTail(transcript, low)
 		mem.Loss.TruncatedEvents++
-		mem.Loss.TruncatedBytes += uint64(original - encodedSize(event))
+		mem.Loss.TruncatedBytes += uint64(original - final)
 	}
 	mem.Pending = append(mem.Pending, event)
 	mem.Route = platform.Message{Platform: route.Platform, ChatID: route.ChatID, UserID: route.UserID}
 	s.boundPending(key, &mem, mem.Route)
 	mem.LastSourceID = sourceID
-	mem.Intent = &ExchangeIntent{Key: route.ConversationKey(), Conversation: s.cleanConversation(c)}
+	mem.Intent = &ExchangeIntent{Key: route.ConversationKey(), Conversation: cleaned}
 	if err := s.writeMemory(key, mem); err != nil {
 		return err
 	}

@@ -43,6 +43,15 @@ func (r *Runtime) chatModel(m platform.Message) (state.ChatModel, error) {
 }
 
 func (r *Runtime) resolveChatModel(selected state.ChatModel) (state.ChatModel, error) {
+	if selected.MaxSteps <= 0 {
+		selected.MaxSteps = r.Config.Limits.MaxSteps
+		if selected.MaxSteps <= 0 {
+			selected.MaxSteps = r.Options.MaxSteps
+		}
+		if selected.MaxSteps <= 0 {
+			selected.MaxSteps = 8
+		}
+	}
 	if !selected.ProviderPinned && selected.Provider != r.Config.Provider.Name {
 		selected.Provider = r.Config.Provider.Name
 		selected.Model = ""
@@ -274,5 +283,6 @@ func (r *Runtime) loadModelConversation(m platform.Message) (state.Conversation,
 		conversation = state.Conversation{Provider: selection.Provider, Model: selection.Model, ModelSelection: selection.Revision}
 	}
 	conversation.Thinking = *selection.Thinking
+	conversation.MaxSteps = selection.MaxSteps
 	return conversation, nil
 }

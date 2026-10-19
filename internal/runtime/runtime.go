@@ -138,7 +138,7 @@ func (r *Runtime) Handle(ctx context.Context, m platform.Message) error {
 	if fields := strings.Fields(m.Text); len(fields) > 0 && (fields[0] == "/update" || fields[0] == "/restart") {
 		return r.maintenanceCommand(ctx, m, fields)
 	}
-	if fields := strings.Fields(m.Text); len(fields) > 0 && (fields[0] == "/provider" || fields[0] == "/model" || fields[0] == "/think" || fields[0] == "/settings") {
+	if fields := strings.Fields(m.Text); len(fields) > 0 && (fields[0] == "/provider" || fields[0] == "/model" || fields[0] == "/think" || fields[0] == "/max_steps" || fields[0] == "/settings") {
 		return r.chatSettings(m, fields)
 	}
 	if m.Text == "/models" {
@@ -195,7 +195,7 @@ func (r *Runtime) Handle(ctx context.Context, m platform.Message) error {
 		return r.reply(m, text)
 	case "/help":
 		r.mu.Unlock()
-		return r.reply(m, "**q-agent commands**\n`/update` — Install the latest stable Release and restart (private admin only).\n`/restart` — Restart the systemd user service (private admin only).\n`/status` — Show current runtime, process RSS memory, and safe settings (no model call).\n`/models` — Choose a model for this chat.\n`/provider` <name|default> — Choose this chat’s provider.\n`/model` <id|default> — Set this chat’s model.\n`/think` <level|auto|default> — Set this chat’s thinking.\n`/settings` [reset] — Show settings or restore defaults.\n`/memory` — Show this chat’s long-term memory.\n`/forget` — Clear notes and pending memory sources across all topics; running tasks may add new sources when they finish.\n`/help` — Show this help.\n`/new` — Clear this topic's conversation; keep workspace.\n`/cancel` — Cancel this topic's active task.\n`/ask` <prompt> — Ask the agent or steer your running task.\n\nSend follow-up text in the same topic to steer your task. `/cancel` stops the task and pending follow-ups.\n\nIn groups, address commands to @your_bot (e.g. `/status@your_bot`), mention the bot, or reply to it.")
+		return r.reply(m, "**q-agent commands**\n`/update` — Install the latest stable Release and restart (private admin only).\n`/restart` — Restart the systemd user service (private admin only).\n`/status` — Show current runtime, process RSS memory, and safe settings (no model call).\n`/models` — Choose a model for this chat.\n`/provider` <name|default> — Choose this chat’s provider.\n`/model` <id|default> — Set this chat’s model.\n`/think` <level|auto|default> — Set this chat’s thinking.\n`/max_steps` [number|default] — Show or set this chat’s model-step limit.\n`/settings` [reset] — Show settings or restore defaults.\n`/memory` — Show this chat’s long-term memory.\n`/forget` — Clear notes and pending memory sources across all topics; running tasks may add new sources when they finish.\n`/help` — Show this help.\n`/new` — Clear this topic's conversation; keep workspace.\n`/cancel` — Cancel this topic's active task.\n`/ask` <prompt> — Ask the agent or steer your running task.\n\nSend follow-up text in the same topic to steer your task. `/cancel` stops the task and pending follow-ups.\n\nIn groups, address commands to @your_bot (e.g. `/status@your_bot`), mention the bot, or reply to it.")
 	case "/memory":
 		text := r.memoryShow(m)
 		r.mu.Unlock()
@@ -295,6 +295,7 @@ func (r *Runtime) run(ctx context.Context, m platform.Message, runID string) boo
 					options := r.Options
 					options.Model = conversation.Model
 					options.Thinking = conversation.Thinking
+					options.MaxSteps = conversation.MaxSteps
 					options.NextInput = func(final bool) []string { return r.takeSteer(m.WorkspaceKey(), final) }
 					options.OnSteer = live.Steered
 					live.SetStatus("Working\u2026 contacting " + conversation.Model)

@@ -15,6 +15,12 @@ func TestAddressing(t *testing.T) {
 		want             bool
 		normalized       string
 	}{
+		{"private max steps", "private", "/max_steps 20", false, true, "/max_steps 20"},
+		{"targeted max steps", "supergroup", "/max_steps@OUR_BOT 20", false, true, "/max_steps 20"},
+		{"mentioned max steps", "group", "/max_steps default @our_bot", false, true, "/max_steps default"},
+		{"bare max steps", "private", "/max_steps", false, true, "/max_steps"},
+		{"unaddressed max steps", "group", "/max_steps 20", false, false, ""},
+		{"wrong max steps target", "private", "/max_steps@other 20", false, false, ""},
 		{"private provider", "private", "/provider openai", false, true, "/provider openai"},
 		{"targeted model", "group", "/model@OUR_BOT remote", false, true, "/model remote"},
 		{"mentioned think", "supergroup", "/think high @our_bot", false, true, "/think high"},

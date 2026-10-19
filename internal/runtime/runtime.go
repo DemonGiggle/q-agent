@@ -268,6 +268,8 @@ func (r *Runtime) run(ctx context.Context, m platform.Message, runID string) boo
 	preparingTimer := time.AfterFunc(800*time.Millisecond, func() { live.SetStatus("Working\u2026 preparing workspace") })
 	answer := ""
 	var runErr error
+	var continuationSaved bool
+	var continuationSaveErr error
 	root, err := r.Workspaces.Ensure(ctx, m)
 	preparingTimer.Stop()
 	if err != nil {
@@ -347,6 +349,18 @@ func (r *Runtime) run(ctx context.Context, m platform.Message, runID string) boo
 						}
 					} else {
 						r.logf("run update=%d agent error after=%s err=%q", m.UpdateID, time.Since(runStart).Truncate(time.Millisecond), r.Options.Redaction.Text(redaction.Terminal, err.Error()))
+						// Explicit cancellation does not add the cancelled run to history.
+						// Other failures retain bounded context, not a replayable tool queue.
+						if ctx.Err() != context.Canceled {
+							failure := "Task interrupted without a final answer: " + r.Options.Redaction.Text(redaction.Remote, err.Error())
+							conversation.Pairs = append(conversation.Pairs, state.Pair{User: m.Text, Answer: failure, Steers: result.Steers, Progress: result.Progress, Interrupted: true})
+							if saveErr := r.Store.Save(m.ConversationKey(), conversation); saveErr != nil {
+								continuationSaveErr = saveErr
+								r.report(fmt.Errorf("save continuation context: %w", saveErr))
+							} else {
+								continuationSaved = true
+							}
+						}
 					}
 				}
 			}
@@ -361,6 +375,11 @@ func (r *Runtime) run(ctx context.Context, m platform.Message, runID string) boo
 			answer = "Task failed: " + r.Options.Redaction.Text(redaction.Remote, runErr.Error())
 		}
 		r.report(runErr)
+		if continuationSaved {
+			answer += "\nTask context saved. Send a follow-up in this topic to continue."
+		} else if continuationSaveErr != nil {
+			answer += "\nWarning: task context could not be saved; please restate the original request and verify any completed actions."
+		}
 		if pending := r.discardSteer(m.WorkspaceKey()); pending > 0 {
 			answer += fmt.Sprintf("\n%d pending follow-up message(s) were not applied; please resend them.", pending)
 		}

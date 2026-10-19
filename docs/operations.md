@@ -202,6 +202,11 @@ notes and pending sources; `/memory` and `/forget` keep working and
 re-enabling digests the retained journal. Use `/forget` to drop retained
 state while disabled.
 
+Crash semantics are at-most-once: the update cursor persists before
+execution, so a crash after accept loses both the reply and its memory
+source. In-process retries remain idempotent; moving the commit after
+execution would risk duplicate tool effects.
+
 At startup and each configured `[memory]` daily wall time (server-local midnight
 by default), one worker visits chats fairly, committing at most one batch per
 chat in each round. Busy chats and maintenance defer work; task completion wakes

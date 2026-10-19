@@ -108,6 +108,12 @@ func (r *Runtime) reply(m platform.Message, text string) error {
 // Handle commits the update before doing work. Authorized commands use the
 // same path as prompts, and provisioning consumes the same concurrency slot.
 // All progress logs here are console-only; user-visible replies go through reply().
+//
+// At-most-once: Accept persists before execution so a crash after Accept loses
+// both the reply and its memory source (redelivery is dropped as duplicate).
+// Moving Accept after CommitExchange would risk duplicate tool side effects,
+// so memory inherits this window. In-process CommitExchange retries stay
+// idempotent via LastSourceID.
 func (r *Runtime) Handle(ctx context.Context, m platform.Message) error {
 	accepted, err := r.Store.Accept(m.UpdateID)
 	if err != nil {

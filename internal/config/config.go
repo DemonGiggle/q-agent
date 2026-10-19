@@ -175,11 +175,20 @@ func Load(path string) (Config, error) {
 	if c.Memory.MaxBytes <= 0 {
 		return c, fmt.Errorf("memory.max_bytes must be positive")
 	}
+	if c.Memory.MaxBytes > 1<<20 {
+		return c, fmt.Errorf("memory.max_bytes must not exceed 1048576")
+	}
 	if c.Memory.MaxPendingBytes <= 0 {
 		return c, fmt.Errorf("memory.max_pending_bytes must be positive")
 	}
+	if c.Memory.MaxPendingBytes > 64<<20 {
+		return c, fmt.Errorf("memory.max_pending_bytes must not exceed 67108864")
+	}
 	if c.Memory.MaxContextBytes <= 0 {
 		return c, fmt.Errorf("memory.max_context_bytes must be positive")
+	}
+	if c.Memory.MaxContextBytes > 200000 {
+		return c, fmt.Errorf("memory.max_context_bytes must not exceed 200000")
 	}
 	c.StateDir, err = absolute(c.StateDir, filepath.Dir(path))
 	if err != nil {

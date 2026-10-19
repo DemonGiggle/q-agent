@@ -64,12 +64,15 @@ timezone = ""
 digest_at = "00:00"
 # Total UTF-8 bytes of persisted note text (JSON metadata excluded).
 # Compaction is attempted first; oldest notes are then dropped/trimmed to fit.
+# Cap is 1048576.
 max_bytes = 8192
 # UTF-8 bytes of the complete injected memory message, including formatting.
 # Recent notes take priority; tiny budgets may inject no memory.
+# Cap is 200000.
 max_context_bytes = 2000
 # Encoded pending-source journal cap (4 MiB). Oldest sources are evicted on
 # overflow, with a warning and counters. No age expiry; event cap is 256 KiB.
+# Cap is 67108864.
 max_pending_bytes = 4194304
 # Optional digest model override; empty uses each chat's own model.
 model = ""

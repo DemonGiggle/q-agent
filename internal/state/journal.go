@@ -233,7 +233,13 @@ func (s *Store) CommitExchange(route platform.Message, sourceID string, c Conver
 	event := SourceEvent{Sequence: mem.NextSequence, ID: sourceID, Topic: route.TopicID, At: at, Transcript: stored}
 	if original > MaxSourceBytes {
 		mem.Loss.TruncatedEvents++
-		mem.Loss.TruncatedBytes += uint64(original - final)
+		// Count gross encoded bytes removed, not net saved: the retained
+		// head/tail marker itself occupies encoded space.
+		omissionEncoded := encodedSize(sourceOmission) - 2
+		if omissionEncoded < 0 {
+			omissionEncoded = 0
+		}
+		mem.Loss.TruncatedBytes += uint64(original - final + omissionEncoded)
 	}
 	mem.Pending = append(mem.Pending, event)
 	mem.Route = platform.Message{Platform: route.Platform, ChatID: route.ChatID, UserID: route.UserID}

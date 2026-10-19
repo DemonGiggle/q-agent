@@ -38,6 +38,10 @@ func untilNextDigest(now time.Time, loc *time.Location, hour, min int) time.Dura
 	if !next.After(local) {
 		next = time.Date(local.Year(), local.Month(), local.Day()+1, hour, min, 0, 0, loc)
 	}
+	// time.Date normalizes month overflow (Day+1) and DST gaps/skips; a
+	// skipped wall time may resolve off by an hour. The digest loop's minute
+	// tick re-arms pendingSweep when now passes next, so DST only shifts one
+	// sweep rather than skipping it.
 	return next.Sub(local)
 }
 

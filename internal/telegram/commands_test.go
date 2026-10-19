@@ -37,7 +37,7 @@ func TestDefaultCommandsMatchParser(t *testing.T) {
 	}
 	// Every slash command accepted by Normalize must be advertised, and every
 	// advertised command must be accepted (otherwise the menu misleads).
-	for _, want := range []string{"ask", "provider", "model", "think", "settings", "memory", "forget", "new", "cancel", "status", "help", "models", "update", "restart"} {
+	for _, want := range []string{"ask", "provider", "model", "think", "max_steps", "settings", "memory", "forget", "new", "cancel", "status", "help", "models", "update", "restart"} {
 		if !seen[want] {
 			t.Fatalf("menu missing /%s", want)
 		}
@@ -45,7 +45,7 @@ func TestDefaultCommandsMatchParser(t *testing.T) {
 	bot := User{ID: 99, Username: "our_bot"}
 	for cmd := range seen {
 		m := &Message{From: &User{ID: 1}, Chat: Chat{ID: 1, Type: "private"}, Text: "/" + cmd}
-		if cmd == "provider" || cmd == "model" || cmd == "think" || cmd == "settings" || cmd == "ask" {
+		if cmd == "provider" || cmd == "model" || cmd == "think" || cmd == "max_steps" || cmd == "settings" || cmd == "ask" {
 			m.Text += " arg"
 		}
 		if _, ok := Normalize(Update{ID: 1, Message: m}, bot); !ok {

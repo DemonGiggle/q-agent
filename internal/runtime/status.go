@@ -48,10 +48,12 @@ func (r *Runtime) statusLocked(m platform.Message) string {
 	model := "Unavailable (settings read failed)"
 	provider := model
 	thinking := model
+	maxSteps := "Unavailable (settings read failed)"
 	if selected, err := r.chatModel(m); err == nil {
 		model = selected.Model
 		provider = selected.Provider
 		thinking = *selected.Thinking
+		maxSteps = fmt.Sprint(selected.MaxSteps)
 	}
 	if thinking == "" {
 		thinking = "Provider default"
@@ -67,12 +69,12 @@ func (r *Runtime) statusLocked(m platform.Message) string {
 	if version == "" {
 		version = "dev"
 	}
-	text := fmt.Sprintf("**q-agent status**\n\nVersion: %s\nProvider: %s\nModel: %s\nThinking: %s\nExecution: %s\nMemory (RSS, q-agent): %s\n\nThis topic: %s\nActive tasks: %d/%d\nScheduler: %s\n\n**Limits per task**\nModel steps: %d\nTool calls: %d\nTask timeout: %s\nShell timeout: %s\n\n`/help` — Available commands",
+	text := fmt.Sprintf("**q-agent status**\n\nVersion: %s\nProvider: %s\nModel: %s\nThinking: %s\nExecution: %s\nMemory (RSS, q-agent): %s\n\nThis topic: %s\nActive tasks: %d/%d\nScheduler: %s\n\n**Limits per task**\nModel steps: %s\nTool calls: %d\nTask timeout: %s\nShell timeout: %s\n\n`/help` — Available commands",
 		version,
 		line(provider), line(model), line(thinking), mode,
 		formatRSS(currentRSS()),
 		activity, len(r.active), limit, scheduler,
-		r.Config.Limits.MaxSteps, r.Config.Limits.MaxToolCalls,
+		maxSteps, r.Config.Limits.MaxToolCalls,
 		line(r.Config.Limits.TaskTimeout), line(r.Config.Limits.ShellTimeout))
 	return r.Options.Redaction.Text(redaction.Remote, text)
 }

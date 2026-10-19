@@ -9,6 +9,7 @@ import (
 	"q-agent/internal/llm"
 	"q-agent/internal/platform"
 	"q-agent/internal/redaction"
+	"q-agent/internal/trust"
 	"strings"
 	"sync"
 )
@@ -17,11 +18,15 @@ const MaxPairs = 12
 const MaxHistoryBytes = 32 << 10
 
 type Pair struct {
-	User   string   `json:"user"`
-	Answer string   `json:"answer"`
-	Steers []string `json:"steers,omitempty"`
+	Interrupted bool     `json:"interrupted,omitempty"`
+	Progress    string   `json:"progress,omitempty"`
+	User        string   `json:"user"`
+	Answer      string   `json:"answer"`
+	Steers      []string `json:"steers,omitempty"`
 }
 type Conversation struct {
+	// Resolved when loading a task; not part of persisted topic history.
+	MaxSteps       int    `json:"-"`
 	Thinking       string `json:"thinking,omitempty"`
 	ModelSelection string `json:"model_selection,omitempty"`
 	Provider       string `json:"provider"`
@@ -37,11 +42,19 @@ func (c Conversation) Messages() []llm.Message {
 		for _, steer := range p.Steers {
 			messages = append(messages, llm.Message{Role: "user", Content: steer})
 		}
+		if p.Interrupted && p.Progress != "" {
+			messages = append(messages, llm.Message{Role: "user", Content: trust.Wrap("interrupted_task_tool_observations", p.Progress), Origin: "interrupted_task_tool_observations", Untrusted: true})
+		}
 		messages = append(messages, llm.Message{Role: "assistant", Content: p.Answer})
 	}
 	return messages
 }
 func (c *Conversation) Bound() {
+	for i := range c.Pairs {
+		if c.Pairs[i].Interrupted {
+			c.Pairs[i] = boundInterrupted(c.Pairs[i])
+		}
+	}
 	for {
 		data, _ := json.Marshal(c)
 		if len(c.Pairs) == 0 || len(c.Pairs) <= MaxPairs && len(data) <= MaxHistoryBytes {

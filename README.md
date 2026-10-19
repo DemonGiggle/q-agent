@@ -165,6 +165,7 @@ the model and also work in sandbox mode. See the
 | `/provider <name\|default>` | Select a configured provider for this chat/group; `/provider` lists choices. |
 | `/model <id\|default>` | Set this chat/group’s model, or inherit the selected provider’s default. |
 | `/think <level\|auto\|default>` | Set thinking, use the provider’s automatic behavior, or inherit configured defaults. |
+| `/max_steps [number\|default]` | Show or set this chat/group’s maximum model steps; `default` inherits the global setting. |
 | `/settings [reset]` | Show effective settings, or clear this chat/group’s overrides. |
 | `/memory` | Show notes, pending sources, retry state, and loss counters for this chat. |
 | `/forget` | Clear notes and pending memory sources across all topics. Files and history stay. |
@@ -174,6 +175,27 @@ the model and also work in sandbox mode. See the
 | `/ask <request>` | Give the agent a task. Plain messages work in private chats too. |
 
 In groups, address commands to your bot, for example `/status@your_bot`.
+
+**Per-chat model-step limit**
+
+Use `/max_steps` to view the effective maximum number of model requests per
+agent task, `/max_steps 20` to set it to a positive integer, and
+`/max_steps default` to inherit `[limits].max_steps` from the configuration.
+The setting persists across restarts and `/new`, and is shared by all topics
+in a chat/group, including scheduled agent tasks. Changes are rejected while
+the chat has an active task. `/settings reset` clears this override too.
+Changing the limit does not clear conversation history or change the separate
+tool-call limit or task timeout. In groups, address the command to the bot,
+for example `/max_steps@your_bot 20`.
+
+When a running task hits a step/tool limit, provider error, or timeout, its
+original request, applied follow-ups, failure reason, and bounded tool observations
+are saved in this topic's short-term history. Adjust the limit (for example
+`/max_steps 32`) and send a follow-up such as "continue" in the same topic.
+Completed tool calls are not automatically replayed. Records persist across
+restart but follow the ordinary history retention limits; `/new` clears them.
+Explicit cancellation does not add the cancelled run to history. This is saved
+context, not an exact execution checkpoint or recovery from a process crash.
 
 Successful interactive and scheduled tasks are captured in a durable memory
 journal before prompt history is bounded. Startup and nightly digests process

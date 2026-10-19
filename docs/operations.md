@@ -186,6 +186,33 @@ are best-effort Telegram requests, not durable deliveries. Status deliberately e
 credentials, credential sources/paths, provider URLs, filesystem paths, allowlists,
 and other conversations' content. It does not test provider/network health.
 
+### Interrupted task context
+
+The agent saves a failed execution as an explicitly interrupted short-term
+history entry, including the original request, applied steering, failure reason,
+and observed tool outcomes. This applies to both interactive and scheduled
+agent tasks, even with long-term memory disabled. A follow-up in the same topic
+receives that context after a restart; `/max_steps` changes do not clear it.
+`/new` and provider/model history resets retain their existing clearing behavior.
+Explicitly cancelled tasks are not added to continuation history.
+
+The observation log is reference data, not a replay queue. It contains no
+private thinking or provider-native reasoning/tool-call state. Completed tool
+calls are not automatically dispatched again. Interrupted tool outcomes are
+marked uncertain; verify side effects before retrying. Observations are wrapped
+as untrusted data when sent back to a model. Redaction runs before truncation and
+again at persistence boundaries.
+
+The in-run tool observation log is limited to 8 KiB. Each persisted interrupted
+entry fits within 16 KiB of encoded JSON: original request 4 KiB, failure reason
+2 KiB, combined steering 3 KiB, and tool observations 6 KiB, plus structure.
+Oversized fields retain marked UTF-8 head/tail excerpts; older observations may
+be omitted. These entries share the usual 12-pair/32 KiB history limits, rather
+than creating an unbounded transcript store. Storage failure is reported in the
+failure reply instead of claiming that context was saved. This is graceful-error
+context preservation, not an exact execution checkpoint or process-crash resume.
+Failed entries are not submitted as successful long-term memory source events.
+
 ### Long-term memory
 
 With memory enabled, successful interactive and scheduled agent tasks append a durable source event

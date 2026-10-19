@@ -139,9 +139,11 @@ selections remain readable; no migration of the state directory is required.
   global thinking; `/status` reports the configured choice, not resolved behavior.
 - `/settings [reset]`: show effective settings, or clear all overrides for this
   chat/group and follow global defaults again.
-- `/memory`: show this chat/group's long-term memory and its byte budget usage.
-- `/forget`: clear this chat/group's long-term memory. Workspace files,
-  conversation history, schedules, and settings are retained.
+- `/memory`: show notes, pending source count/bytes and age, retry state, and
+  information-loss counters, including when no notes exist.
+- `/forget`: clear notes and pending sources for this entire chat/group, across
+  all topics. Workspace files, conversation history, schedules, and settings
+  are retained. Tasks finishing afterward may add new memory sources.
 - `/status`: read-only snapshot of provider, model, thinking setting, host/sandbox
   mode, this topic's activity, global task concurrency, scheduler lifecycle,
   and step/tool/timeout limits. It reports configured routing, not a provider
@@ -182,16 +184,75 @@ and other conversations' content. It does not test provider/network health.
 
 ### Long-term memory
 
-Every night at the configured `[memory]` time (local midnight by default), the
-bot distills each active chat/group's day into durable notes stored per chat
-(shared by that chat's topics) and notifies the chat with the learned summary.
-Memory is isolated per chat/group and injected into later turns newest-first
-within `max_context_bytes`, so it cannot grow context without bound; stored
-notes are capped at `max_bytes` with automatic compaction of older entries.
-`/memory` shows the stored notes and budget usage; `/forget` clears them while
-keeping workspace files, history, schedules, and settings. Digests run on each
-chat's own provider/model without tools, skip busy chats until the next night,
-and never send Telegram output on failure.
+With memory enabled, successful interactive and scheduled agent tasks append a durable source event
+before the 12-pair/32 KiB prompt history is bounded. Each event contains a task
+identity, topic, completion timestamp, and ordered user, applied steering, and
+final-answer text. Tools and reasoning are excluded. Memory stays isolated per
+chat/group and shared across that chat's topics. Pending steering that has not
+been applied by a successful task is still run-local.
+
+The existing JSON atomic-write mechanism commits each source together with a
+bounded history intent, then updates the conversation file. Startup and later
+history reads/resets replay unfinished intents without running the agent or
+adding another source. `/new`, provider/model changes, and execution-mode
+changes clear prompt history while retaining pending memory sources.
+
+At startup and each configured `[memory]` daily wall time (server-local midnight
+by default), one worker visits chats fairly, committing at most one batch per
+chat in each round. Busy chats and maintenance defer work; task completion wakes
+the worker and a minute tick catches missed wakes. Model/storage failures retry
+with exponential delays of 1, 2, 4, 8, 16, 32, then at most 60 minutes. Per-chat
+retry state survives restart when storage is writable; unwritable storage also
+has a runtime retry. Registry failures retain the sweep for retry.
+
+Batches follow source sequence order and include at most 20,000 UTF-8 bytes of
+transcript, including labels and separators after remote redaction. Large events
+are split into labeled UTF-8 fragments. All fragments must succeed before the
+event is acknowledged. A failed attempt can repeat model requests. A conditional
+commit verifies the memory epoch, revision, cursor, and source identities, so
+concurrent appends survive and stale work cannot commit after forget, eviction,
+or another digest. Summaries, acknowledgement, journal removal, and the
+batch-specific notification intent share one atomic memory write. Delivery uses
+the durable outbox and resumes by chunk after restart; delivery failures never
+repeat committed distillation. As with other replies, ambiguous network delivery
+can repeat a chunk.
+
+The explicit byte budgets and loss policies are:
+
+- `max_bytes` (default 8192) counts UTF-8 bytes of persisted entry text after
+  persistence redaction, excluding dates and JSON metadata. Model compaction is
+  an optimization. Failed, empty, or oversized compaction falls back to removing
+  oldest notes and trimming the last oversized note at a UTF-8 boundary. Removal
+  and trimming increment loss counters.
+- `max_context_bytes` (default 2000) bounds the complete injected system-message
+  text, including the heading, dates, separators, and newlines, checked after
+  remote redaction. Recent notes take priority. If the minimum format plus text
+  cannot fit, no memory is injected.
+- `max_pending_bytes` (default 4194304 / 4 MiB) measures the encoded pending
+  journal, including JSON escapes and source metadata. Sources have no age
+  expiry. They remain until acknowledgement, `/forget`, or capacity eviction.
+  Overflow evicts oldest pending sources while chat continues. Lost-event and
+  encoded-event-byte counters persist; one warning is queued per overflow
+  episode, which ends when a successful digest frees capacity or `/forget` runs.
+- Each source event is capped at 256 KiB encoded. Exceptional payloads retain a
+  marked UTF-8 head and tail; truncation counts and removed encoded bytes persist.
+  Existing redaction rules also apply, including whole-line redaction above
+  64 KiB. Redaction may intentionally remove source information.
+
+`/memory` reports notes, budgets, pending count/encoded bytes and oldest age,
+retry/deferred state, and loss counters even when no notes exist. `/forget`
+atomically clears notes, pending sources, memory notifications, retry state, and
+loss counters across **all topics**, and advances the memory epoch. An older
+in-flight digest cannot commit. Eligibility uses task completion time: a task
+finishing after `/forget` may create a new source. Short-term history, workspace
+files, schedules, and settings remain intact; retained history can still appear
+in later prompts.
+
+On the one-time legacy migration, existing summaries are retained and normalized
+to the text budget, count-based cursors are discarded, and the journal starts
+empty. **Pre-upgrade pending history is outside the new baseline and is not
+imported.** The bot queues a migration notice for registered chats and reports
+this boundary in `/memory`. Repeated restarts do not repeat the migration.
 
 On startup q-agent syncs its default Telegram command menu (`getMyCommands` /
 `setMyCommands`), overwriting a stale menu left by a previous bot on the same

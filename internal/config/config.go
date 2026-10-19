@@ -66,19 +66,21 @@ type Limits struct {
 
 // Memory configures the nightly long-term memory digest. The sweep distills
 // each chat/group's day into workspace-scoped notes shared by its topics.
-// Timezone empty means server-local midnight. MaxBytes caps the stored
-// notes; MaxContextBytes caps how much memory each chat turn may consume.
+// Timezone empty means server-local midnight. MaxBytes caps persisted note
+// text; MaxContextBytes caps the complete injected message; MaxPendingBytes
+// caps the encoded source journal independently of bounded prompt history.
 type Memory struct {
 	Enabled         bool   `toml:"enabled"`
 	Timezone        string `toml:"timezone"`
 	DigestAt        string `toml:"digest_at"`
 	MaxBytes        int    `toml:"max_bytes"`
 	MaxContextBytes int    `toml:"max_context_bytes"`
+	MaxPendingBytes int    `toml:"max_pending_bytes"`
 	Model           string `toml:"model"`
 }
 
 func Defaults() Config {
-	return Config{StateDir: "~/.local/share/q-agent", Provider: Provider{Name: "ollama", Model: "qwen3"}, Telegram: Telegram{TokenEnv: "TELEGRAM_BOT_TOKEN"}, Sandbox: Sandbox{Bubblewrap: "bwrap", NewUIDMap: "newuidmap", NewGIDMap: "newgidmap", MMdebstrap: "mmdebstrap"}, Limits: Limits{MaxSteps: 8, MaxToolCalls: 16, MaxConcurrent: 2, TaskTimeout: "5m", ShellTimeout: "2m", ShellPromptTimeout: "90s", ShellMaxExtends: 2}, Memory: Memory{Enabled: true, DigestAt: "00:00", MaxBytes: 8192, MaxContextBytes: 2000}}
+	return Config{StateDir: "~/.local/share/q-agent", Provider: Provider{Name: "ollama", Model: "qwen3"}, Telegram: Telegram{TokenEnv: "TELEGRAM_BOT_TOKEN"}, Sandbox: Sandbox{Bubblewrap: "bwrap", NewUIDMap: "newuidmap", NewGIDMap: "newgidmap", MMdebstrap: "mmdebstrap"}, Limits: Limits{MaxSteps: 8, MaxToolCalls: 16, MaxConcurrent: 2, TaskTimeout: "5m", ShellTimeout: "2m", ShellPromptTimeout: "90s", ShellMaxExtends: 2}, Memory: Memory{Enabled: true, DigestAt: "00:00", MaxBytes: 8192, MaxContextBytes: 2000, MaxPendingBytes: 4 << 20}}
 }
 func Load(path string) (Config, error) {
 	c := Defaults()
@@ -172,6 +174,9 @@ func Load(path string) (Config, error) {
 	}
 	if c.Memory.MaxBytes <= 0 {
 		return c, fmt.Errorf("memory.max_bytes must be positive")
+	}
+	if c.Memory.MaxPendingBytes <= 0 {
+		return c, fmt.Errorf("memory.max_pending_bytes must be positive")
 	}
 	if c.Memory.MaxContextBytes <= 0 {
 		return c, fmt.Errorf("memory.max_context_bytes must be positive")

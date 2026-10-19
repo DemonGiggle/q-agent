@@ -55,16 +55,21 @@ shell_prompt_timeout = "90s"
 shell_max_extends = 2
 
 [memory]
-# Nightly long-term memory digest. Each night the bot distills the day's
-# conversations per chat/group into durable notes shared by that chat's topics.
+# Nightly long-term memory digest. Successful tasks are journaled durably,
+# independent of prompt history, per chat/group and shared across its topics.
 enabled = true
 # IANA timezone for the digest midnight; empty means server-local time.
 timezone = ""
 # Daily wall time for the digest sweep (HH:MM, 24-hour).
 digest_at = "00:00"
-# Stored-notes cap per chat/group in bytes; oldest entries compact first.
+# Total UTF-8 bytes of persisted note text (JSON metadata excluded).
+# Compaction is attempted first; oldest notes are then dropped/trimmed to fit.
 max_bytes = 8192
-# Cap on memory text injected into each chat turn (characters, newest first).
+# UTF-8 bytes of the complete injected memory message, including formatting.
+# Recent notes take priority; tiny budgets may inject no memory.
 max_context_bytes = 2000
+# Encoded pending-source journal cap (4 MiB). Oldest sources are evicted on
+# overflow, with a warning and counters. No age expiry; event cap is 256 KiB.
+max_pending_bytes = 4194304
 # Optional digest model override; empty uses each chat's own model.
 model = ""

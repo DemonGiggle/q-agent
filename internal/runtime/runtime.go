@@ -40,27 +40,31 @@ type task struct {
 	pending       []platform.Message
 }
 type Runtime struct {
-	Config         config.Config
-	Store          *state.Store
-	Workspaces     Workspaces
-	Providers      ProviderFactory
-	Tools          ToolFactory
-	Sink           Sink
-	Options        agent.Options
-	Report         func(error)
-	Maintenance    Maintenance
-	Version        string
-	mu             sync.Mutex
-	active         map[string]task
-	shellPrompts   map[string]*shellDecision
-	wg             sync.WaitGroup
-	closed         bool
-	modelMenus     map[string]modelMenu
-	scheduleCancel context.CancelFunc
-	scheduleDone   chan struct{}
-	scheduleWake   chan struct{}
-	digestCancel   context.CancelFunc
-	digestDone     chan struct{}
+	Config            config.Config
+	Store             *state.Store
+	Workspaces        Workspaces
+	Providers         ProviderFactory
+	Tools             ToolFactory
+	Sink              Sink
+	Options           agent.Options
+	Report            func(error)
+	Maintenance       Maintenance
+	Version           string
+	mu                sync.Mutex
+	active            map[string]task
+	shellPrompts      map[string]*shellDecision
+	wg                sync.WaitGroup
+	closed            bool
+	modelMenus        map[string]modelMenu
+	scheduleCancel    context.CancelFunc
+	scheduleDone      chan struct{}
+	scheduleWake      chan struct{}
+	digestCancel      context.CancelFunc
+	digestDone        chan struct{}
+	digestWake        chan struct{}
+	digestMu          sync.Mutex
+	digestRetries     map[string]digestRetry
+	digestGlobalRetry state.MemoryRetry
 }
 
 func (r *Runtime) allowed(m platform.Message) bool {
@@ -185,7 +189,7 @@ func (r *Runtime) Handle(ctx context.Context, m platform.Message) error {
 		return r.reply(m, text)
 	case "/help":
 		r.mu.Unlock()
-		return r.reply(m, "**q-agent commands**\n`/update` — Install the latest stable Release and restart (private admin only).\n`/restart` — Restart the systemd user service (private admin only).\n`/status` — Show current runtime, process RSS memory, and safe settings (no model call).\n`/models` — Choose a model for this chat.\n`/provider` <name|default> — Choose this chat’s provider.\n`/model` <id|default> — Set this chat’s model.\n`/think` <level|auto|default> — Set this chat’s thinking.\n`/settings` [reset] — Show settings or restore defaults.\n`/memory` — Show this chat’s long-term memory.\n`/forget` — Clear this chat’s long-term memory.\n`/help` — Show this help.\n`/new` — Clear this topic's conversation; keep workspace.\n`/cancel` — Cancel this topic's active task.\n`/ask` <prompt> — Ask the agent or steer your running task.\n\nSend follow-up text in the same topic to steer your task. `/cancel` stops the task and pending follow-ups.\n\nIn groups, address commands to @your_bot (e.g. `/status@your_bot`), mention the bot, or reply to it.")
+		return r.reply(m, "**q-agent commands**\n`/update` — Install the latest stable Release and restart (private admin only).\n`/restart` — Restart the systemd user service (private admin only).\n`/status` — Show current runtime, process RSS memory, and safe settings (no model call).\n`/models` — Choose a model for this chat.\n`/provider` <name|default> — Choose this chat’s provider.\n`/model` <id|default> — Set this chat’s model.\n`/think` <level|auto|default> — Set this chat’s thinking.\n`/settings` [reset] — Show settings or restore defaults.\n`/memory` — Show this chat’s long-term memory.\n`/forget` — Clear notes and pending memory sources across all topics; running tasks may add new sources when they finish.\n`/help` — Show this help.\n`/new` — Clear this topic's conversation; keep workspace.\n`/cancel` — Cancel this topic's active task.\n`/ask` <prompt> — Ask the agent or steer your running task.\n\nSend follow-up text in the same topic to steer your task. `/cancel` stops the task and pending follow-ups.\n\nIn groups, address commands to @your_bot (e.g. `/status@your_bot`), mention the bot, or reply to it.")
 	case "/memory":
 		text := r.memoryShow(m)
 		r.mu.Unlock()
@@ -218,7 +222,7 @@ func (r *Runtime) Handle(ctx context.Context, m platform.Message) error {
 			return err
 		}
 		r.logf("telegram update=%d /new cleared conversation", m.UpdateID)
-		return r.reply(m, "Conversation cleared. Workspace retained.")
+		return r.reply(m, "Conversation cleared. Workspace and pending memory sources retained.")
 	}
 	limit := r.Config.Limits.MaxConcurrent
 	if r.Maintenance != nil && r.Maintenance.Busy() {
@@ -321,7 +325,16 @@ func (r *Runtime) run(ctx context.Context, m platform.Message, runID string) boo
 					if err == nil {
 						r.logf("run update=%d agent ok after=%s steps=%d tools=%d usage=%d/%d/%d answer_len=%d", m.UpdateID, time.Since(runStart).Truncate(time.Millisecond), result.ModelSteps, result.ToolCalls, result.Usage.InputTokens, result.Usage.OutputTokens, result.Usage.TotalTokens, len(answer))
 						conversation.Pairs = append(conversation.Pairs, state.Pair{User: m.Text, Answer: answer, Steers: result.Steers})
-						if err = r.Store.Save(m.ConversationKey(), conversation); err != nil {
+						sourceID := fmt.Sprintf("update:%s:%d", m.Platform, m.UpdateID)
+						if runID != "" {
+							sourceID = "schedule:" + runID
+						}
+						if r.Config.Memory.Enabled {
+							err = r.Store.CommitExchange(m, sourceID, conversation, time.Now())
+						} else {
+							err = r.Store.Save(m.ConversationKey(), conversation)
+						}
+						if err != nil {
 							runErr = fmt.Errorf("save history: %w", err)
 							r.logf("run update=%d save history error after=%s err=%q", m.UpdateID, time.Since(runStart).Truncate(time.Millisecond), r.Options.Redaction.Text(redaction.Terminal, err.Error()))
 						}

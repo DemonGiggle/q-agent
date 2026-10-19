@@ -13,6 +13,11 @@ import (
 // holds mu and has checked authorization, capacity, and workspace exclusion.
 func (r *Runtime) startLocked(ctx context.Context, m platform.Message, runID string) error {
 	if runID != "" {
+		// Scheduled tasks can be the first activity in a workspace. Register
+		// their route before startup/nightly sweeps inspect busy chats.
+		if err := r.Store.RecordChat(m, time.Now()); err != nil {
+			r.report(err)
+		}
 		claimed, err := r.Store.ClaimRun(runID)
 		if err != nil {
 			return err
@@ -41,6 +46,12 @@ func (r *Runtime) startLocked(ctx context.Context, m platform.Message, runID str
 				message.Text = mergeFollowups(next)
 				if err := r.startLocked(ctx, message, ""); err != nil {
 					r.report(err)
+				}
+			}
+			if r.digestWake != nil {
+				select {
+				case r.digestWake <- struct{}{}:
+				default:
 				}
 			}
 			if r.scheduleWake != nil {
@@ -141,6 +152,7 @@ func (r *Runtime) StartScheduler(ctx context.Context) error {
 		digestCtx, digestCancel := context.WithCancel(ctx)
 		r.digestCancel = digestCancel
 		r.digestDone = make(chan struct{})
+		r.digestWake = make(chan struct{}, 1)
 		go func() {
 			defer close(r.digestDone)
 			r.digestLoop(digestCtx)

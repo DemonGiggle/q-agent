@@ -2,6 +2,7 @@ package runtime
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"strings"
 	"time"
@@ -10,103 +11,226 @@ import (
 	"q-agent/internal/platform"
 	"q-agent/internal/redaction"
 	"q-agent/internal/state"
+	"q-agent/internal/telegram"
 )
 
-// digestTranscriptCap bounds a single night's transcript sent for distillation.
 const digestTranscriptCap = 20000
-
-// fallbackMemoryContextBytes applies when configuration is absent (tests).
 const fallbackMemoryContextBytes = 2000
 
-// digestTopicPairs carries one topic's undigested pairs into the transcript.
-type digestTopicPairs struct {
-	topic int64
-	pairs []state.Pair
+type digestRetry struct {
+	epoch uint64
+	retry state.MemoryRetry
 }
 
 func memoryLocation(cfg string) *time.Location {
-	if cfg == "" {
-		return time.Local
-	}
-	if loc, err := time.LoadLocation(cfg); err == nil {
-		return loc
+	if cfg != "" {
+		if loc, err := time.LoadLocation(cfg); err == nil {
+			return loc
+		}
 	}
 	return time.Local
 }
 
-// untilNextDigest returns the duration until the next daily HH:MM wall time.
 func untilNextDigest(now time.Time, loc *time.Location, hour, min int) time.Duration {
 	local := now.In(loc)
 	next := time.Date(local.Year(), local.Month(), local.Day(), hour, min, 0, 0, loc)
 	if !next.After(local) {
-		next = next.Add(24 * time.Hour)
+		next = time.Date(local.Year(), local.Month(), local.Day()+1, hour, min, 0, 0, loc)
 	}
 	return next.Sub(local)
 }
 
-// digestSweep distills new conversation pairs for every registered chat.
-// Chats with active tasks (or during maintenance) are skipped and retried
-// the next night; their digest watermarks are left untouched.
-func (r *Runtime) digestSweep(ctx context.Context) error {
+func digestRetryDelay(attempt int) time.Duration {
+	if attempt < 1 {
+		attempt = 1
+	}
+	if attempt > 7 {
+		return time.Hour
+	}
+	delay := time.Minute * time.Duration(1<<(attempt-1))
+	if delay > time.Hour {
+		return time.Hour
+	}
+	return delay
+}
+
+// Startup and nightly sweeps enroll pending work; completion wakes only resume
+// enrolled work. One worker visits each chat once per round for fair batching.
+func (r *Runtime) digestSweep(ctx context.Context) error { return r.digestWork(ctx, true) }
+
+func (r *Runtime) digestWork(ctx context.Context, sweep bool) error {
 	if !r.Config.Memory.Enabled {
 		return nil
 	}
-	chats, err := r.Store.ListChats()
-	if err != nil {
-		return err
-	}
-	for _, chat := range chats {
-		if ctx.Err() != nil {
-			return ctx.Err()
-		}
-		r.mu.Lock()
-		_, busy := r.active[chat.Key]
-		maintenanceBusy := r.Maintenance != nil && r.Maintenance.Busy()
-		r.mu.Unlock()
-		if busy || maintenanceBusy {
-			if busy {
-				r.logf("digest skip busy workspace=%s", chat.Key)
-			}
-			continue
-		}
-		if err := r.digestChat(ctx, chat.Key, chat.Record); err != nil {
-			r.report(err)
-			r.logf("digest workspace=%s error: %q", chat.Key, r.Options.Redaction.Text(redaction.Terminal, err.Error()))
-		}
-	}
-	return nil
-}
-
-// digestChat distills one chat's new pairs into long-term memory and notifies
-// the chat at topic level zero on success.
-func (r *Runtime) digestChat(ctx context.Context, key string, rec state.ChatRecord) error {
-	mem, err := r.Store.LoadMemory(key)
-	if err != nil {
-		return err
-	}
-	var pending []digestTopicPairs
-	counts := map[string]int{}
-	total := 0
-	for _, topic := range rec.Topics {
-		convKey := fmt.Sprintf("%s:%d", key, topic)
-		conv, err := r.Store.Load(convKey)
+	r.digestMu.Lock()
+	defer r.digestMu.Unlock()
+	for {
+		progress, err := r.digestPass(ctx, sweep)
 		if err != nil {
 			return err
 		}
-		seen := mem.Digested[convKey]
-		if seen > len(conv.Pairs) {
-			seen = len(conv.Pairs)
+		if !progress {
+			return nil
 		}
-		if seen < len(conv.Pairs) {
-			pending = append(pending, digestTopicPairs{topic: topic, pairs: conv.Pairs[seen:]})
-			total += len(conv.Pairs) - seen
-		}
-		counts[convKey] = len(conv.Pairs)
+		sweep = false
 	}
-	if total == 0 {
+}
+
+func (r *Runtime) rememberDigestRetry(key string, epoch uint64, retry state.MemoryRetry) error {
+	r.mu.Lock()
+	if r.digestRetries == nil {
+		r.digestRetries = map[string]digestRetry{}
+	}
+	r.digestRetries[key] = digestRetry{epoch: epoch, retry: retry}
+	r.mu.Unlock()
+	err := r.Store.RetryMemory(key, epoch, retry)
+	if err != nil && !errors.Is(err, state.ErrStaleDigest) {
+		r.report(err)
+	}
+	return err
+}
+
+func (r *Runtime) digestPass(ctx context.Context, sweep bool) (bool, error) {
+	chats, err := r.Store.ListChats()
+	if err != nil {
+		return false, err
+	}
+	progress := false
+	for _, chat := range chats {
+		if ctx.Err() != nil {
+			return false, ctx.Err()
+		}
+		mem, loadErr := r.Store.SnapshotDigest(chat.Key)
+		r.mu.Lock()
+		local, hasLocal := r.digestRetries[chat.Key]
+		_, busy := r.active[chat.Key]
+		maintenance := r.Maintenance != nil && r.Maintenance.Busy()
+		r.mu.Unlock()
+		retry := mem.Retry
+		if hasLocal && (loadErr != nil || local.epoch == 0 || local.epoch == mem.Epoch) {
+			retry = local.retry
+		}
+		if loadErr != nil {
+			// Keep storage failures scheduled even when their retry state cannot write.
+			if hasLocal && time.Now().Before(retry.NextAt) {
+				continue
+			}
+			retry.Work = true
+			retry.Attempts++
+			retry.NextAt = time.Now().Add(digestRetryDelay(retry.Attempts))
+			r.rememberDigestRetry(chat.Key, local.epoch, retry)
+			r.report(loadErr)
+			continue
+		}
+		if mem.LegacyBaseline && !mem.MigrationReported {
+			r.report(r.Store.ReportMemoryMigration(chat.Key, chat.WorkspaceRoute()))
+		}
+		if sweep && (len(mem.Pending) > 0 || busy || maintenance) {
+			retry.Work = true
+		}
+		if len(mem.Pending) == 0 {
+			if busy || maintenance {
+				if retry.Work {
+					retry.Deferred = true
+					r.rememberDigestRetry(chat.Key, mem.Epoch, retry)
+				}
+			} else {
+				if retry != (state.MemoryRetry{}) || mem.Retry != (state.MemoryRetry{}) {
+					r.rememberDigestRetry(chat.Key, mem.Epoch, state.MemoryRetry{})
+				}
+				r.mu.Lock()
+				delete(r.digestRetries, chat.Key)
+				r.mu.Unlock()
+			}
+			continue
+		}
+		if !retry.Work || time.Now().Before(retry.NextAt) {
+			continue
+		}
+		if busy || maintenance {
+			retry.Deferred = true
+			r.rememberDigestRetry(chat.Key, mem.Epoch, retry)
+			continue
+		}
+		if !mem.Retry.Work {
+			// Enroll the round durably before model work. If capacity eviction
+			// invalidates the result, the remaining sources still need a retry.
+			if err := r.rememberDigestRetry(chat.Key, mem.Epoch, retry); err != nil {
+				if !errors.Is(err, state.ErrStaleDigest) {
+					retry.Attempts++
+					retry.NextAt = time.Now().Add(digestRetryDelay(retry.Attempts))
+					r.rememberDigestRetry(chat.Key, mem.Epoch, retry)
+				}
+				continue
+			}
+		}
+		err := r.digestChat(ctx, chat.Key, chat.Record)
+		if err != nil {
+			if errors.Is(err, state.ErrStaleDigest) {
+				r.mu.Lock()
+				delete(r.digestRetries, chat.Key)
+				r.mu.Unlock()
+				// Another commit/forget/eviction changed the snapshot. Revisit fairly.
+				progress = true
+				continue
+			}
+			retry.Work, retry.Deferred = true, false
+			retry.Attempts++
+			retry.NextAt = time.Now().Add(digestRetryDelay(retry.Attempts))
+			r.rememberDigestRetry(chat.Key, mem.Epoch, retry)
+			r.report(err)
+			r.logf("digest workspace=%s error: %q", chat.Key, r.Options.Redaction.Text(redaction.Terminal, err.Error()))
+			continue
+		}
+		r.mu.Lock()
+		delete(r.digestRetries, chat.Key)
+		r.mu.Unlock()
+		progress = true
+	}
+	return progress, nil
+}
+
+// digestBatch packs complete sources in sequence order. An exceptional large
+// source is processed as a group of labeled UTF-8 fragments in one transaction.
+func (r *Runtime) digestBatch(mem state.ChatMemory) ([]string, int) {
+	var b strings.Builder
+	count := 0
+	for _, event := range mem.Pending {
+		text := fmt.Sprintf("Source %d (%s), topic %d, %s:\n%s\n", event.Sequence, event.ID, event.Topic, event.At.Format(time.RFC3339), event.Transcript)
+		text = r.Options.Redaction.Text(redaction.Remote, text)
+		if b.Len()+len(text) > digestTranscriptCap {
+			if count > 0 {
+				break
+			}
+			var fragments []string
+			for len(text) > 0 {
+				label := r.Options.Redaction.Text(redaction.Remote, fmt.Sprintf("Source %d, topic %d, fragment %d:\n", event.Sequence, event.Topic, len(fragments)+1))
+				// A provider sees every fragment, including the final unprocessed tail.
+				chunk := state.UTF8Prefix(text, digestTranscriptCap-len(label))
+				fragments = append(fragments, label+chunk)
+				text = text[len(chunk):]
+			}
+			return fragments, 1
+		}
+		b.WriteString(text)
+		count++
+	}
+	if count == 0 {
+		return nil, 0
+	}
+	return []string{b.String()}, count
+}
+
+func (r *Runtime) digestChat(ctx context.Context, key string, rec state.ChatRecord) error {
+	mem, err := r.Store.SnapshotDigest(key)
+	if err != nil {
+		return err
+	}
+	transcripts, count := r.digestBatch(mem)
+	if count == 0 {
 		return nil
 	}
-	route := platform.Message{Platform: rec.Platform, ChatID: rec.ChatID, TopicID: 0, UserID: rec.Owner}
+	route := platform.Message{Platform: rec.Platform, ChatID: rec.ChatID, UserID: rec.Owner}
 	selected, err := r.chatModel(route)
 	if err != nil {
 		return err
@@ -123,42 +247,44 @@ func (r *Runtime) digestChat(ctx context.Context, key string, rec state.ChatReco
 	if selected.Thinking != nil {
 		thinking = *selected.Thinking
 	}
-	transcript := digestTranscript(pending)
-	summary, err := r.distill(ctx, provider, model, thinking, transcript)
-	if err != nil {
-		return err
+	var summaries []string
+	for _, transcript := range transcripts {
+		summary, err := r.distill(ctx, provider, model, thinking, transcript)
+		if err != nil {
+			return err
+		}
+		summary = strings.TrimSpace(r.Store.RedactMemoryText(r.Options.Redaction.Text(redaction.Remote, summary)))
+		if summary == "" {
+			return fmt.Errorf("empty digest summary")
+		}
+		summaries = append(summaries, summary)
 	}
-	summary = strings.TrimSpace(r.Options.Redaction.Text(redaction.Remote, summary))
-	if summary == "" {
-		return fmt.Errorf("empty digest summary")
-	}
-	loc := memoryLocation(r.Config.Memory.Timezone)
-	date := time.Now().In(loc).Format("2006-01-02")
+	summary := strings.Join(summaries, "\n")
+	date := time.Now().In(memoryLocation(r.Config.Memory.Timezone)).Format("2006-01-02")
+	result := mem
+	result.Entries = append(append([]state.MemoryEntry(nil), mem.Entries...), state.MemoryEntry{Date: date, Text: summary})
 	compacted := false
-	mem.Entries = append(mem.Entries, state.MemoryEntry{Date: date, Text: summary})
-	if r.Config.Memory.MaxBytes > 0 && mem.Bytes() > r.Config.Memory.MaxBytes {
-		var cerr error
-		mem, compacted, cerr = r.compactMemory(ctx, provider, model, thinking, mem, date)
-		if cerr != nil {
-			r.report(cerr)
-		}
-		for r.Config.Memory.MaxBytes > 0 && mem.Bytes() > r.Config.Memory.MaxBytes && len(mem.Entries) > 1 {
-			mem.Entries = mem.Entries[1:]
+	if result.Bytes() > r.Config.Memory.MaxBytes {
+		var compactErr error
+		result, compacted, compactErr = r.compactMemory(ctx, provider, model, thinking, result, date)
+		if compactErr != nil {
+			r.report(compactErr)
 		}
 	}
-	if err := r.Store.SaveMemory(key, mem); err != nil {
-		return err
-	}
-	if err := r.Store.MarkDigested(key, counts, time.Now()); err != nil {
-		return err
-	}
-	topics := len(pending)
-	preamble := fmt.Sprintf("Midnight digest done: distilled %d exchanges across %d topic(s) into long-term memory. Memory %d/%d bytes.",
-		total, topics, mem.Bytes(), r.Config.Memory.MaxBytes)
+	result = r.Store.PrepareMemory(result, r.Config.Memory.MaxBytes)
+	preamble := fmt.Sprintf("Midnight digest done: distilled %d exchanges into long-term memory. Memory %d/%d bytes.", count, result.Bytes(), r.Config.Memory.MaxBytes)
 	if compacted {
-		preamble += " Older notes were compacted to stay within budget."
+		preamble += " Older notes were compacted."
 	}
-	return r.reply(route, preamble+"\n\n"+summary)
+	if result.Loss.DroppedNoteBytes > mem.Loss.DroppedNoteBytes {
+		preamble += " Some notes were removed or trimmed to fit the budget; see /memory."
+	}
+	// Show the retained new note, keeping delivery proportional to stored memory.
+	notice := ""
+	if len(result.Entries) > 0 {
+		notice = result.Entries[len(result.Entries)-1].Text
+	}
+	return r.Store.CommitDigest(key, mem, result, count, route, telegram.FormatAndSplit(preamble+"\n\n"+notice), time.Now(), r.Config.Memory.MaxBytes)
 }
 
 // distill asks the provider for durable memory notes without tools.
@@ -210,109 +336,154 @@ func (r *Runtime) compactMemory(ctx context.Context, provider llm.Provider, mode
 	if err != nil {
 		return mem, false, err
 	}
-	summary := strings.TrimSpace(r.Options.Redaction.Text(redaction.Remote, resp.Message.Content))
+	summary := strings.TrimSpace(r.Store.RedactMemoryText(r.Options.Redaction.Text(redaction.Remote, resp.Message.Content)))
 	if summary == "" {
 		return mem, false, fmt.Errorf("empty compaction summary")
 	}
-	compacted := state.ChatMemory{
-		Entries:      append([]state.MemoryEntry{{Date: date, Text: "Earlier notes (compacted):\n" + summary}}, mem.Entries[len(mem.Entries)-1:]...),
-		Digested:     mem.Digested,
-		LastDigestAt: mem.LastDigestAt,
-	}
+	mem.Entries = append([]state.MemoryEntry{{Date: date, Text: "Earlier notes (compacted):\n" + summary}}, mem.Entries[len(mem.Entries)-1:]...)
+	compacted := mem
 	return compacted, true, nil
 }
 
-// digestTranscript renders new pairs grouped by topic for distillation,
-// bounded so one busy day cannot blow the digest request.
-func digestTranscript(pending []digestTopicPairs) string {
-	var b strings.Builder
-	for _, p := range pending {
-		b.WriteString(fmt.Sprintf("Topic %d:\n", p.topic))
-		for _, pair := range p.pairs {
-			b.WriteString("user: ")
-			b.WriteString(pair.User)
-			b.WriteString("\nassistant: ")
-			b.WriteString(pair.Answer)
-			b.WriteString("\n")
-		}
-	}
-	out := b.String()
-	if len(out) > digestTranscriptCap {
-		out = out[:digestTranscriptCap] + "\n[transcript truncated]"
-	}
-	return out
-}
-
-// memoryHistory prepends capped workspace long-term memory to the topic
-// history when the digest feature is enabled. Failures fall back to plain
-// history so memory issues never block a chat turn.
 func (r *Runtime) memoryHistory(m platform.Message, conv state.Conversation) []llm.Message {
 	history := conv.Messages()
 	if !r.Config.Memory.Enabled {
 		return history
 	}
-	maxChars := r.Config.Memory.MaxContextBytes
-	if maxChars <= 0 {
-		maxChars = fallbackMemoryContextBytes
+	limit := r.Config.Memory.MaxContextBytes
+	if limit <= 0 {
+		limit = fallbackMemoryContextBytes
 	}
 	mem, err := r.Store.LoadMemory(m.WorkspaceKey())
-	if err != nil || len(mem.Entries) == 0 {
+	if err != nil {
 		return history
 	}
-	text := r.Options.Redaction.Text(redaction.Remote, memoryText(mem, maxChars))
+	// Redact the heading, date prefixes, and note text before allocation. A
+	// second pass covers matches spanning formatting boundaries.
+	heading := r.Options.Redaction.Text(redaction.Remote, memoryHeading)
+	for i := range mem.Entries {
+		mem.Entries[i].Text = r.Options.Redaction.Text(redaction.Remote, mem.Entries[i].Text)
+		mem.Entries[i].Date = r.Options.Redaction.Text(redaction.Remote, mem.Entries[i].Date)
+	}
+	text := renderMemoryText(mem, limit, heading)
+	filtered := r.Options.Redaction.Text(redaction.Remote, text)
+	if len(filtered) > limit {
+		hardLimit := limit
+		// If formatting expanded, rerender with only the newest note so the
+		// final cap cannot sacrifice recent facts to an older partial note.
+		mem.Entries = mem.Entries[len(mem.Entries)-1:]
+		for len(filtered) > hardLimit {
+			limit -= len(filtered) - hardLimit
+			text = renderMemoryText(mem, limit, heading)
+			if text == "" {
+				return history
+			}
+			filtered = r.Options.Redaction.Text(redaction.Remote, text)
+		}
+	}
+	text = filtered
 	if strings.TrimSpace(text) == "" {
 		return history
 	}
 	return append([]llm.Message{{Role: "system", Content: text}}, history...)
 }
 
-// memoryText renders workspace memory newest-first within maxChars for chat
-// context injection. Empty when nothing is stored.
-func memoryText(mem state.ChatMemory, maxChars int) string {
-	if len(mem.Entries) == 0 || maxChars <= 0 {
+const memoryHeading = "Long-term memory for this chat (distilled nightly, newest last):\n"
+
+// memoryText reserves the entire format and favors recent notes. Partial notes
+// are trimmed on UTF-8 boundaries; impossible minimum formats yield no context.
+func memoryText(mem state.ChatMemory, limit int) string {
+	return renderMemoryText(mem, limit, memoryHeading)
+}
+
+func renderMemoryText(mem state.ChatMemory, limit int, heading string) string {
+	if len(mem.Entries) == 0 || limit <= len(heading) {
 		return ""
 	}
+	remaining := limit - len(heading)
 	var lines []string
-	used := 0
 	for i := len(mem.Entries) - 1; i >= 0; i-- {
-		line := "- [" + mem.Entries[i].Date + "] " + mem.Entries[i].Text
-		if used+len(line) > maxChars && len(lines) > 0 {
+		prefix := "- [" + mem.Entries[i].Date + "] "
+		separator := 0
+		if len(lines) > 0 {
+			separator = 1
+		}
+		available := remaining - len(prefix) - separator
+		if available <= 0 {
 			break
 		}
+		text := state.UTF8Prefix(mem.Entries[i].Text, available)
+		if text == "" {
+			break
+		}
+		line := prefix + text
 		lines = append([]string{line}, lines...)
-		used += len(line) + 1
-		if used >= maxChars {
-			break
-		}
+		remaining -= len(line) + separator
 	}
 	if len(lines) == 0 {
 		return ""
 	}
-	return "Long-term memory for this chat (distilled nightly, newest last):\n" + strings.Join(lines, "\n")
+	return heading + strings.Join(lines, "\n")
 }
 
-// digestLoop runs the startup catch-up sweep, then fires daily at the
-// configured wall time in the configured timezone (server-local when empty).
+// A single digest worker handles nightly, deferred, and retry work. The minute
+// tick also recovers from a missed wake or a failed registry/storage read.
 func (r *Runtime) digestLoop(ctx context.Context) {
-	if !r.Config.Memory.Enabled {
-		return
-	}
 	loc := memoryLocation(r.Config.Memory.Timezone)
 	hour, minute, err := parseDigestAtLocal(r.Config.Memory.DigestAt)
 	if err != nil {
 		r.report(err)
 		return
 	}
-	r.report(r.digestSweep(ctx))
-	timer := time.NewTimer(untilNextDigest(time.Now(), loc, hour, minute))
-	defer timer.Stop()
-	for {
+	next := time.Now().Add(untilNextDigest(time.Now(), loc, hour, minute))
+	pendingSweep := true
+	globalRetry := state.MemoryRetry{}
+	for ctx.Err() == nil {
+		now := time.Now()
+		if !now.Before(next) {
+			pendingSweep = true
+			next = now.Add(untilNextDigest(now, loc, hour, minute))
+		}
+		if !now.Before(globalRetry.NextAt) {
+			err := r.digestWork(ctx, pendingSweep)
+			if err != nil {
+				r.report(err)
+				globalRetry.Attempts++
+				globalRetry.NextAt = time.Now().Add(digestRetryDelay(globalRetry.Attempts))
+			} else {
+				pendingSweep = false
+				globalRetry = state.MemoryRetry{}
+			}
+			r.mu.Lock()
+			r.digestGlobalRetry = globalRetry
+			r.mu.Unlock()
+		}
+		delay := time.Until(next)
+		if delay > time.Minute {
+			delay = time.Minute
+		}
+		if d := time.Until(globalRetry.NextAt); !globalRetry.NextAt.IsZero() && d > 0 && d < delay {
+			delay = d
+		}
+		r.mu.Lock()
+		for _, retry := range r.digestRetries {
+			if d := time.Until(retry.retry.NextAt); !retry.retry.NextAt.IsZero() && d > 0 && d < delay {
+				delay = d
+			}
+		}
+		wake := r.digestWake
+		r.mu.Unlock()
+		if delay < 0 {
+			delay = 0
+		}
+		timer := time.NewTimer(delay)
 		select {
 		case <-ctx.Done():
+			timer.Stop()
 			return
+		case <-wake:
+			timer.Stop()
 		case <-timer.C:
-			r.report(r.digestSweep(ctx))
-			timer.Reset(untilNextDigest(time.Now(), loc, hour, minute))
 		}
 	}
 }

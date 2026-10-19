@@ -6,7 +6,6 @@ import (
 	"testing"
 
 	"q-agent/internal/platform"
-	"q-agent/internal/state"
 )
 
 func digestFixture(t *testing.T) (*Runtime, *testWorkspace, *testProvider) {
@@ -39,8 +38,8 @@ func TestDigestSweepStoresMemoryAndNotifies(t *testing.T) {
 	if len(mem.Entries) != 1 {
 		t.Fatalf("entries: %+v", mem.Entries)
 	}
-	if mem.Digested[memKey(10, 0)] != 1 || mem.Digested[memKey(10, 7)] != 1 {
-		t.Fatalf("watermarks: %+v", mem.Digested)
+	if len(mem.Pending) != 0 || mem.Cursor != 2 {
+		t.Fatalf("acknowledgement: %+v", mem)
 	}
 	reply, ok := r.Store.Pending()
 	if !ok {
@@ -84,7 +83,8 @@ func TestDigestSweepSkipsBusyChats(t *testing.T) {
 func TestMemoryEngagedInChat(t *testing.T) {
 	r, _, p := digestFixture(t)
 	key := platform.WorkspaceKey("telegram", 10)
-	must(t, r.Store.SaveMemory(key, state.ChatMemory{Entries: []state.MemoryEntry{{Date: "2026-10-17", Text: "user prefers concise answers"}}}))
+	_, err := r.Store.AppendMemory(key, "2026-10-17", "user prefers concise answers", 8192)
+	must(t, err)
 	must(t, r.Handle(context.Background(), input(1, 10, 0, 1, "go")))
 	r.Wait()
 	if len(p.requests) == 0 {
@@ -105,7 +105,8 @@ func TestMemoryEngagedInChat(t *testing.T) {
 func TestMemoryCommands(t *testing.T) {
 	r, _, _ := digestFixture(t)
 	key := platform.WorkspaceKey("telegram", 10)
-	must(t, r.Store.SaveMemory(key, state.ChatMemory{Entries: []state.MemoryEntry{{Date: "2026-10-17", Text: "likes tea"}}}))
+	_, err := r.Store.AppendMemory(key, "2026-10-17", "likes tea", 8192)
+	must(t, err)
 	must(t, r.Handle(context.Background(), input(1, 10, 0, 1, "/memory")))
 	reply, ok := r.Store.Pending()
 	if !ok || !strings.Contains(strings.Join(reply.Parts, "\n"), "likes tea") {

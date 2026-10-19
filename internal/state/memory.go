@@ -1,9 +1,14 @@
 package state
 
 import (
+	"encoding/json"
+	"fmt"
+	"os"
 	"path/filepath"
 	"sort"
+	"strings"
 	"time"
+	"unicode/utf8"
 
 	"q-agent/internal/platform"
 	"q-agent/internal/redaction"
@@ -27,13 +32,90 @@ type MemoryEntry struct {
 	Text string `json:"text"`
 }
 
-// ChatMemory is the workspace-scoped long-term memory file. Digested
-// counts per conversation key watermark which history pairs the digest
-// already consumed, so only new pairs are distilled each night.
+const MemoryVersion = 1
+const DefaultMaxPendingBytes = 4 << 20
+const MaxSourceBytes = 256 << 10
+
+type MemoryLimits struct {
+	MaxBytes        int
+	MaxPendingBytes int
+}
+
+// SourceEvent is independent of the bounded prompt history. Transcript contains
+// only ordered user, steering, and final assistant text, never tools/reasoning.
+type SourceEvent struct {
+	Sequence   uint64    `json:"sequence"`
+	ID         string    `json:"id"`
+	Topic      int64     `json:"topic"`
+	At         time.Time `json:"at"`
+	Transcript string    `json:"transcript"`
+}
+
+type ExchangeIntent struct {
+	Key          string       `json:"key"`
+	Conversation Conversation `json:"conversation"`
+}
+
+type MemoryLoss struct {
+	LostEvents       uint64 `json:"lost_events"`
+	LostBytes        uint64 `json:"lost_bytes"`
+	TruncatedEvents  uint64 `json:"truncated_events"`
+	TruncatedBytes   uint64 `json:"truncated_bytes"`
+	DroppedNotes     uint64 `json:"dropped_notes"`
+	DroppedNoteBytes uint64 `json:"dropped_note_bytes"`
+}
+
+type MemoryRetry struct {
+	Work     bool      `json:"work,omitempty"`
+	Deferred bool      `json:"deferred,omitempty"`
+	Attempts int       `json:"attempts,omitempty"`
+	NextAt   time.Time `json:"next_at,omitempty"`
+}
+
+// ChatMemory is also the transaction boundary for digest acknowledgement and
+// delivery. Revision changes only when summaries/source eligibility change;
+// concurrent appends and outbox delivery do not invalidate a digest snapshot.
 type ChatMemory struct {
-	Entries      []MemoryEntry  `json:"entries,omitempty"`
-	Digested     map[string]int `json:"digested,omitempty"`
-	LastDigestAt time.Time      `json:"last_digest_at,omitempty"`
+	Version           int              `json:"version"`
+	Epoch             uint64           `json:"epoch"`
+	Revision          uint64           `json:"revision"`
+	NextSequence      uint64           `json:"next_sequence"`
+	Cursor            uint64           `json:"cursor"`
+	Entries           []MemoryEntry    `json:"entries,omitempty"`
+	Pending           []SourceEvent    `json:"pending,omitempty"`
+	Intent            *ExchangeIntent  `json:"exchange_intent,omitempty"`
+	LastSourceID      string           `json:"last_source_id,omitempty"`
+	LastDigestAt      time.Time        `json:"last_digest_at,omitempty"`
+	Loss              MemoryLoss       `json:"loss"`
+	Overflow          bool             `json:"overflow,omitempty"`
+	Retry             MemoryRetry      `json:"retry"`
+	Notices           []Reply          `json:"notices,omitempty"`
+	LegacyBaseline    bool             `json:"legacy_baseline,omitempty"`
+	MigrationReported bool             `json:"migration_reported,omitempty"`
+	Route             platform.Message `json:"route"`
+}
+
+// PendingBytes measures encoded journal bytes, including labels and JSON escapes.
+func (m ChatMemory) PendingBytes() int {
+	if len(m.Pending) == 0 {
+		return 0
+	}
+	data, _ := json.Marshal(m.Pending)
+	return len(data)
+}
+
+// UTF8Prefix limits bytes without cutting a code point.
+func UTF8Prefix(text string, limit int) string {
+	if limit <= 0 {
+		return ""
+	}
+	if len(text) <= limit {
+		return text
+	}
+	for limit > 0 && !utf8.RuneStart(text[limit]) {
+		limit--
+	}
+	return text[:limit]
 }
 
 func (m ChatMemory) bytes() int {
@@ -112,6 +194,11 @@ func (s *Store) ListChats() ([]ChatRecordWithKey, error) {
 	if err != nil {
 		return nil, err
 	}
+	for key, mem := range s.memories {
+		if _, ok := records[key]; !ok && mem.Route.ChatID != 0 {
+			records[key] = ChatRecord{Platform: mem.Route.Platform, ChatID: mem.Route.ChatID, Owner: mem.Route.UserID}
+		}
+	}
 	out := make([]ChatRecordWithKey, 0, len(records))
 	for key, r := range records {
 		out = append(out, ChatRecordWithKey{Key: key, Record: r})
@@ -126,102 +213,127 @@ type ChatRecordWithKey struct {
 	Record ChatRecord
 }
 
-// LoadMemory reads the workspace memory file; missing files yield empty memory.
+// loadMemory migrates legacy summaries exactly once. Retained conversation
+// history is deliberately outside the new source baseline.
+func (s *Store) loadMemory(key string) (ChatMemory, error) {
+	var mem ChatMemory
+	data, err := os.ReadFile(s.memoryPath(key))
+	if err != nil && !os.IsNotExist(err) {
+		return mem, err
+	}
+	if len(data) > 0 {
+		if err := json.Unmarshal(data, &mem); err != nil {
+			return mem, err
+		}
+	}
+	if mem.Version > MemoryVersion {
+		return mem, fmt.Errorf("unsupported memory version %d", mem.Version)
+	}
+	if mem.Version == 0 {
+		mem.Version, mem.Epoch = MemoryVersion, 1
+		mem.LegacyBaseline = len(data) > 0
+		mem.Pending, mem.Intent = nil, nil
+		mem.Cursor, mem.NextSequence = 0, 0
+		s.boundMemory(&mem, s.memoryLimits.MaxBytes)
+		if len(data) > 0 {
+			if err := s.writeMemory(key, mem); err != nil {
+				return mem, err
+			}
+		}
+	}
+	s.memories[key] = mem
+	return mem, nil
+}
+
+func (s *Store) writeMemory(key string, mem ChatMemory) error {
+	if err := s.atomic(s.memoryPath(key), mem); err != nil {
+		// Rename may have succeeded before a directory-sync error. Refresh the
+		// recovery cache so a later history read sees the durable intent.
+		var saved ChatMemory
+		if read(s.memoryPath(key), &saved) == nil && saved.Version == MemoryVersion {
+			s.memories[key] = saved
+		}
+		return err
+	}
+	s.memories[key] = mem
+	return nil
+}
+
+// LoadMemory returns an independent snapshot, suitable for work outside locks.
 func (s *Store) LoadMemory(key string) (ChatMemory, error) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
-	var mem ChatMemory
-	if err := read(s.memoryPath(key), &mem); err != nil {
-		return ChatMemory{}, err
-	}
-	if mem.Digested == nil {
-		mem.Digested = map[string]int{}
-	}
-	s.policyBounds(&mem)
-	return mem, nil
+	return s.loadMemory(key)
 }
 
-// policyBounds clamps absurd in-memory growth from a corrupt file before use.
-func (s *Store) policyBounds(mem *ChatMemory) {
-	const maxEntries = 1024
-	if len(mem.Entries) > maxEntries {
-		mem.Entries = mem.Entries[len(mem.Entries)-maxEntries:]
-	}
+// RedactMemoryText uses the immutable persistence policy before measurement.
+func (s *Store) RedactMemoryText(text string) string {
+	return s.policy.Text(redaction.Persistence, text)
 }
 
-// SaveMemory persists the workspace memory file with persistence redaction.
-func (s *Store) SaveMemory(key string, mem ChatMemory) error {
-	s.mu.Lock()
-	defer s.mu.Unlock()
+// PrepareMemory redacts and enforces the hard persisted-text budget.
+func (s *Store) PrepareMemory(mem ChatMemory, maxBytes int) ChatMemory {
+	mem.Entries = append([]MemoryEntry(nil), mem.Entries...)
+	s.boundMemory(&mem, maxBytes)
+	return mem
+}
+
+func (s *Store) boundMemory(mem *ChatMemory, maxBytes int) {
 	for i := range mem.Entries {
-		mem.Entries[i].Text = s.policy.Text(redaction.Persistence, mem.Entries[i].Text)
+		mem.Entries[i].Text = strings.ToValidUTF8(s.policy.Text(redaction.Persistence, mem.Entries[i].Text), "�")
 	}
-	if mem.Digested == nil {
-		mem.Digested = map[string]int{}
+	if maxBytes <= 0 {
+		maxBytes = s.memoryLimits.MaxBytes
 	}
-	return Atomic(s.memoryPath(key), mem)
+	for mem.Bytes() > maxBytes && len(mem.Entries) > 1 {
+		mem.Loss.DroppedNotes++
+		mem.Loss.DroppedNoteBytes += uint64(len(mem.Entries[0].Text))
+		mem.Entries = mem.Entries[1:]
+	}
+	if mem.Bytes() > maxBytes && len(mem.Entries) == 1 {
+		old := len(mem.Entries[0].Text)
+		mem.Entries[0].Text = UTF8Prefix(mem.Entries[0].Text, maxBytes)
+		mem.Loss.DroppedNoteBytes += uint64(old - len(mem.Entries[0].Text))
+	}
+	if len(mem.Entries) == 1 && mem.Entries[0].Text == "" {
+		mem.Entries = nil
+	}
 }
 
-// ClearMemory drops all long-term entries but keeps digest watermarks, so a
-// cleared chat does not re-digest its whole history the next night.
+// ClearMemory advances the epoch, invalidating model work already in flight.
+// Recover history first: forgetting memory must never discard prompt history.
 func (s *Store) ClearMemory(key string) error {
 	s.mu.Lock()
 	defer s.mu.Unlock()
-	var mem ChatMemory
-	_ = read(s.memoryPath(key), &mem)
-	if mem.Digested == nil {
-		mem.Digested = map[string]int{}
+	mem, err := s.loadMemory(key)
+	if err != nil {
+		return err
 	}
-	mem.Entries = nil
-	return Atomic(s.memoryPath(key), mem)
+	if err := s.recoverExchange(key, &mem); err != nil {
+		return err
+	}
+	mem.Epoch++
+	mem.Revision++
+	mem.Entries, mem.Pending, mem.Notices = nil, nil, nil
+	mem.Cursor = mem.NextSequence
+	mem.Retry, mem.Loss, mem.Overflow = MemoryRetry{}, MemoryLoss{}, false
+	return s.writeMemory(key, mem)
 }
 
-// AppendMemory adds one dated entry and drops oldest entries while over
-// maxBytes (maxBytes <= 0 leaves the entry uncapped). It returns the saved
-// memory for the caller to report usage.
+// AppendMemory is a local administrative/test helper; digest workers use the
+// conditional CommitDigest transaction instead.
 func (s *Store) AppendMemory(key, date, text string, maxBytes int) (ChatMemory, error) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
-	var mem ChatMemory
-	if err := read(s.memoryPath(key), &mem); err != nil {
-		return ChatMemory{}, err
+	mem, err := s.loadMemory(key)
+	if err != nil {
+		return mem, err
 	}
-	if mem.Digested == nil {
-		mem.Digested = map[string]int{}
-	}
-	text = s.policy.Text(redaction.Persistence, text)
 	mem.Entries = append(mem.Entries, MemoryEntry{Date: date, Text: text})
-	for maxBytes > 0 && mem.bytes() > maxBytes && len(mem.Entries) > 1 {
-		mem.Entries = mem.Entries[1:]
-	}
-	if err := Atomic(s.memoryPath(key), mem); err != nil {
-		return ChatMemory{}, err
-	}
-	return mem, nil
-}
-
-// MarkDigested records how many pairs of each conversation the digest has
-// consumed and stamps the sweep time.
-func (s *Store) MarkDigested(key string, counts map[string]int, at time.Time) error {
-	s.mu.Lock()
-	defer s.mu.Unlock()
-	var mem ChatMemory
-	if err := read(s.memoryPath(key), &mem); err != nil {
-		return err
-	}
-	if mem.Digested == nil {
-		mem.Digested = map[string]int{}
-	}
-	for k, n := range counts {
-		if n < 0 {
-			continue
-		}
-		if n > mem.Digested[k] {
-			mem.Digested[k] = n
-		}
-	}
-	mem.LastDigestAt = at.UTC()
-	return Atomic(s.memoryPath(key), mem)
+	s.boundMemory(&mem, maxBytes)
+	mem.Revision++
+	err = s.writeMemory(key, mem)
+	return mem, err
 }
 
 // WorkspaceRoute rebuilds a sendable route for a registered workspace. Topic
@@ -232,4 +344,21 @@ func (r ChatRecordWithKey) WorkspaceRoute() platform.Message {
 		ChatID:   r.Record.ChatID,
 		UserID:   r.Record.Owner,
 	}
+}
+
+// ReportMemoryMigration queues the baseline notice once, including for legacy
+// chats with no journal work. Delivery retries use the normal durable outbox.
+func (s *Store) ReportMemoryMigration(key string, route platform.Message) error {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	mem, err := s.loadMemory(key)
+	if err != nil {
+		return err
+	}
+	if !mem.LegacyBaseline || mem.MigrationReported {
+		return nil
+	}
+	s.addMemoryNotice(&mem, route, "memory:"+key+":migration", []string{"Memory storage upgraded. Existing summaries were retained within budget. Pre-upgrade pending history is outside the new baseline and was not imported."})
+	mem.MigrationReported = true
+	return s.writeMemory(key, mem)
 }

@@ -77,6 +77,11 @@ func TestScheduledTasksWaitForBusyChatAndGlobalCapacity(t *testing.T) {
 	if !strings.Contains(p.requests[2].Messages[len(p.requests[2].Messages)-1].Content, "scheduled work") {
 		t.Fatal("saved instruction missing")
 	}
+	mem, err := r.Store.LoadMemory(platform.WorkspaceKey("telegram", 30))
+	must(t, err)
+	if len(mem.Pending) != 1 || !strings.HasPrefix(mem.Pending[0].ID, "schedule:") || !strings.Contains(mem.Pending[0].Transcript, "scheduled work") {
+		t.Fatalf("scheduled source missing: %+v", mem)
+	}
 	// No Telegram update IDs were consumed by scheduled work.
 	if r.Store.Cursor() != 2 {
 		t.Fatal("scheduler corrupted telegram cursor")

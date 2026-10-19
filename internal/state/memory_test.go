@@ -77,31 +77,32 @@ func TestMemoryAppendCap(t *testing.T) {
 	}
 }
 
-func TestClearMemoryKeepsWatermarks(t *testing.T) {
-	dir := t.TempDir()
-	s, err := Open(dir, nil)
+func TestClearMemoryAdvancesEpoch(t *testing.T) {
+	s, err := Open(t.TempDir(), nil)
 	if err != nil {
 		t.Fatal(err)
 	}
-	key := "workspace"
-	if _, err := s.AppendMemory(key, "2026-10-17", "note", 0); err != nil {
+	route := testRoute(10, 7, 1)
+	if err := s.CommitExchange(route, "task:1", Conversation{Pairs: []Pair{{User: "question", Answer: "answer"}}}, time.Now()); err != nil {
 		t.Fatal(err)
 	}
-	if err := s.MarkDigested(key, map[string]int{"conv:0": 3}, time.Now()); err != nil {
+	before, _ := s.LoadMemory(route.WorkspaceKey())
+	if _, err := s.AppendMemory(route.WorkspaceKey(), "2026-10-17", "note", 20); err != nil {
 		t.Fatal(err)
 	}
-	if err := s.ClearMemory(key); err != nil {
+	if err := s.ClearMemory(route.WorkspaceKey()); err != nil {
 		t.Fatal(err)
 	}
-	mem, err := s.LoadMemory(key)
+	mem, err := s.LoadMemory(route.WorkspaceKey())
 	if err != nil {
 		t.Fatal(err)
 	}
-	if len(mem.Entries) != 0 {
-		t.Fatalf("entries remain: %+v", mem.Entries)
+	if len(mem.Entries) != 0 || len(mem.Pending) != 0 || mem.Epoch <= before.Epoch {
+		t.Fatalf("forget: %+v", mem)
 	}
-	if mem.Digested["conv:0"] != 3 {
-		t.Fatalf("watermark lost: %+v", mem.Digested)
+	conv, err := s.Load(route.ConversationKey())
+	if err != nil || len(conv.Pairs) != 1 {
+		t.Fatalf("history lost: %+v, %v", conv, err)
 	}
 }
 

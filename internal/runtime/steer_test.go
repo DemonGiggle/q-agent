@@ -112,6 +112,11 @@ func TestTelegramSteerSameRunIsolationHistoryAndDedup(t *testing.T) {
 	if len(c.Pairs) != 1 || c.Pairs[0].Answer != "revised final" || strings.Join(c.Pairs[0].Steers, "|") != "correction\n\nadditional detail" {
 		t.Fatalf("saved: %+v", c)
 	}
+	mem, err := reopened.LoadMemory(followup.WorkspaceKey())
+	must(t, err)
+	if len(mem.Pending) != 1 || !strings.Contains(mem.Pending[0].Transcript, "user: original\nsteer: correction\n\nadditional detail\nassistant: revised final") {
+		t.Fatalf("steering missing from durable source: %+v", mem)
+	}
 	r.Store = reopened // No goroutines remain; exercise reopened history.
 	must(t, r.Handle(ctx, input(9, 10, 7, 1, "next task")))
 	got := request(t, p)

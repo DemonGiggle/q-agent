@@ -164,14 +164,26 @@ the model and also work in sandbox mode. See the
 | `/model <id\|default>` | Set this chat/group’s model, or inherit the selected provider’s default. |
 | `/think <level\|auto\|default>` | Set thinking, use the provider’s automatic behavior, or inherit configured defaults. |
 | `/settings [reset]` | Show effective settings, or clear this chat/group’s overrides. |
-| `/memory` | Show this chat’s long-term memory and budget usage. |
-| `/forget` | Clear this chat’s long-term memory. Files and history stay. |
+| `/memory` | Show notes, pending sources, retry state, and loss counters for this chat. |
+| `/forget` | Clear notes and pending memory sources across all topics. Files and history stay. |
 | `/help` | Show the command list. |
 | `/new` | Start a fresh conversation in this topic. Your files and schedules stay. |
 | `/cancel` | Ask the current task to stop. Changes already made stay in place. |
 | `/ask <request>` | Give the agent a task. Plain messages work in private chats too. |
 
 In groups, address commands to your bot, for example `/status@your_bot`.
+
+Successful interactive and scheduled tasks are captured in a durable memory
+journal before prompt history is bounded. Startup and nightly digests process
+that journal across all topics. `/new`, model/provider changes, and execution
+mode changes retain pending sources. `/forget` clears notes and pending sources
+for the entire chat; a running task may add a new source when it finishes.
+
+Memory uses hard UTF-8 byte limits. Pending sources default to 4 MiB; overflow
+removes the oldest sources with a warning and loss counters. Exceptional events
+retain a marked head and tail within 256 KiB. Old summaries survive the one-time
+storage migration within the configured budget; pre-upgrade pending history is
+outside the new baseline and is not imported. See [memory operations](docs/operations.md#long-term-memory).
 
 `/status` reports the q-agent bot process's current resident memory (RSS) in MiB,
 read from Linux `/proc/self/status` on each request. This is physical resident

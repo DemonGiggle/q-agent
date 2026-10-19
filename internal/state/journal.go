@@ -1,0 +1,324 @@
+package state
+
+import (
+	"bytes"
+	"encoding/json"
+	"errors"
+	"fmt"
+	"os"
+	"path/filepath"
+	"sort"
+	"strings"
+	"time"
+	"unicode/utf8"
+
+	"q-agent/internal/platform"
+	"q-agent/internal/redaction"
+)
+
+var ErrStaleDigest = errors.New("memory changed during digest")
+
+func (s *Store) recoverMemory() error {
+	entries, err := os.ReadDir(filepath.Join(s.dir, "memory"))
+	if os.IsNotExist(err) {
+		return nil
+	}
+	if err != nil {
+		return err
+	}
+	for _, entry := range entries {
+		if !strings.HasSuffix(entry.Name(), ".json") {
+			continue
+		}
+		key := strings.TrimSuffix(entry.Name(), ".json")
+		mem, err := s.loadMemory(key)
+		if err != nil {
+			return err
+		}
+		if err := s.recoverExchange(key, &mem); err != nil {
+			return err
+		}
+		previous, _ := json.Marshal(mem)
+		s.boundMemory(&mem, s.memoryLimits.MaxBytes)
+		s.boundPending(key, &mem, mem.Route)
+		current, _ := json.Marshal(mem)
+		if !bytes.Equal(previous, current) {
+			mem.Revision++
+			if err := s.writeMemory(key, mem); err != nil {
+				return err
+			}
+		}
+	}
+	return nil
+}
+
+func (s *Store) recoverExchange(key string, mem *ChatMemory) error {
+	if mem.Intent == nil {
+		return nil
+	}
+	if err := s.atomic(s.path(mem.Intent.Key), mem.Intent.Conversation); err != nil {
+		return err
+	}
+	mem.Intent = nil
+	return s.writeMemory(key, *mem)
+}
+
+// recoverHistory runs before reads and every history mutation. A reset must
+// follow recovery so replay cannot resurrect history that was already reset.
+func (s *Store) recoverHistory() error {
+	keys := make([]string, 0, len(s.memories))
+	for key, mem := range s.memories {
+		if mem.Intent != nil {
+			keys = append(keys, key)
+		}
+	}
+	sort.Strings(keys)
+	for _, key := range keys {
+		mem, err := s.loadMemory(key)
+		if err != nil {
+			return err
+		}
+		if err := s.recoverExchange(key, &mem); err != nil {
+			return err
+		}
+	}
+	return nil
+}
+
+func (s *Store) cleanConversation(c Conversation) Conversation {
+	c.Pairs = append([]Pair(nil), c.Pairs...)
+	for i := range c.Pairs {
+		c.Pairs[i].User = s.policy.Text(redaction.Persistence, c.Pairs[i].User)
+		c.Pairs[i].Answer = s.policy.Text(redaction.Persistence, c.Pairs[i].Answer)
+		c.Pairs[i].Steers = append([]string(nil), c.Pairs[i].Steers...)
+		for j, steer := range c.Pairs[i].Steers {
+			c.Pairs[i].Steers[j] = s.policy.Text(redaction.Persistence, steer)
+		}
+	}
+	c.Bound()
+	return c
+}
+
+func sourceTranscript(p Pair) string {
+	var b strings.Builder
+	b.WriteString("user: ")
+	b.WriteString(p.User)
+	for _, steer := range p.Steers {
+		b.WriteString("\nsteer: ")
+		b.WriteString(steer)
+	}
+	b.WriteString("\nassistant: ")
+	b.WriteString(p.Answer)
+	b.WriteByte('\n')
+	return b.String()
+}
+
+const sourceOmission = "\n[source middle omitted: event exceeded 256 KiB; head/tail retained]\n"
+
+func retainHeadTail(text string, n int) string {
+	head := UTF8Prefix(text, n/2)
+	start := len(text) - (n - n/2)
+	for start < len(text) && !utf8.RuneStart(text[start]) {
+		start++
+	}
+	return head + sourceOmission + text[start:]
+}
+
+// CommitExchange first durably commits the source and history intent in one
+// memory write. Recovery only applies the intent; it never re-enqueues a source
+// or reruns agent work. Eligibility is determined at completion, after forget.
+func (s *Store) CommitExchange(route platform.Message, sourceID string, c Conversation, at time.Time) error {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if len(c.Pairs) == 0 || sourceID == "" {
+		return fmt.Errorf("exchange requires source identity and transcript")
+	}
+	key := route.WorkspaceKey()
+	mem, err := s.loadMemory(key)
+	if err != nil {
+		return err
+	}
+	if err := s.recoverExchange(key, &mem); err != nil {
+		return err
+	}
+	if mem.LastSourceID == sourceID {
+		return nil
+	}
+	transcript := strings.ToValidUTF8(s.policy.Text(redaction.Persistence, sourceTranscript(c.Pairs[len(c.Pairs)-1])), "�")
+	mem.NextSequence++
+	event := SourceEvent{Sequence: mem.NextSequence, ID: sourceID, Topic: route.TopicID, At: at.UTC(), Transcript: transcript}
+	original := encodedSize(event)
+	if original > MaxSourceBytes {
+		low, high := 0, len(transcript)
+		for low < high {
+			mid := (low + high + 1) / 2
+			event.Transcript = retainHeadTail(transcript, mid)
+			if encodedSize(event) <= MaxSourceBytes {
+				low = mid
+			} else {
+				high = mid - 1
+			}
+		}
+		event.Transcript = retainHeadTail(transcript, low)
+		mem.Loss.TruncatedEvents++
+		mem.Loss.TruncatedBytes += uint64(original - encodedSize(event))
+	}
+	mem.Pending = append(mem.Pending, event)
+	mem.Route = platform.Message{Platform: route.Platform, ChatID: route.ChatID, UserID: route.UserID}
+	s.boundPending(key, &mem, mem.Route)
+	mem.LastSourceID = sourceID
+	mem.Intent = &ExchangeIntent{Key: route.ConversationKey(), Conversation: s.cleanConversation(c)}
+	if err := s.writeMemory(key, mem); err != nil {
+		return err
+	}
+	return s.recoverExchange(key, &mem)
+}
+
+func encodedSize(value any) int {
+	data, _ := json.Marshal(value)
+	return len(data)
+}
+
+// SnapshotDigest returns independently owned data. Model requests must happen
+// after this method releases the lock.
+func (s *Store) SnapshotDigest(key string) (ChatMemory, error) { return s.LoadMemory(key) }
+
+// CommitDigest conditionally acknowledges exactly a prefix of the snapshot.
+// Appends survive; forget, eviction, and overlapping digest commits invalidate it.
+// Notes, cursor, journal removal, and delivery intent share one atomic write.
+func (s *Store) CommitDigest(key string, snapshot, result ChatMemory, count int, route platform.Message, parts []string, at time.Time, maxBytes int) error {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	mem, err := s.loadMemory(key)
+	if err != nil {
+		return err
+	}
+	if mem.Epoch != snapshot.Epoch || mem.Revision != snapshot.Revision || mem.Cursor != snapshot.Cursor {
+		return ErrStaleDigest
+	}
+	if count <= 0 || count > len(snapshot.Pending) || count > len(mem.Pending) {
+		return ErrStaleDigest
+	}
+	for i := 0; i < count; i++ {
+		a, b := mem.Pending[i], snapshot.Pending[i]
+		if a.ID != b.ID || a.Sequence != b.Sequence || a.Topic != b.Topic || a.Transcript != b.Transcript || !a.At.Equal(b.At) {
+			return ErrStaleDigest
+		}
+	}
+	mem.Entries = append([]MemoryEntry(nil), result.Entries...)
+	mem.Loss.DroppedNotes += result.Loss.DroppedNotes - snapshot.Loss.DroppedNotes
+	mem.Loss.DroppedNoteBytes += result.Loss.DroppedNoteBytes - snapshot.Loss.DroppedNoteBytes
+	s.boundMemory(&mem, maxBytes)
+	first, last := mem.Pending[0].Sequence, mem.Pending[count-1].Sequence
+	mem.Cursor = last
+	mem.Pending = mem.Pending[count:]
+	mem.Revision++
+	mem.LastDigestAt = at.UTC()
+	mem.Overflow = false
+	mem.Retry = MemoryRetry{Work: len(mem.Pending) > 0}
+	s.addMemoryNotice(&mem, route, fmt.Sprintf("memory:%s:digest:%d:%d:%d", key, mem.Epoch, first, last), parts)
+	return s.writeMemory(key, mem)
+}
+
+// RetryMemory persists digest scheduling independently of prompt admission.
+// Failed storage writes are also tracked by the runtime until storage recovers.
+func (s *Store) RetryMemory(key string, epoch uint64, retry MemoryRetry) error {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	mem, err := s.loadMemory(key)
+	if err != nil {
+		return err
+	}
+	if mem.Epoch != epoch {
+		return ErrStaleDigest
+	}
+	mem.Retry = retry
+	return s.writeMemory(key, mem)
+}
+
+func (s *Store) addMemoryNotice(mem *ChatMemory, route platform.Message, id string, parts []string) {
+	if len(parts) == 0 {
+		return
+	}
+	route.Text = ""
+	parts = append([]string(nil), parts...)
+	for i := range parts {
+		parts[i] = s.policy.Text(redaction.Remote, parts[i])
+	}
+	mem.Notices = append(mem.Notices, Reply{ID: id, Route: route, Parts: parts})
+}
+
+func (s *Store) pendingMemoryReply() (Reply, bool) {
+	keys := make([]string, 0, len(s.memories))
+	for key, mem := range s.memories {
+		if len(mem.Notices) > 0 {
+			keys = append(keys, key)
+		}
+	}
+	sort.Strings(keys)
+	if len(keys) == 0 {
+		return Reply{}, false
+	}
+	key := keys[0]
+	for _, candidate := range keys {
+		if candidate > s.memoryLastKey {
+			key = candidate
+			break
+		}
+	}
+	r := s.memories[key].Notices[0]
+	r.Parts = append([]string(nil), r.Parts...)
+	return r, true
+}
+
+func (s *Store) updateMemoryReply(id string, delivered bool) error {
+	for key, cached := range s.memories {
+		if len(cached.Notices) == 0 || cached.Notices[0].ID != id {
+			continue
+		}
+		mem, err := s.loadMemory(key)
+		if err != nil {
+			return err
+		}
+		if len(mem.Notices) == 0 || mem.Notices[0].ID != id {
+			return fmt.Errorf("memory outbox changed")
+		}
+		if delivered {
+			mem.Notices[0].Next++
+			if mem.Notices[0].Next >= len(mem.Notices[0].Parts) {
+				mem.Notices = mem.Notices[1:]
+			}
+		} else if len(mem.Notices) > 1 {
+			mem.Notices = append(mem.Notices[1:], mem.Notices[0])
+		}
+		if err := s.writeMemory(key, mem); err != nil {
+			return err
+		}
+		s.memoryLastKey = key
+		return nil
+	}
+	return fmt.Errorf("memory outbox changed")
+}
+
+func (s *Store) boundPending(key string, mem *ChatMemory, route platform.Message) {
+	overflow := false
+	size := mem.PendingBytes()
+	for len(mem.Pending) > 0 && size > s.memoryLimits.MaxPendingBytes {
+		removed := encodedSize(mem.Pending[0])
+		mem.Loss.LostEvents++
+		mem.Loss.LostBytes += uint64(removed)
+		mem.Pending = mem.Pending[1:]
+		size -= removed + 1 // the event and its separating comma
+		if len(mem.Pending) == 0 {
+			size = 0
+		}
+		overflow = true
+	}
+	if overflow {
+		mem.Revision++ // an in-flight digest may reference an evicted source
+		if !mem.Overflow {
+			s.addMemoryNotice(mem, route, fmt.Sprintf("memory:%s:overflow:%d:%d", key, mem.Epoch, mem.NextSequence), []string{"Memory source capacity reached. Oldest pending exchanges were discarded; chat continues. See /memory for loss counters."})
+		}
+		mem.Overflow = true
+	}
+}

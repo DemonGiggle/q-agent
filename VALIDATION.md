@@ -263,3 +263,63 @@ Omit `Q_AGENT_WEB_LIVE_TEST=1` in the sandbox command for a local HTTP-only
 check without external requests or a Debian image. Live checks may fail when
 DuckDuckGo rate-limits the host or presents a challenge. No live Telegram messages
 or model requests were sent, and no production configuration/service was changed.
+
+## Reliable memory pipeline (#13, 2026-10-19)
+
+Validated on Linux amd64 with Go 1.22.10:
+
+- `go test -count=1 -timeout 5m ./...`: passed.
+- `go test -race -count=1 -timeout 5m ./...`: passed.
+- `go vet ./...`, `gofmt -l cmd internal`, and `git diff --check`: passed
+  with no formatting or whitespace findings.
+- `make build`: passed; `file bin/q-agent` confirms a stripped, statically
+  linked Linux x86-64 ELF executable (`CGO_ENABLED=0`).
+
+The state/runtime regressions cover:
+
+- Successful interactive exchanges 13 and 14, the 12-pair and 32 KiB history
+  bounds, scheduled task capture, ordered applied steering, independent topics,
+  chat isolation, restart, `/new`, provider/model changes, and execution-mode
+  resets. Pending sources survive all prompt-history resets.
+- Fault injection before and after each exchange transaction write, including
+  an ambiguous failure after rename. Recovery applies only the bounded history
+  intent, adds no duplicate source, and cannot resurrect subsequently reset
+  history. Startup rejects failed journal discovery instead of silently skipping
+  recovery.
+- Atomic digest notes/cursor/source removal/notification writes, failures on both
+  sides of the write, durable chunk delivery after restart, overlapping digest
+  commits, concurrent appends, and `/forget` during a model request. Tasks
+  completing after `/forget` can capture a new source under the advanced epoch.
+- Ordered multi-batch work, UTF-8 fragments for oversized events, failure in the
+  middle of a fragment group, retained unprocessed tails, and remote-redaction
+  expansion within the complete 20,000-byte transcript limit.
+- Chinese and emoji, tiny text/context budgets, persistence-redaction expansion,
+  complete injected-message formatting, redaction of headings/prefixes, oversized
+  summaries, and failed, empty, or still-oversized compaction. Deterministic
+  fallback bounds persisted note text and records removed/trimmed bytes.
+- Busy startup catch-up after the first task, completion wakes, fair rounds across
+  chats, persisted model retry state and backoff after restart, runtime retries
+  when storage cannot persist them, sustained read failures, stale results after
+  capacity eviction, and removal of obsolete retry state after all sources are
+  evicted. Backoff progresses from one minute to a maximum of one hour.
+- Notification failure without another distillation of committed sources,
+  delivery progress for other chats and interactive replies, overflow warning
+  episodes and loss counters, encoded 256 KiB head/tail event retention, and
+  repeatable legacy migration with normalized summaries and no history import.
+
+Migration boundary: legacy summaries survive within `max_bytes`; legacy
+count-based cursors are discarded and the new journal begins empty.
+**Pre-upgrade pending history is outside the new baseline and is not imported.**
+A durable notice and `/memory` expose that boundary.
+
+Loss policies are explicit in `docs/operations.md`: no source age expiry;
+oldest-source capacity eviction (default 4 MiB encoded journal), marked head/tail
+retention for exceptional events, existing redaction rules, and deterministic
+oldest-note removal/UTF-8 trimming after compaction. `/memory` exposes pending
+usage/age, retries, and degradation counters. `/forget` affects every topic in
+one chat while preserving short-term history, files, schedules, and settings.
+
+These checks use deterministic providers and local fault injection. No live
+Telegram messages or model requests were sent, and no deployed service or
+production state was changed. Opt-in sandbox/network integration suites were
+not run for this change.

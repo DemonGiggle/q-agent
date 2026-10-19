@@ -20,6 +20,9 @@ func (s *Store) SetExecutionMode(mode string) error {
 	if mode != ExecutionHost && mode != ExecutionSandbox {
 		return fmt.Errorf("invalid execution mode")
 	}
+	if err := s.recoverHistory(); err != nil {
+		return err
+	}
 	path := filepath.Join(s.dir, "execution.json")
 	saved := struct {
 		Mode string `json:"mode"`

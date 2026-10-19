@@ -578,3 +578,38 @@ func TestMemoryNoticesBoundedToNewest(t *testing.T) {
 		t.Fatalf("notice trim bumped revision unexpectedly: %d vs %d", mem.Revision, rev)
 	}
 }
+
+func TestOverflowEpisodeEndsWhenJournalDrains(t *testing.T) {
+	s, _ := Open(t.TempDir(), nil, MemoryLimits{MaxPendingBytes: 800})
+	route := testRoute(10, 0, 1)
+	key := route.WorkspaceKey()
+	for i := 0; i < 8; i++ {
+		journalExchange(t, s, route, fmt.Sprint(i), strings.Repeat("x", 60))
+	}
+	mem, _ := s.LoadMemory(key)
+	if !mem.Overflow || len(mem.Notices) != 1 {
+		t.Fatalf("first episode: %+v", mem)
+	}
+	// Evict-all drains the journal; episode must end so next overflow warns.
+	journalExchange(t, s, route, "huge", strings.Repeat("y\n", 1000))
+	mem, _ = s.LoadMemory(key)
+	if len(mem.Pending) != 0 {
+		t.Fatalf("evict-all did not drain: %+v", mem)
+	}
+	if mem.Overflow {
+		t.Fatal("overflow stuck true after drain")
+	}
+	for i := 0; i < 8; i++ {
+		journalExchange(t, s, route, fmt.Sprint("n", i), strings.Repeat("z", 60))
+	}
+	mem, _ = s.LoadMemory(key)
+	warnings := 0
+	for _, n := range mem.Notices {
+		if strings.Contains(n.ID, ":overflow:") {
+			warnings++
+		}
+	}
+	if warnings != 2 {
+		t.Fatalf("second episode did not warn: %d %+v", warnings, mem.Notices)
+	}
+}

@@ -366,4 +366,9 @@ func (s *Store) boundPending(key string, mem *ChatMemory, route platform.Message
 		}
 		mem.Overflow = true
 	}
+	// An episode ends when the journal drains. Without this, evict-all leaves
+	// Overflow stuck true and suppresses the next episode's warning.
+	if len(mem.Pending) == 0 {
+		mem.Overflow = false
+	}
 }

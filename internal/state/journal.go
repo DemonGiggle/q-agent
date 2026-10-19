@@ -357,6 +357,7 @@ func (s *Store) pendingMemoryReply() (Reply, bool) {
 	}
 	r := s.memories[key].Notices[0]
 	r.Parts = append([]string(nil), r.Parts...)
+	r.Photos = append([]PhotoAttachment(nil), r.Photos...)
 	return r, true
 }
 
@@ -374,7 +375,7 @@ func (s *Store) updateMemoryReply(id string, delivered bool) error {
 		}
 		if delivered {
 			mem.Notices[0].Next++
-			if mem.Notices[0].Next >= len(mem.Notices[0].Parts) {
+			if mem.Notices[0].Next >= mem.Notices[0].Total() {
 				mem.Notices = mem.Notices[1:]
 			}
 		} else if len(mem.Notices) > 1 {

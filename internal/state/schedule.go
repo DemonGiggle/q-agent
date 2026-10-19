@@ -38,10 +38,14 @@ type ScheduledRun struct {
 	Kind        string           `json:"kind"`
 	Text        string           `json:"text"`
 	ScheduledAt time.Time        `json:"scheduled_at"`
-	Status      string           `json:"status"`
-	Parts       []string         `json:"parts,omitempty"`
-	Next        int              `json:"next"`
+	Status      string            `json:"status"`
+	Parts       []string          `json:"parts,omitempty"`
+	Photos      []PhotoAttachment `json:"photos,omitempty"`
+	Next        int               `json:"next"`
 }
+
+// Total counts deliverable items: photos first, then text parts.
+func (r ScheduledRun) Total() int { return len(r.Photos) + len(r.Parts) }
 
 type scheduleState struct {
 	Schedules []Schedule     `json:"schedules"`
@@ -56,7 +60,7 @@ func (s *Store) saveSchedules(next scheduleState) error {
 	// Keep bounded terminal history, but never discard work or undelivered output.
 	terminals := 0
 	for _, r := range next.Runs {
-		if !runActive(r) && r.Next == len(r.Parts) {
+		if !runActive(r) && r.Next == r.Total() {
 			terminals++
 		}
 	}
@@ -189,6 +193,7 @@ func (s *Store) ListSchedules(owner platform.Message) ([]Schedule, []ScheduledRu
 	for _, v := range s.schedules.Runs {
 		if sameOwner(v.Route, owner) {
 			v.Parts = append([]string(nil), v.Parts...)
+			v.Photos = append([]PhotoAttachment(nil), v.Photos...)
 			runs = append(runs, v)
 		}
 	}
@@ -235,7 +240,7 @@ func (s *Store) ScanDue(now time.Time) error {
 		if runActive(r) {
 			active[r.ScheduleID] = true
 		}
-		if runActive(r) || r.Next < len(r.Parts) {
+		if runActive(r) || r.Next < r.Total() {
 			queued++
 		}
 	}
@@ -323,8 +328,15 @@ func (s *Store) ClaimRun(id string) (bool, error) {
 // FinishRun is also the scheduled outbox commit. Delivery progress lives in
 // this same record, so a delivered reply cannot cause a run to be replayed.
 func (s *Store) FinishRun(id, status string, parts []string) error {
+	return s.FinishRunWithPhotos(id, status, parts, nil)
+}
+
+func (s *Store) FinishRunWithPhotos(id, status string, parts []string, photos []PhotoAttachment) error {
 	if status != "succeeded" && status != "failed" && status != "interrupted" && status != "cancelled" {
 		return fmt.Errorf("invalid terminal status")
+	}
+	if len(photos) > 10 {
+		return fmt.Errorf("at most 10 photos per reply")
 	}
 	s.mu.Lock()
 	defer s.mu.Unlock()
@@ -338,6 +350,11 @@ func (s *Store) FinishRun(id, status string, parts []string) error {
 			next.Runs[i].Parts = append([]string(nil), parts...)
 			for j := range next.Runs[i].Parts {
 				next.Runs[i].Parts[j] = s.policy.Text(redaction.Remote, next.Runs[i].Parts[j])
+			}
+			next.Runs[i].Photos = append([]PhotoAttachment(nil), photos...)
+			for j := range next.Runs[i].Photos {
+				next.Runs[i].Photos[j].Caption = s.policy.Text(redaction.Remote, next.Runs[i].Photos[j].Caption)
+				next.Runs[i].Photos[j].Fallback = s.policy.Text(redaction.Remote, next.Runs[i].Photos[j].Fallback)
 			}
 			return s.saveSchedules(next)
 		}
@@ -372,8 +389,8 @@ func (s *Store) RecoverRuns() error {
 
 func (s *Store) pendingScheduleReply() (Reply, bool) {
 	for _, r := range s.schedules.Runs {
-		if r.Next < len(r.Parts) {
-			return Reply{ID: r.ID, Route: r.Route, Parts: append([]string(nil), r.Parts...), Next: r.Next}, true
+		if r.Next < r.Total() {
+			return Reply{ID: r.ID, Route: r.Route, Parts: append([]string(nil), r.Parts...), Photos: append([]PhotoAttachment(nil), r.Photos...), Next: r.Next}, true
 		}
 	}
 	return Reply{}, false
@@ -381,7 +398,7 @@ func (s *Store) pendingScheduleReply() (Reply, bool) {
 func (s *Store) deliveredScheduleReply(id string) error {
 	next := s.cloneSchedules()
 	for i := range next.Runs {
-		if next.Runs[i].ID == id && next.Runs[i].Next < len(next.Runs[i].Parts) {
+		if next.Runs[i].ID == id && next.Runs[i].Next < next.Runs[i].Total() {
 			next.Runs[i].Next++
 			return s.saveSchedules(next)
 		}
@@ -412,11 +429,19 @@ func (s *Store) validateSchedules() error {
 	}
 	ids = map[string]bool{}
 	for _, r := range s.schedules.Runs {
-		if !strings.HasPrefix(r.ID, "schedule:") || ids[r.ID] || r.Next < 0 || r.Next > len(r.Parts) {
+		if !strings.HasPrefix(r.ID, "schedule:") || ids[r.ID] || r.Next < 0 || r.Next > r.Total() {
 			return fmt.Errorf("invalid scheduled run")
 		}
 		if r.ScheduleID == "" || r.ScheduledAt.IsZero() || r.ID != "schedule:"+r.ScheduleID+":"+r.ScheduledAt.UTC().Format(time.RFC3339Nano) || (r.Kind != "agent" && r.Kind != "reminder") || r.Route.Platform != "telegram" || r.Route.ChatID == 0 || r.Route.UserID == 0 || strings.TrimSpace(r.Text) == "" || len(r.Text) > 8192 {
 			return fmt.Errorf("invalid scheduled run payload")
+		}
+		if len(r.Photos) > 10 {
+			return fmt.Errorf("invalid scheduled run")
+		}
+		for _, ph := range r.Photos {
+			if (ph.LocalPath == "") == (ph.RemoteURL == "") {
+				return fmt.Errorf("invalid scheduled run")
+			}
 		}
 		ids[r.ID] = true
 		switch r.Status {

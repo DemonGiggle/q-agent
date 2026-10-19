@@ -85,9 +85,8 @@ then add or re-add the bot as instructed by Telegram. The adapter accepts mentio
 replies to the bot, and `/ask@your_bot prompt`; it ignores unaddressed messages and
 commands directed to another bot. Private chats accept text directly. See
 [Telegram's privacy rules](https://core.telegram.org/bots/faq#what-messages-will-my-bot-get).
-Replies and typing indicators retain the incoming topic ID. Replies are plain
-text, split at a conservative 4096 UTF-16 units without splitting Unicode code
-points; attachments and streaming replies are outside v1.
+Replies and typing indicators retain the incoming topic ID. Text replies are split at a conservative 4096 UTF-16 units without splitting Unicode code
+points. Native photos are supported via `sendPhoto`: the agent emits `![caption](path-or-URL)` in its final answer, where relative workspace paths (for example `![chart](chart.png)`) and absolute `/workspace` paths resolve inside the chat workspace and `https://` URLs pass through. Photos are compressed with an HTML caption (1024-character limit); each file must be jpg/png/webp/gif under 10MB and stay inside the workspace (symlink escapes rejected, at most 10 per answer). If a photo is missing, too large, or Telegram rejects it, the bot posts the link/text with an explanation instead of going silent. Streaming replies remain outside v1.
 
 ### Per-chat provider configuration
 

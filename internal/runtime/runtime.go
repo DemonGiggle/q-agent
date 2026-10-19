@@ -122,6 +122,25 @@ func (r *Runtime) reply(m platform.Message, text string) error {
 	return r.Store.Queue(m, telegram.FormatAndSplit(text))
 }
 
+// replyAnswer queues the final agent answer, promoting Markdown images to
+// native Telegram photos. Local paths resolve against the chat workspace root
+// (sandbox rootfs or host workspace dir); remote https:// URLs pass through.
+// Invalid images fall back to link/text with an explanation per ExtractPhotos.
+func (r *Runtime) replyAnswer(m platform.Message, answer, root string) error {
+	photos, cleaned, _ := telegram.ExtractPhotos(answer, root)
+	var parts []string
+	if len(photos) > 0 && len(strings.TrimSpace(cleaned)) == 0 {
+		parts = nil
+	} else {
+		parts = telegram.FormatAndSplit(cleaned)
+	}
+	if len(photos) == 0 {
+		return r.Store.Queue(m, parts)
+	}
+	return r.Store.QueueWithPhotos(m, parts, photos, nil)
+}
+
+
 // Handle commits the update before doing work. Authorized commands use the
 // same path as prompts, and provisioning consumes the same concurrency slot.
 // All progress logs here are console-only; user-visible replies go through reply().
@@ -411,7 +430,7 @@ func (r *Runtime) run(ctx context.Context, m platform.Message, runID string) boo
 	}
 	var replyErr error
 	if runID == "" {
-		replyErr = r.reply(m, answer)
+		replyErr = r.replyAnswer(m, answer, root)
 	} else {
 		status := "succeeded"
 		if runErr != nil {
@@ -425,7 +444,18 @@ func (r *Runtime) run(ctx context.Context, m platform.Message, runID string) boo
 			}
 			r.mu.Unlock()
 		}
-		replyErr = r.Store.FinishRun(runID, status, telegram.FormatAndSplit(answer))
+		photos, cleaned, _ := telegram.ExtractPhotos(answer, root)
+		var parts []string
+		if len(photos) > 0 && len(strings.TrimSpace(cleaned)) == 0 {
+			parts = nil
+		} else {
+			parts = telegram.FormatAndSplit(cleaned)
+		}
+		if len(photos) == 0 {
+			replyErr = r.Store.FinishRun(runID, status, parts)
+		} else {
+			replyErr = r.Store.FinishRunWithPhotos(runID, status, parts, photos)
+		}
 	}
 	if err := replyErr; err != nil {
 		r.logf("run update=%d reply queue error after=%s err=%q", m.UpdateID, time.Since(runStart).Truncate(time.Millisecond), r.Options.Redaction.Text(redaction.Terminal, err.Error()))

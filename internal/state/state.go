@@ -64,13 +64,24 @@ func (c *Conversation) Bound() {
 	}
 }
 
+type PhotoAttachment struct {
+	LocalPath string `json:"local_path,omitempty"`
+	RemoteURL string `json:"remote_url,omitempty"`
+	Caption   string `json:"caption,omitempty"`
+	Fallback  string `json:"fallback,omitempty"`
+}
+
 type Reply struct {
 	Keyboard *platform.InlineKeyboard `json:"keyboard,omitempty"`
 	ID       string                   `json:"id"`
 	Route    platform.Message         `json:"route"`
 	Parts    []string                 `json:"parts"`
+	Photos   []PhotoAttachment        `json:"photos,omitempty"`
 	Next     int                      `json:"next"`
 }
+
+// Total counts deliverable items: photos first, then text parts.
+func (r Reply) Total() int { return len(r.Photos) + len(r.Parts) }
 type Store struct {
 	mu              sync.Mutex
 	dir             string
@@ -110,8 +121,17 @@ func Open(dir string, policy *redaction.Policy, limits ...MemoryLimits) (*Store,
 		return nil, err
 	}
 	for _, r := range s.outbox {
-		if r.Next < 0 || r.Next >= len(r.Parts) || len(r.Parts) == 0 {
+		total := len(r.Photos) + len(r.Parts)
+		if total == 0 || r.Next < 0 || r.Next >= total {
 			return nil, fmt.Errorf("invalid outbox cursor")
+		}
+		if len(r.Photos) > 10 {
+			return nil, fmt.Errorf("invalid outbox photos")
+		}
+		for _, p := range r.Photos {
+			if (p.LocalPath == "") == (p.RemoteURL == "") {
+				return nil, fmt.Errorf("invalid outbox photo")
+			}
 		}
 	}
 	if err := read(filepath.Join(dir, "schedules.json"), &s.schedules); err != nil {
@@ -228,6 +248,12 @@ func (s *Store) QueueKeyboard(route platform.Message, parts []string, keyboard *
 	return s.queue(route, parts, keyboard, "")
 }
 
+// QueueWithPhotos queues text parts plus native photo attachments (photos
+// first, then text). Parts may be empty when photos are present.
+func (s *Store) QueueWithPhotos(route platform.Message, parts []string, photos []PhotoAttachment, keyboard *platform.InlineKeyboard) error {
+	return s.queueWithPhotos(route, parts, photos, keyboard, "")
+}
+
 // QueueNotice keeps an acknowledgement distinct from a later final answer
 // to the same update, including input arriving as the previous run finishes.
 func (s *Store) QueueNotice(route platform.Message, parts []string) error {
@@ -235,10 +261,17 @@ func (s *Store) QueueNotice(route platform.Message, parts []string) error {
 }
 
 func (s *Store) queue(route platform.Message, parts []string, keyboard *platform.InlineKeyboard, suffix string) error {
+	return s.queueWithPhotos(route, parts, nil, keyboard, suffix)
+}
+
+func (s *Store) queueWithPhotos(route platform.Message, parts []string, photos []PhotoAttachment, keyboard *platform.InlineKeyboard, suffix string) error {
 	s.mu.Lock()
 	defer s.mu.Unlock()
-	if len(parts) == 0 {
+	if len(parts) == 0 && len(photos) == 0 {
 		return fmt.Errorf("reply must have at least one part")
+	}
+	if len(photos) > 10 {
+		return fmt.Errorf("at most 10 photos per reply")
 	}
 	route.Text = ""
 	id := fmt.Sprintf("%s:%d%s", route.Platform, route.UpdateID, suffix)
@@ -251,7 +284,18 @@ func (s *Store) queue(route platform.Message, parts []string, keyboard *platform
 	for i := range copyParts {
 		copyParts[i] = s.policy.Text(redaction.Remote, copyParts[i])
 	}
-	next := append(append([]Reply(nil), s.outbox...), Reply{ID: id, Route: route, Parts: copyParts, Keyboard: keyboard})
+	copyPhotos := append([]PhotoAttachment(nil), photos...)
+	for i := range copyPhotos {
+		if copyPhotos[i].LocalPath == "" && copyPhotos[i].RemoteURL == "" {
+			return fmt.Errorf("photo must have a local path or remote URL")
+		}
+		if copyPhotos[i].LocalPath != "" && copyPhotos[i].RemoteURL != "" {
+			return fmt.Errorf("photo must have either a local path or remote URL")
+		}
+		copyPhotos[i].Caption = s.policy.Text(redaction.Remote, copyPhotos[i].Caption)
+		copyPhotos[i].Fallback = s.policy.Text(redaction.Remote, copyPhotos[i].Fallback)
+	}
+	next := append(append([]Reply(nil), s.outbox...), Reply{ID: id, Route: route, Parts: copyParts, Photos: copyPhotos, Keyboard: keyboard})
 	if err := Atomic(filepath.Join(s.dir, "outbox.json"), next); err != nil {
 		return err
 	}
@@ -271,6 +315,7 @@ func (s *Store) Pending() (Reply, bool) {
 	}
 	r := s.outbox[0]
 	r.Parts = append([]string(nil), r.Parts...)
+	r.Photos = append([]PhotoAttachment(nil), r.Photos...)
 	return r, true
 }
 func (s *Store) Delivered(id string) error {
@@ -295,7 +340,7 @@ func (s *Store) Delivered(id string) error {
 	}
 	next := append([]Reply(nil), s.outbox...)
 	next[0].Next++
-	if next[0].Next >= len(next[0].Parts) {
+	if next[0].Next >= next[0].Total() {
 		next = next[1:]
 	}
 	if err := Atomic(filepath.Join(s.dir, "outbox.json"), next); err != nil {

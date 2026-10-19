@@ -625,3 +625,29 @@ func TestEvictionOfAllSourcesClearsObsoleteRetryState(t *testing.T) {
 		t.Fatalf("obsolete retry remained: %+v", mem.Retry)
 	}
 }
+
+func TestDisabledMemoryRetainsJournalForReenable(t *testing.T) {
+	r, _, _ := digestFixture(t)
+	p := &memoryProvider{}
+	installMemoryProvider(r, p)
+	route := input(1, 10, 0, 1, "")
+	key := route.WorkspaceKey()
+	pipelineSource(t, r, route, "1", "retained source")
+	r.Config.Memory.Enabled = false
+	must(t, r.digestSweep(context.Background()))
+	mem, err := r.Store.LoadMemory(key)
+	must(t, err)
+	if len(mem.Pending) != 1 || p.count() != 0 {
+		t.Fatalf("disabled sweep digested: %+v calls=%d", mem, p.count())
+	}
+	if got := r.memoryShow(route); !strings.Contains(got, "Pending:") {
+		t.Fatalf("/memory unavailable while disabled: %q", got)
+	}
+	r.Config.Memory.Enabled = true
+	must(t, r.digestSweep(context.Background()))
+	mem, err = r.Store.LoadMemory(key)
+	must(t, err)
+	if len(mem.Pending) != 0 || len(mem.Entries) != 1 {
+		t.Fatalf("re-enable did not digest retained: %+v", mem)
+	}
+}

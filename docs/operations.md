@@ -197,6 +197,11 @@ history reads/resets replay unfinished intents without running the agent or
 adding another source. `/new`, provider/model changes, and execution-mode
 changes clear prompt history while retaining pending memory sources.
 
+Disabling `[memory]` stops new journaling and sweeps but retains existing
+notes and pending sources; `/memory` and `/forget` keep working and
+re-enabling digests the retained journal. Use `/forget` to drop retained
+state while disabled.
+
 At startup and each configured `[memory]` daily wall time (server-local midnight
 by default), one worker visits chats fairly, committing at most one batch per
 chat in each round. Busy chats and maintenance defer work; task completion wakes

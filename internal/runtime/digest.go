@@ -59,6 +59,8 @@ func digestRetryDelay(attempt int) time.Duration {
 func (r *Runtime) digestSweep(ctx context.Context) error { return r.digestWork(ctx, true) }
 
 func (r *Runtime) digestWork(ctx context.Context, sweep bool) error {
+	// Disabled memory retains notes/pending for /memory, /forget, and a
+	// later re-enable; it only stops new journaling (see run) and sweeps.
 	if !r.Config.Memory.Enabled {
 		return nil
 	}

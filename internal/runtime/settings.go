@@ -5,6 +5,7 @@ import (
 	"encoding/hex"
 	"fmt"
 	"sort"
+	"strconv"
 	"strings"
 	"unicode"
 	"unicode/utf8"
@@ -31,13 +32,20 @@ func (r *Runtime) chatSettings(m platform.Message, fields []string) error {
 			sort.Strings(names)
 			return r.reply(m, "Configured providers: "+strings.Join(names, ", ")+"\nUse /provider <name> or /provider default.")
 		}
+		if fields[0] == "/max_steps" {
+			selected, err := r.chatModel(m)
+			if err != nil {
+				return err
+			}
+			return r.reply(m, fmt.Sprintf("Maximum model steps: %d\nUse /max_steps <positive integer> or /max_steps default. Applies to this entire chat (all topics), including scheduled tasks. Tool-call and timeout limits still apply.", selected.MaxSteps))
+		}
 		if fields[0] == "/think" {
 			return r.reply(m, r.thinkLevelsLocked(m))
 		}
 		return r.reply(m, r.statusLocked(m))
 	}
 	if len(fields) != 2 {
-		return r.reply(m, "Use /provider <name|default>, /model <id|default>, /think <level|auto|default>, or /settings reset.")
+		return r.reply(m, "Use /provider <name|default>, /model <id|default>, /think <level|auto|default>, /max_steps <number|default>, or /settings reset.")
 	}
 	if _, busy := r.active[m.WorkspaceKey()]; busy {
 		return r.reply(m, "Chat is busy. Finish or cancel the active task first.")
@@ -54,6 +62,16 @@ func (r *Runtime) chatSettings(m platform.Message, fields []string) error {
 			return r.reply(m, "Use /settings or /settings reset.")
 		}
 		raw = state.ChatModel{}
+	case "/max_steps":
+		if value == "default" {
+			raw.MaxSteps = 0
+		} else {
+			n, err := strconv.Atoi(value)
+			if err != nil || n < 1 {
+				return r.reply(m, "Use /max_steps <positive integer> or /max_steps default.")
+			}
+			raw.MaxSteps = n
+		}
 	case "/provider":
 		name := value
 		if name == "default" {

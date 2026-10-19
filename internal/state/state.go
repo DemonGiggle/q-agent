@@ -22,6 +22,8 @@ type Pair struct {
 	Steers []string `json:"steers,omitempty"`
 }
 type Conversation struct {
+	// Resolved when loading a task; not part of persisted topic history.
+	MaxSteps       int    `json:"-"`
 	Thinking       string `json:"thinking,omitempty"`
 	ModelSelection string `json:"model_selection,omitempty"`
 	Provider       string `json:"provider"`

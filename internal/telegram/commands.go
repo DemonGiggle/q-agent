@@ -21,6 +21,7 @@ func DefaultCommands() []BotCommand {
 		{Command: "provider", Description: "Choose this chat's provider"},
 		{Command: "model", Description: "Set this chat's model"},
 		{Command: "think", Description: "Set this chat's thinking level"},
+		{Command: "max_steps", Description: "Show or set this chat's maximum model steps"},
 		{Command: "settings", Description: "Show settings or restore defaults"},
 		{Command: "memory", Description: "Show notes, pending sources, retries, and memory loss"},
 		{Command: "forget", Description: "Clear notes and pending memory sources across all topics"},

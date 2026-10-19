@@ -12,7 +12,7 @@ func TestTokenPath(t *testing.T) {
 	configPath := filepath.Join(dir, "config.toml")
 
 	// Omitted token_env defaults to TELEGRAM_BOT_TOKEN.
-	writeConfig(t, configPath, "[provider]\nname = \"ollama\"\nmodel = \"m\"\n[telegram]\napproved_user_ids = [1]\napproved_chat_ids = [1]\n")
+	writeConfig(t, configPath, "[provider]\nname = \"ollama\"\nmodel = \"m\"\n[telegram]\nallowed_users = [1]\n")
 	c, err := Load(configPath)
 	if err != nil {
 		t.Fatal(err)
@@ -22,7 +22,7 @@ func TestTokenPath(t *testing.T) {
 	}
 
 	// Mutual exclusivity.
-	writeConfig(t, configPath, "[provider]\nname = \"ollama\"\nmodel = \"m\"\n[telegram]\ntoken_env = \"FOO\"\ntoken_path = \"tok\"\napproved_user_ids = [1]\napproved_chat_ids = [1]\n")
+	writeConfig(t, configPath, "[provider]\nname = \"ollama\"\nmodel = \"m\"\n[telegram]\ntoken_env = \"FOO\"\ntoken_path = \"tok\"\nallowed_users = [1]\n")
 	if _, err := Load(configPath); err == nil || !strings.Contains(err.Error(), "mutually exclusive") {
 		t.Fatalf("both telegram sources accepted: %v", err)
 	}
@@ -30,7 +30,7 @@ func TestTokenPath(t *testing.T) {
 	// Path resolution and trimming.
 	tokenPath := filepath.Join(dir, "telegram.token")
 	writeKeyFile(t, tokenPath, "  file-token-value \n", 0600)
-	writeConfig(t, configPath, "[provider]\nname = \"ollama\"\nmodel = \"m\"\n[telegram]\ntoken_env = \"\"\ntoken_path = \"telegram.token\"\napproved_user_ids = [1]\napproved_chat_ids = [1]\n")
+	writeConfig(t, configPath, "[provider]\nname = \"ollama\"\nmodel = \"m\"\n[telegram]\ntoken_env = \"\"\ntoken_path = \"telegram.token\"\nallowed_users = [1]\n")
 	c, err = Load(configPath)
 	if err != nil {
 		t.Fatal(err)

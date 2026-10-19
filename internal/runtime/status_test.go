@@ -21,7 +21,7 @@ func TestStatusReadOnlyAndSafe(t *testing.T) {
 	r.Config.Provider.APIKeyPath = "/private/key"
 	r.Config.Telegram.TokenPath = "/private/bot-token"
 	r.Config.Sandbox.Enabled = true
-	m := input(1, 10, 7, 1, "/status")
+	m := input(1, -10, 7, 1, "/status")
 	original := state.Conversation{Provider: "old", Model: "old-model", Pairs: []state.Pair{{User: "private prompt", Answer: "private answer"}}}
 	if err := r.Store.Save(m.ConversationKey(), original); err != nil {
 		t.Fatal(err)
@@ -30,7 +30,7 @@ func TestStatusReadOnlyAndSafe(t *testing.T) {
 		t.Fatal(err)
 	}
 	reply, ok := r.Store.Pending()
-	if !ok || reply.Route.TopicID != 7 || reply.Route.ChatID != 10 {
+	if !ok || reply.Route.TopicID != 7 || reply.Route.ChatID != -10 {
 		t.Fatalf("bad route: %+v", reply)
 	}
 	text := strings.Join(reply.Parts, "")
@@ -68,11 +68,11 @@ func TestStatusWhileBusy(t *testing.T) {
 			r, w, _ := fixture(t)
 			w.block = make(chan struct{})
 			w.started = make(chan struct{}, 1)
-			if err := r.Handle(context.Background(), input(1, 10, 7, 1, "work")); err != nil {
+			if err := r.Handle(context.Background(), input(1, -10, 7, 1, "work")); err != nil {
 				t.Fatal(err)
 			}
 			<-w.started
-			if err := r.Handle(context.Background(), input(2, 10, tc.topic, 1, "/status")); err != nil {
+			if err := r.Handle(context.Background(), input(2, -10, tc.topic, 1, "/status")); err != nil {
 				t.Fatal(err)
 			}
 			reply, ok := r.Store.Pending()
@@ -92,7 +92,7 @@ func TestInfoCommandsAuthorizationAndDedup(t *testing.T) {
 	for _, command := range []string{"/status", "/help"} {
 		t.Run(command, func(t *testing.T) {
 			r, w, p := fixture(t)
-			for _, m := range []struct{ id, chat, user int64 }{{1, 10, 2}, {2, 99, 1}} {
+			for _, m := range []struct{ id, chat, user int64 }{{1, 1, 2}, {2, -99, 1}} {
 				if err := r.Handle(context.Background(), input(m.id, m.chat, 7, m.user, command)); err != nil {
 					t.Fatal(err)
 				}
@@ -100,7 +100,7 @@ func TestInfoCommandsAuthorizationAndDedup(t *testing.T) {
 			if _, ok := r.Store.Pending(); ok {
 				t.Fatal("unauthorized reply")
 			}
-			m := input(3, 10, 7, 1, command)
+			m := input(3, -10, 7, 1, command)
 			if err := r.Handle(context.Background(), m); err != nil {
 				t.Fatal(err)
 			}
@@ -132,9 +132,9 @@ func TestStatusRemoteRedactionAndSchedulerLifecycle(t *testing.T) {
 	r.Options.Redaction, _ = redaction.New(redaction.Config{}, []string{"sensitive-model"})
 	r.scheduleDone = make(chan struct{})
 	r.mu.Lock()
-	text := r.statusLocked(input(1, 10, 7, 1, "/status"))
+	text := r.statusLocked(input(1, -10, 7, 1, "/status"))
 	close(r.scheduleDone)
-	stopped := r.statusLocked(input(1, 10, 7, 1, "/status"))
+	stopped := r.statusLocked(input(1, -10, 7, 1, "/status"))
 	r.mu.Unlock()
 	if strings.Contains(text, "sensitive-model") || !strings.Contains(text, "Scheduler: Running") || !strings.Contains(stopped, "Scheduler: Stopped") {
 		t.Fatalf("%s\n%s", text, stopped)

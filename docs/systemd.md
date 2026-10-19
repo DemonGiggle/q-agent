@@ -74,17 +74,18 @@ The unit's working directory is the account's home, independent of the checkout.
 ### Required settings and credentials
 
 Before starting, edit the generated config: choose a provider/model and set
-**both** `telegram.approved_user_ids` and `telegram.approved_chat_ids`. The new
-template leaves them empty, so startup fails closed until you configure them.
-For private chats, the user ID and chat ID normally match.
+`telegram.allowed_users` (private contacts) and/or `telegram.allowed_groups`
+(groups). The new template leaves them empty, so startup fails closed until you
+configure at least one. A private ID listed once authorizes that private chat;
+a group ID authorizes everyone in that group.
 
 The generated template uses:
 
 ```toml
 [telegram]
 token_path = "telegram.token"
-approved_user_ids = [123456789]  # replace with your Telegram user ID
-approved_chat_ids = [123456789] # replace with your chat ID(s)
+allowed_users = [123456789]  # replace with your Telegram user ID (private chat)
+allowed_groups = [] # replace with group IDs (e.g. [-1001234567890])
 ```
 
 Create `telegram.token` with your editor containing **only the raw bot token**,
@@ -212,17 +213,17 @@ Foreground processes, system-wide units and differently named units are rejected
 The account needs `systemctl`, `systemd-run`, a working user manager, and write
 access to the installed executable's directory for updates. No sudo is used.
 
-Administration is disabled by default. Add the operator to all three lists:
+Administration is disabled by default. Add the operator to allowed users and admins:
 
 ```toml
 [telegram]
-approved_user_ids = [123456789]
-approved_chat_ids = [123456789]
+allowed_users = [123456789]
+allowed_groups = []
 admin_user_ids = [123456789]
 ```
 
 Keep existing entries and credential settings. Administrator IDs must be positive
-and also occur in `approved_user_ids`; the private chat must be approved too.
+and also occur in `allowed_users`; the private chat is authorized by that same entry.
 You can edit an existing configuration without discarding comments:
 
 ```sh

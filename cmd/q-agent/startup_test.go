@@ -26,8 +26,7 @@ func startupConfig(t *testing.T) config.Config {
 	t.Setenv("TELEGRAM_BOT_TOKEN", "startup-test-credential")
 	c := config.Defaults()
 	c.StateDir = t.TempDir()
-	c.Telegram.ApprovedUsers = []int64{1}
-	c.Telegram.ApprovedChats = []int64{1}
+	c.Telegram.AllowedUsers = []int64{1}
 	return c
 }
 

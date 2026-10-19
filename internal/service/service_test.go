@@ -44,7 +44,7 @@ func TestInstallCreatesPrivateTemplateAndUserUnitOnly(t *testing.T) {
 		}
 	}
 	c, err := config.Load(cfg)
-	if err != nil || c.Sandbox.Enabled || c.Telegram.TokenEnv != "" || c.Telegram.TokenPath != filepath.Join(filepath.Dir(cfg), "telegram.token") || len(c.Telegram.ApprovedUsers) != 0 || len(c.Telegram.ApprovedChats) != 0 {
+	if err != nil || c.Sandbox.Enabled || c.Telegram.TokenEnv != "" || c.Telegram.TokenPath != filepath.Join(filepath.Dir(cfg), "telegram.token") || len(c.Telegram.AllowedUsers) != 0 || len(c.Telegram.AllowedGroups) != 0 {
 		t.Fatalf("template: %+v %v", c, err)
 	}
 	rendered := read(t, unit)

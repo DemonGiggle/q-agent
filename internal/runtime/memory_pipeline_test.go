@@ -56,12 +56,12 @@ func TestDigestBatchesRetainUnprocessedSources(t *testing.T) {
 	r, _, _ := digestFixture(t)
 	p := &memoryProvider{}
 	installMemoryProvider(r, p)
-	route := input(1, 10, 7, 1, "")
+	route := input(1, -10, 7, 1, "")
 	key := route.WorkspaceKey()
 	for i := 1; i <= 4; i++ {
 		pipelineSource(t, r, route, fmt.Sprint(i), fmt.Sprintf("exchange%d ", i)+strings.Repeat("界🙂", 1600))
 	}
-	must(t, r.digestChat(context.Background(), key, state.ChatRecord{Platform: "telegram", ChatID: 10, Owner: 1}))
+	must(t, r.digestChat(context.Background(), key, state.ChatRecord{Platform: "telegram", ChatID: -10, Owner: 1}))
 	mem, err := r.Store.LoadMemory(key)
 	must(t, err)
 	if mem.Cursor != 1 || len(mem.Pending) != 3 {
@@ -83,7 +83,7 @@ func TestDigestBatchesRetainUnprocessedSources(t *testing.T) {
 
 func TestOversizedSourceFragmentsCommitAsOneGroup(t *testing.T) {
 	r, _, _ := digestFixture(t)
-	route := input(1, 10, 7, 1, "")
+	route := input(1, -10, 7, 1, "")
 	key := route.WorkspaceKey()
 	pipelineSource(t, r, route, "large", "HEAD"+strings.Repeat("界🙂\n", 11000)+"TAIL")
 	pipelineSource(t, r, route, "next", "unprocessed tail source")
@@ -95,7 +95,7 @@ func TestOversizedSourceFragmentsCommitAsOneGroup(t *testing.T) {
 		return fmt.Sprintf("- fragment note %d", n), nil
 	}}
 	installMemoryProvider(r, p)
-	rec := state.ChatRecord{Platform: "telegram", ChatID: 10, Owner: 1}
+	rec := state.ChatRecord{Platform: "telegram", ChatID: -10, Owner: 1}
 	if err := r.digestChat(context.Background(), key, rec); err == nil {
 		t.Fatalf("fragment failure accepted: calls=%d", p.count())
 	}
@@ -139,7 +139,7 @@ func TestDigestRejectsForgetDuringModelAndPreservesConcurrentAppend(t *testing.T
 	for _, forget := range []bool{false, true} {
 		t.Run(fmt.Sprint(forget), func(t *testing.T) {
 			r, _, _ := digestFixture(t)
-			route := input(1, 10, 0, 1, "")
+			route := input(1, -10, 0, 1, "")
 			key := route.WorkspaceKey()
 			pipelineSource(t, r, route, "1", "first source")
 			started, release := make(chan struct{}), make(chan struct{})
@@ -155,7 +155,7 @@ func TestDigestRejectsForgetDuringModelAndPreservesConcurrentAppend(t *testing.T
 			installMemoryProvider(r, p)
 			done := make(chan error, 1)
 			go func() {
-				done <- r.digestChat(context.Background(), key, state.ChatRecord{Platform: "telegram", ChatID: 10, Owner: 1})
+				done <- r.digestChat(context.Background(), key, state.ChatRecord{Platform: "telegram", ChatID: -10, Owner: 1})
 			}()
 			<-started
 			if forget {
@@ -181,7 +181,7 @@ func TestDigestRejectsForgetDuringModelAndPreservesConcurrentAppend(t *testing.T
 
 func TestCompletionAfterForgetAndResetsRetainSources(t *testing.T) {
 	r, _, _ := digestFixture(t)
-	route := input(1, 10, 7, 1, "")
+	route := input(1, -10, 7, 1, "")
 	key := route.WorkspaceKey()
 	pipelineSource(t, r, route, "before", "pre-forget source")
 	started, release := make(chan struct{}), make(chan struct{})
@@ -195,19 +195,19 @@ func TestCompletionAfterForgetAndResetsRetainSources(t *testing.T) {
 		}
 	}}
 	installMemoryProvider(r, p)
-	must(t, r.Handle(context.Background(), input(1, 10, 7, 1, "running task")))
+	must(t, r.Handle(context.Background(), input(1, -10, 7, 1, "running task")))
 	<-started
-	must(t, r.Handle(context.Background(), input(2, 10, 8, 1, "/forget")))
+	must(t, r.Handle(context.Background(), input(2, -10, 8, 1, "/forget")))
 	close(release)
 	r.Wait()
 	mem, _ := r.Store.LoadMemory(key)
 	if len(mem.Pending) != 1 || mem.Pending[0].ID != "update:telegram:1" || !strings.Contains(mem.Pending[0].Transcript, "completed after forget") {
 		t.Fatalf("completion eligibility: %+v", mem)
 	}
-	must(t, r.Handle(context.Background(), input(3, 10, 7, 1, "/new")))
-	must(t, r.Handle(context.Background(), input(4, 10, 7, 1, "/model changed-model")))
+	must(t, r.Handle(context.Background(), input(3, -10, 7, 1, "/new")))
+	must(t, r.Handle(context.Background(), input(4, -10, 7, 1, "/model changed-model")))
 	r.Config.Providers = map[string]config.Provider{"openai": {Name: "openai", Model: "another-model"}}
-	must(t, r.Handle(context.Background(), input(5, 10, 7, 1, "/provider openai")))
+	must(t, r.Handle(context.Background(), input(5, -10, 7, 1, "/provider openai")))
 	mem, _ = r.Store.LoadMemory(key)
 	if len(mem.Pending) != 1 {
 		t.Fatal("history/model/provider reset discarded source")
@@ -221,7 +221,7 @@ func TestCompletionAfterForgetAndResetsRetainSources(t *testing.T) {
 
 func TestDigestRetriesAndBackoffSurviveRestart(t *testing.T) {
 	r, _, _ := digestFixture(t)
-	route := input(1, 10, 0, 1, "")
+	route := input(1, -10, 0, 1, "")
 	key := route.WorkspaceKey()
 	pipelineSource(t, r, route, "1", "retry me")
 	failing := true
@@ -270,7 +270,7 @@ func TestDigestRetriesAndBackoffSurviveRestart(t *testing.T) {
 
 func TestDigestStorageFailureHasRuntimeRetry(t *testing.T) {
 	r, _, _ := digestFixture(t)
-	route := input(1, 10, 0, 1, "")
+	route := input(1, -10, 0, 1, "")
 	key := route.WorkspaceKey()
 	pipelineSource(t, r, route, "1", "storage retry")
 	path := filepath.Join(r.Config.StateDir, "memory", key+".json")
@@ -343,14 +343,26 @@ func TestBusyStartupDigestWakesAfterFirstTaskCompletes(t *testing.T) {
 		return "- caught up", nil
 	}}
 	installMemoryProvider(r, p)
-	must(t, r.Handle(context.Background(), input(1, 10, 7, 1, "first running task")))
+	must(t, r.Handle(context.Background(), input(1, -10, 7, 1, "first running task")))
 	<-started
 	must(t, r.StartScheduler(context.Background()))
-	key := platform.WorkspaceKey("telegram", 10)
-	waitMemory(t, r, key, func(mem state.ChatMemory) bool { return mem.Retry.Deferred })
+	key := platform.WorkspaceKey("telegram", -10)
+	// No startup sweep: boot only resumes enrolled retries, so busy chat
+	// does not defer and pending waits for the next midnight.
 	close(release)
 	r.Wait()
-	mem := waitMemory(t, r, key, func(mem state.ChatMemory) bool { return mem.Cursor == 1 && len(mem.Pending) == 0 })
+	mem, err := r.Store.LoadMemory(key)
+	must(t, err)
+	if len(mem.Pending) != 1 || len(mem.Entries) != 0 {
+		t.Fatalf("midnight-only digest ran early: %+v", mem)
+	}
+	// Midnight sweep digests the completed task.
+	must(t, r.digestSweep(context.Background()))
+	mem, err = r.Store.LoadMemory(key)
+	must(t, err)
+	if mem.Cursor != 1 || len(mem.Pending) != 0 {
+		t.Fatalf("midnight digest missing: %+v", mem)
+	}
 	if len(mem.Entries) != 1 || p.count() != 2 {
 		t.Fatalf("busy catch-up: %+v, calls %d", mem, p.count())
 	}
@@ -380,7 +392,7 @@ func TestCompactionFailuresStillEnforceHardBudget(t *testing.T) {
 		t.Run(mode, func(t *testing.T) {
 			r, _, _ := digestFixture(t)
 			r.Config.Memory.MaxBytes = 17
-			route := input(1, 10, 0, 1, "")
+			route := input(1, -10, 0, 1, "")
 			key := route.WorkspaceKey()
 			_, err := r.Store.AppendMemory(key, "old", "old durable note", 8192)
 			must(t, err)
@@ -426,7 +438,7 @@ func TestMemoryContextCompleteFormatWithinUTF8Budget(t *testing.T) {
 	r.Options.Redaction = policy
 	r.Store, err = state.Open(t.TempDir(), policy)
 	must(t, err)
-	route := input(1, 10, 0, 1, "")
+	route := input(1, -10, 0, 1, "")
 	_, err = r.Store.AppendMemory(route.WorkspaceKey(), "2026-10-19", strings.Repeat("x界🙂", 30), 8192)
 	must(t, err)
 	for limit := 1; limit < 240; limit++ {
@@ -442,7 +454,7 @@ func TestDigestFairnessAndNotificationRetryWithoutDistillation(t *testing.T) {
 	r, _, _ := digestFixture(t)
 	p := &memoryProvider{}
 	installMemoryProvider(r, p)
-	for _, chat := range []int64{10, 20} {
+	for _, chat := range []int64{-10, -20} {
 		for i := 1; i <= 2; i++ {
 			pipelineSource(t, r, input(1, chat, 0, 1, ""), fmt.Sprintf("%d:%d", chat, i), fmt.Sprintf("chat%d exchange%d ", chat, i)+strings.Repeat("a", 11000))
 		}
@@ -451,8 +463,8 @@ func TestDigestFairnessAndNotificationRetryWithoutDistillation(t *testing.T) {
 	if p.count() != 4 {
 		t.Fatalf("calls=%d", p.count())
 	}
-	firstChat := strings.Contains(p.requests[0].Messages[1].Content, "chat10")
-	if strings.Contains(p.requests[1].Messages[1].Content, "chat10") == firstChat || strings.Contains(p.requests[2].Messages[1].Content, "chat10") != firstChat {
+	firstChat := strings.Contains(p.requests[0].Messages[1].Content, "chat-10")
+	if strings.Contains(p.requests[1].Messages[1].Content, "chat-10") == firstChat || strings.Contains(p.requests[2].Messages[1].Content, "chat-10") != firstChat {
 		t.Fatal("one chat monopolized batch worker")
 	}
 	reply, ok := r.Store.Pending()
@@ -480,10 +492,10 @@ func TestDigestFairnessAndNotificationRetryWithoutDistillation(t *testing.T) {
 func TestRuntimeCapturesExchangesThirteenAndFourteen(t *testing.T) {
 	r, _, _ := digestFixture(t)
 	for i := int64(1); i <= 14; i++ {
-		must(t, r.Handle(context.Background(), input(i, 10, 0, 1, fmt.Sprintf("exchange %d", i))))
+		must(t, r.Handle(context.Background(), input(i, -10, 0, 1, fmt.Sprintf("exchange %d", i))))
 		r.Wait()
 	}
-	key := platform.WorkspaceKey("telegram", 10)
+	key := platform.WorkspaceKey("telegram", -10)
 	mem, err := r.Store.LoadMemory(key)
 	must(t, err)
 	if len(mem.Pending) != 14 || !strings.Contains(mem.Pending[12].Transcript, "exchange 13") || !strings.Contains(mem.Pending[13].Transcript, "exchange 14") {
@@ -505,7 +517,7 @@ func TestDigestRemoteExpansionAndEmptySummary(t *testing.T) {
 	r.Store, err = state.Open(t.TempDir(), policy)
 	must(t, err)
 	r.Options.Redaction = policy
-	route := input(1, 10, 0, 1, "")
+	route := input(1, -10, 0, 1, "")
 	key := route.WorkspaceKey()
 	pipelineSource(t, r, route, "1", strings.Repeat("x", 7000))
 	empty := true
@@ -516,7 +528,7 @@ func TestDigestRemoteExpansionAndEmptySummary(t *testing.T) {
 		return "- durable", nil
 	}}
 	installMemoryProvider(r, p)
-	rec := state.ChatRecord{Platform: "telegram", ChatID: 10, Owner: 1}
+	rec := state.ChatRecord{Platform: "telegram", ChatID: -10, Owner: 1}
 	if err := r.digestChat(context.Background(), key, rec); err == nil {
 		t.Fatal("empty summary acknowledged")
 	}
@@ -542,7 +554,7 @@ func TestMemoryContextRedactedFormattingMustFit(t *testing.T) {
 	policy, err := redaction.New(redaction.Config{Persistence: &disabled}, []string{"-", "memory"})
 	must(t, err)
 	r.Options.Redaction = policy
-	route := input(1, 10, 0, 1, "")
+	route := input(1, -10, 0, 1, "")
 	_, err = r.Store.AppendMemory(route.WorkspaceKey(), "2026-10-19", "🙂 recent note", 8192)
 	must(t, err)
 	minimum := len(policy.Text(redaction.Remote, memoryHeading+"- [2026-10-19] 🙂"))
@@ -563,12 +575,12 @@ func TestMemoryShowsPendingAndLossWithoutNotes(t *testing.T) {
 	var err error
 	r.Store, err = state.Open(t.TempDir(), nil, state.MemoryLimits{MaxPendingBytes: 500})
 	must(t, err)
-	route := input(1, 10, 7, 1, "")
+	route := input(1, -10, 7, 1, "")
 	for i := 1; i <= 4; i++ {
 		pipelineSource(t, r, route, fmt.Sprint(i), strings.Repeat("a", 150))
 	}
 	drainDigestReplies(t, r)
-	must(t, r.Handle(context.Background(), input(1, 10, 8, 1, "/memory")))
+	must(t, r.Handle(context.Background(), input(1, -10, 8, 1, "/memory")))
 	reply, ok := r.Store.Pending()
 	if !ok {
 		t.Fatal("missing /memory reply")
@@ -586,7 +598,7 @@ func TestNightlyDigestRetriesSourcesAfterConcurrentEviction(t *testing.T) {
 	var err error
 	r.Store, err = state.Open(t.TempDir(), nil, state.MemoryLimits{MaxPendingBytes: 800})
 	must(t, err)
-	route := input(1, 10, 0, 1, "")
+	route := input(1, -10, 0, 1, "")
 	key := route.WorkspaceKey()
 	pipelineSource(t, r, route, "initial", strings.Repeat("a", 180))
 	p := &memoryProvider{complete: func(_ context.Context, _ llm.Request, n int) (string, error) {
@@ -611,7 +623,7 @@ func TestEvictionOfAllSourcesClearsObsoleteRetryState(t *testing.T) {
 	var err error
 	r.Store, err = state.Open(t.TempDir(), nil, state.MemoryLimits{MaxPendingBytes: 800})
 	must(t, err)
-	route := input(1, 10, 0, 1, "")
+	route := input(1, -10, 0, 1, "")
 	key := route.WorkspaceKey()
 	pipelineSource(t, r, route, "1", "will fail distillation")
 	p := &memoryProvider{complete: func(_ context.Context, _ llm.Request, _ int) (string, error) { return "", errors.New("unavailable") }}
@@ -630,7 +642,7 @@ func TestDisabledMemoryRetainsJournalForReenable(t *testing.T) {
 	r, _, _ := digestFixture(t)
 	p := &memoryProvider{}
 	installMemoryProvider(r, p)
-	route := input(1, 10, 0, 1, "")
+	route := input(1, -10, 0, 1, "")
 	key := route.WorkspaceKey()
 	pipelineSource(t, r, route, "1", "retained source")
 	r.Config.Memory.Enabled = false

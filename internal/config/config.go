@@ -37,9 +37,13 @@ type Provider struct {
 type Telegram struct {
 	TokenEnv      string  `toml:"token_env"`
 	TokenPath     string  `toml:"token_path"`
+	AllowedUsers  []int64 `toml:"allowed_users"`
+	AllowedGroups []int64 `toml:"allowed_groups"`
+	AdminUsers    []int64 `toml:"admin_user_ids"`
+	// Deprecated: accepted on load and migrated to AllowedUsers/AllowedGroups.
+	// New configurations must use allowed_users and allowed_groups.
 	ApprovedUsers []int64 `toml:"approved_user_ids"`
 	ApprovedChats []int64 `toml:"approved_chat_ids"`
-	AdminUsers    []int64 `toml:"admin_user_ids"`
 }
 type Sandbox struct {
 	Enabled    bool   `toml:"enabled"`
@@ -136,13 +140,58 @@ func Load(path string) (Config, error) {
 	} else if c.Telegram.TokenEnv == "" {
 		c.Telegram.TokenEnv = "TELEGRAM_BOT_TOKEN"
 	}
+	// Deprecated allowlists migrate automatically: positive approved_user_ids
+	// (plus orphan positive approved_chat_ids) become allowed_users, and
+	// negative approved_chat_ids become allowed_groups. Mixing old and new
+	// keys is rejected so the operator resolves the conflict explicitly.
+	// Group-only members gain private access via this migration; trim
+	// allowed_users afterwards if that is undesired.
+	hasLegacy := len(c.Telegram.ApprovedUsers) > 0 || len(c.Telegram.ApprovedChats) > 0
+	hasNew := len(c.Telegram.AllowedUsers) > 0 || len(c.Telegram.AllowedGroups) > 0
+	if hasLegacy && hasNew {
+		return c, fmt.Errorf("telegram.approved_user_ids/approved_chat_ids were replaced by telegram.allowed_users and telegram.allowed_groups; remove the old keys")
+	}
+	if hasLegacy {
+		seen := map[int64]bool{}
+		for _, id := range c.Telegram.ApprovedUsers {
+			if id <= 0 {
+				continue
+			}
+			if !seen[id] {
+				seen[id] = true
+				c.Telegram.AllowedUsers = append(c.Telegram.AllowedUsers, id)
+			}
+		}
+		for _, id := range c.Telegram.ApprovedChats {
+			if id > 0 {
+				if !seen[id] {
+					seen[id] = true
+					c.Telegram.AllowedUsers = append(c.Telegram.AllowedUsers, id)
+				}
+			} else if id < 0 {
+				c.Telegram.AllowedGroups = append(c.Telegram.AllowedGroups, id)
+			}
+		}
+		c.Telegram.ApprovedUsers = nil
+		c.Telegram.ApprovedChats = nil
+	}
+	for _, id := range c.Telegram.AllowedUsers {
+		if id <= 0 {
+			return c, fmt.Errorf("telegram.allowed_users must contain positive IDs")
+		}
+	}
+	for _, id := range c.Telegram.AllowedGroups {
+		if id >= 0 {
+			return c, fmt.Errorf("telegram.allowed_groups must contain negative IDs")
+		}
+	}
 	for _, admin := range c.Telegram.AdminUsers {
 		approved := false
-		for _, user := range c.Telegram.ApprovedUsers {
+		for _, user := range c.Telegram.AllowedUsers {
 			approved = approved || admin == user
 		}
 		if admin <= 0 || !approved {
-			return c, fmt.Errorf("telegram.admin_user_ids must contain positive IDs from approved_user_ids")
+			return c, fmt.Errorf("telegram.admin_user_ids must contain positive IDs from allowed_users")
 		}
 	}
 	if c.Limits.MaxSteps < 1 || c.Limits.MaxToolCalls < 1 || c.Limits.MaxConcurrent < 1 || c.Limits.MaxConcurrent > 2 {

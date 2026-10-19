@@ -7,7 +7,7 @@ import (
 
 func TestAdministratorConfigurationAndConsoleEdits(t *testing.T) {
 	path := filepath.Join(t.TempDir(), "config.toml")
-	writeConfig(t, path, "# keep this comment\n[telegram]\napproved_user_ids = [1]\napproved_chat_ids = [1]\n")
+	writeConfig(t, path, "# keep this comment\n[telegram]\nallowed_users = [1]\nallowed_groups = [-10]\n")
 	c, err := Load(path)
 	if err != nil || len(c.Telegram.AdminUsers) != 0 {
 		t.Fatalf("not disabled by default: %+v %v", c.Telegram, err)

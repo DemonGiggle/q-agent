@@ -27,13 +27,13 @@ func drainDigestReplies(t *testing.T, r *Runtime) {
 
 func TestDigestSweepStoresMemoryAndNotifies(t *testing.T) {
 	r, _, _ := digestFixture(t)
-	must(t, r.Handle(context.Background(), input(1, 10, 0, 1, "remember the sky is blue")))
+	must(t, r.Handle(context.Background(), input(1, -10, 0, 1, "remember the sky is blue")))
 	r.Wait()
-	must(t, r.Handle(context.Background(), input(2, 10, 7, 1, "and grass is green")))
+	must(t, r.Handle(context.Background(), input(2, -10, 7, 1, "and grass is green")))
 	r.Wait()
 	drainDigestReplies(t, r)
 	must(t, r.digestSweep(context.Background()))
-	mem, err := r.Store.LoadMemory(platform.WorkspaceKey("telegram", 10))
+	mem, err := r.Store.LoadMemory(platform.WorkspaceKey("telegram", -10))
 	must(t, err)
 	if len(mem.Entries) != 1 {
 		t.Fatalf("entries: %+v", mem.Entries)
@@ -45,7 +45,7 @@ func TestDigestSweepStoresMemoryAndNotifies(t *testing.T) {
 	if !ok {
 		t.Fatal("missing digest notification")
 	}
-	if reply.Route.ChatID != 10 || reply.Route.TopicID != 0 {
+	if reply.Route.ChatID != -10 || reply.Route.TopicID != 0 {
 		t.Fatalf("wrong notify route: %+v", reply.Route)
 	}
 	text := strings.Join(reply.Parts, "\n")
@@ -60,14 +60,14 @@ func memKey(chat, topic int64) string {
 
 func TestDigestSweepSkipsBusyChats(t *testing.T) {
 	r, _, _ := digestFixture(t)
-	must(t, r.Handle(context.Background(), input(1, 10, 0, 1, "remember this")))
+	must(t, r.Handle(context.Background(), input(1, -10, 0, 1, "remember this")))
 	r.Wait()
 	drainDigestReplies(t, r)
 	r.mu.Lock()
-	r.active[platform.WorkspaceKey("telegram", 10)] = task{topic: 0}
+	r.active[platform.WorkspaceKey("telegram", -10)] = task{topic: 0}
 	r.mu.Unlock()
 	must(t, r.digestSweep(context.Background()))
-	mem, err := r.Store.LoadMemory(platform.WorkspaceKey("telegram", 10))
+	mem, err := r.Store.LoadMemory(platform.WorkspaceKey("telegram", -10))
 	must(t, err)
 	if len(mem.Entries) != 0 {
 		t.Fatalf("busy chat digested: %+v", mem.Entries)
@@ -76,16 +76,16 @@ func TestDigestSweepSkipsBusyChats(t *testing.T) {
 		t.Fatal("busy chat notified")
 	}
 	r.mu.Lock()
-	delete(r.active, platform.WorkspaceKey("telegram", 10))
+	delete(r.active, platform.WorkspaceKey("telegram", -10))
 	r.mu.Unlock()
 }
 
 func TestMemoryEngagedInChat(t *testing.T) {
 	r, _, p := digestFixture(t)
-	key := platform.WorkspaceKey("telegram", 10)
+	key := platform.WorkspaceKey("telegram", -10)
 	_, err := r.Store.AppendMemory(key, "2026-10-17", "user prefers concise answers", 8192)
 	must(t, err)
-	must(t, r.Handle(context.Background(), input(1, 10, 0, 1, "go")))
+	must(t, r.Handle(context.Background(), input(1, -10, 0, 1, "go")))
 	r.Wait()
 	if len(p.requests) == 0 {
 		t.Fatal("no provider request")
@@ -104,16 +104,16 @@ func TestMemoryEngagedInChat(t *testing.T) {
 
 func TestMemoryCommands(t *testing.T) {
 	r, _, _ := digestFixture(t)
-	key := platform.WorkspaceKey("telegram", 10)
+	key := platform.WorkspaceKey("telegram", -10)
 	_, err := r.Store.AppendMemory(key, "2026-10-17", "likes tea", 8192)
 	must(t, err)
-	must(t, r.Handle(context.Background(), input(1, 10, 0, 1, "/memory")))
+	must(t, r.Handle(context.Background(), input(1, -10, 0, 1, "/memory")))
 	reply, ok := r.Store.Pending()
 	if !ok || !strings.Contains(strings.Join(reply.Parts, "\n"), "likes tea") {
 		t.Fatalf("memory not shown: %+v", reply)
 	}
 	must(t, r.Store.Delivered(reply.ID))
-	must(t, r.Handle(context.Background(), input(2, 10, 0, 1, "/forget")))
+	must(t, r.Handle(context.Background(), input(2, -10, 0, 1, "/forget")))
 	mem, err := r.Store.LoadMemory(key)
 	must(t, err)
 	if len(mem.Entries) != 0 {

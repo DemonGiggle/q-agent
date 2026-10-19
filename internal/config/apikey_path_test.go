@@ -26,7 +26,7 @@ func TestAPIKeyPath(t *testing.T) {
 	}
 	keyPath := filepath.Join(dir, "provider.key")
 	writeKeyFile(t, keyPath, "  file-secret-value \n", 0600)
-	writeConfig(t, configPath, "[provider]\nname = \"openai\"\nmodel = \"m\"\napi_key_env = \"\"\napi_key_path = \"provider.key\"\n[telegram]\napproved_user_ids = [1]\napproved_chat_ids = [1]\n")
+	writeConfig(t, configPath, "[provider]\nname = \"openai\"\nmodel = \"m\"\napi_key_env = \"\"\napi_key_path = \"provider.key\"\n[telegram]\nallowed_users = [1]\nallowed_groups = [-10]\n")
 	c, err := Load(configPath)
 	if err != nil {
 		t.Fatal(err)

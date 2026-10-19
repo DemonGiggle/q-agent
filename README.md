@@ -87,9 +87,11 @@ cp config.example.toml ~/.config/q-agent/config.toml
 ### 2. Make it yours
 
 Edit `~/.config/q-agent/config.toml` to choose your provider and model, then set
-`approved_user_ids` and `approved_chat_ids` under `[telegram]`.
-**Both your user ID and the chat ID must be approved.** For a private chat,
-they normally match. Keep the bot token out of the config file.
+`allowed_users` and `allowed_groups` under `[telegram]`.
+**Private chats list your user ID once in `allowed_users`** (that ID authorizes
+that private chat). **Groups list the group ID in `allowed_groups`** — anyone in
+an allowed group can talk, with no per-user listing. Keep the bot token out of
+the config file.
 
 Prefer a guided setup? Run `./bin/q-agent models` to review and change your
 model, or `./bin/q-agent config` to edit other settings. Each change is previewed

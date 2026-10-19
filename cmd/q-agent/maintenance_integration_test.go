@@ -344,7 +344,7 @@ func testMaintenanceLifecycle(t *testing.T, binaries map[string]string, isolated
 	}
 
 	cfg := filepath.Join(dir, "config.toml")
-	configText := fmt.Sprintf("state_dir = %s\n[provider]\nname = 'ollama'\nmodel = 'offline'\nbase_url = %s\n[telegram]\ntoken_path = 'telegram.token'\napproved_user_ids = [1]\napproved_chat_ids = [1]\nadmin_user_ids = [1]\n[sandbox]\nenabled = %t\nbase_image = %s\n", strconv.Quote(filepath.Join(dir, "state")), strconv.Quote(server.URL), isolated, strconv.Quote(image))
+	configText := fmt.Sprintf("state_dir = %s\n[provider]\nname = 'ollama'\nmodel = 'offline'\nbase_url = %s\n[telegram]\ntoken_path = 'telegram.token'\nallowed_users = [1]\nallowed_groups = []\nadmin_user_ids = [1]\n[sandbox]\nenabled = %t\nbase_image = %s\n", strconv.Quote(filepath.Join(dir, "state")), strconv.Quote(server.URL), isolated, strconv.Quote(image))
 	unit := fmt.Sprintf("q-agent-lifecycle-probe-%d-%d.service", os.Getpid(), time.Now().UnixNano())
 	fixturePath := filepath.Join(dir, "fixture.json")
 	if err := state.Atomic(fixturePath, lifecycleFixture{Config: cfg, Unit: unit, TelegramURL: server.URL, ReleaseURL: server.URL + "/release", FailNewBoot: action == "rollback"}); err != nil {

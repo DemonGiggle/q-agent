@@ -73,8 +73,8 @@ func (noTools) Execute(context.Context, llm.ToolCall) (string, error) {
 func fixture(t *testing.T) (*Runtime, *testWorkspace, *testProvider) {
 	t.Helper()
 	c := config.Defaults()
-	c.Telegram.ApprovedUsers = []int64{1}
-	c.Telegram.ApprovedChats = []int64{10, 20, 30}
+	c.Telegram.AllowedUsers = []int64{1}
+	c.Telegram.AllowedGroups = []int64{-10, -20, -30}
 	c.StateDir = t.TempDir()
 	s, err := state.Open(c.StateDir, nil)
 	if err != nil {
@@ -91,7 +91,8 @@ func input(id, chat, topic, user int64, text string) platform.Message {
 }
 func TestAuthorizationAndDuplicates(t *testing.T) {
 	r, w, _ := fixture(t)
-	for _, m := range []platform.Message{input(1, 10, 0, 2, "go"), input(2, 99, 0, 1, "go"), input(3, 10, 0, 2, "/new"), input(4, 99, 0, 1, "/cancel")} {
+	// Private spoof, unlisted private, unlisted group, and private spoof command.
+	for _, m := range []platform.Message{input(1, 1, 0, 2, "go"), input(2, 99, 0, 1, "go"), input(3, -99, 0, 1, "go"), input(4, 1, 0, 2, "/cancel")} {
 		if err := r.Handle(context.Background(), m); err != nil {
 			t.Fatal(err)
 		}
@@ -100,23 +101,29 @@ func TestAuthorizationAndDuplicates(t *testing.T) {
 	if w.calls != 0 {
 		t.Fatal("unauthorized execution")
 	}
-	m := input(5, 10, 0, 1, "go")
+	// Group allows any user without per-user listing; private allows its owner.
+	for _, m := range []platform.Message{input(5, -10, 0, 2, "go"), input(6, 1, 0, 1, "go")} {
+		if err := r.Handle(context.Background(), m); err != nil {
+			t.Fatal(err)
+		}
+		r.Wait()
+	}
+	if w.calls != 2 {
+		t.Fatalf("authorized private/group execution = %d", w.calls)
+	}
+	m := input(5, -10, 0, 2, "go")
 	if err := r.Handle(context.Background(), m); err != nil {
 		t.Fatal(err)
 	}
 	r.Wait()
-	if err := r.Handle(context.Background(), m); err != nil {
-		t.Fatal(err)
-	}
-	r.Wait()
-	if w.calls != 1 {
+	if w.calls != 2 {
 		t.Fatal("duplicate executed")
 	}
 }
 func TestTopicHistoryNewAndRestart(t *testing.T) {
 	r, w, p := fixture(t)
 	for i, topic := range []int64{7, 8, 7} {
-		if err := r.Handle(context.Background(), input(int64(i+1), 10, topic, 1, "go")); err != nil {
+		if err := r.Handle(context.Background(), input(int64(i+1), -10, topic, 1, "go")); err != nil {
 			t.Fatal(err)
 		}
 		r.Wait()
@@ -124,7 +131,7 @@ func TestTopicHistoryNewAndRestart(t *testing.T) {
 	if len(p.requests[1].Messages) != 2 || len(p.requests[2].Messages) != 4 {
 		t.Fatal("topic history mixed")
 	}
-	m := input(4, 10, 7, 1, "/new")
+	m := input(4, -10, 7, 1, "/new")
 	if err := r.Handle(context.Background(), m); err != nil {
 		t.Fatal(err)
 	}
@@ -137,7 +144,7 @@ func TestInterruptedUpdateIsNotReplayedAfterRestart(t *testing.T) {
 	r, w, _ := fixture(t)
 	w.block = make(chan struct{})
 	w.started = make(chan struct{}, 1)
-	m := input(50, 10, 0, 1, "go")
+	m := input(50, -10, 0, 1, "go")
 	if err := r.Handle(context.Background(), m); err != nil {
 		t.Fatal(err)
 	}
@@ -161,18 +168,18 @@ func TestBusyIncludesProvisioningAndOtherTopics(t *testing.T) {
 	r, w, _ := fixture(t)
 	w.block = make(chan struct{})
 	w.started = make(chan struct{}, 2)
-	if err := r.Handle(context.Background(), input(1, 10, 7, 1, "go")); err != nil {
+	if err := r.Handle(context.Background(), input(1, -10, 7, 1, "go")); err != nil {
 		t.Fatal(err)
 	}
 	<-w.started
-	if err := r.Handle(context.Background(), input(2, 10, 8, 1, "go")); err != nil {
+	if err := r.Handle(context.Background(), input(2, -10, 8, 1, "go")); err != nil {
 		t.Fatal(err)
 	}
-	if err := r.Handle(context.Background(), input(3, 20, 0, 1, "go")); err != nil {
+	if err := r.Handle(context.Background(), input(3, -20, 0, 1, "go")); err != nil {
 		t.Fatal(err)
 	}
 	<-w.started
-	if err := r.Handle(context.Background(), input(4, 30, 0, 1, "go")); err != nil {
+	if err := r.Handle(context.Background(), input(4, -30, 0, 1, "go")); err != nil {
 		t.Fatal(err)
 	}
 	reply, ok := r.Store.Pending()
@@ -192,11 +199,11 @@ func TestCancelAndProvisioningFailure(t *testing.T) {
 	r, w, p := fixture(t)
 	p.block = true
 	p.started = make(chan struct{}, 1)
-	if err := r.Handle(context.Background(), input(1, 10, 7, 1, "go")); err != nil {
+	if err := r.Handle(context.Background(), input(1, -10, 7, 1, "go")); err != nil {
 		t.Fatal(err)
 	}
 	<-p.started
-	if err := r.Handle(context.Background(), input(2, 10, 7, 1, "/cancel")); err != nil {
+	if err := r.Handle(context.Background(), input(2, -10, 7, 1, "/cancel")); err != nil {
 		t.Fatal(err)
 	}
 	done := make(chan struct{})
@@ -206,13 +213,13 @@ func TestCancelAndProvisioningFailure(t *testing.T) {
 	case <-time.After(time.Second):
 		t.Fatal("cancel did not stop task")
 	}
-	c, _ := r.Store.Load(input(0, 10, 7, 1, "").ConversationKey())
+	c, _ := r.Store.Load(input(0, -10, 7, 1, "").ConversationKey())
 	if len(c.Pairs) != 0 {
 		t.Fatal("interrupted run saved a pair")
 	}
 	w.fail = true
 	p.block = false
-	if err := r.Handle(context.Background(), input(3, 20, 0, 1, "go")); err != nil {
+	if err := r.Handle(context.Background(), input(3, -20, 0, 1, "go")); err != nil {
 		t.Fatal(err)
 	}
 	r.Wait()

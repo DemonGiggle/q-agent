@@ -21,7 +21,7 @@ func TestParseShellDecision(t *testing.T) {
 
 func TestShellPromptScheduledNeverAsks(t *testing.T) {
 	r, _, _ := fixture(t)
-	if r.requestShellExtend(context.Background(), input(1, 10, 0, 1, "go"), "run", "sh", []string{"a"}) {
+	if r.requestShellExtend(context.Background(), input(1, -10, 0, 1, "go"), "run", "sh", []string{"a"}) {
 		t.Fatal("scheduled run must not prompt")
 	}
 }
@@ -32,7 +32,7 @@ func TestShellPromptExtendAndKillViaHandle(t *testing.T) {
 		want bool
 	}{{"extend", true}, {"kill", false}} {
 		r, _, _ := fixture(t)
-		owner := input(11, 10, 7, 1, "go")
+		owner := input(11, -10, 7, 1, "go")
 		done := make(chan bool, 1)
 		go func() {
 			done <- r.requestShellExtend(context.Background(), owner, "", "sleep 30", []string{"l1", "l2", "l3"})
@@ -54,7 +54,7 @@ func TestShellPromptExtendAndKillViaHandle(t *testing.T) {
 		if err := r.Store.Delivered(reply.ID); err != nil {
 			t.Fatal(err)
 		}
-		if err := r.Handle(context.Background(), input(12, 10, 7, 1, tc.text)); err != nil {
+		if err := r.Handle(context.Background(), input(12, -10, 7, 1, tc.text)); err != nil {
 			t.Fatal(err)
 		}
 		select {
@@ -79,7 +79,7 @@ func TestShellPromptExtendAndKillViaHandle(t *testing.T) {
 func TestShellPromptTimeoutDefaultsKill(t *testing.T) {
 	r, _, _ := fixture(t)
 	r.Config.Limits.ShellPromptTimeout = "60ms"
-	owner := input(21, 10, 7, 1, "go")
+	owner := input(21, -10, 7, 1, "go")
 	start := time.Now()
 	if r.requestShellExtend(context.Background(), owner, "", "sleep 30", []string{"x"}) {
 		t.Fatal("expired prompt must kill")
@@ -91,7 +91,7 @@ func TestShellPromptTimeoutDefaultsKill(t *testing.T) {
 
 func TestShellPromptBlocksSteerUntilResolved(t *testing.T) {
 	r, _, _ := fixture(t)
-	owner := input(31, 10, 7, 1, "go")
+	owner := input(31, -10, 7, 1, "go")
 	done := make(chan bool, 1)
 	go func() { done <- r.requestShellExtend(context.Background(), owner, "", "sleep 30", []string{"o"}) }()
 	deadline := time.Now().Add(3 * time.Second)
@@ -112,7 +112,7 @@ func TestShellPromptBlocksSteerUntilResolved(t *testing.T) {
 	if err := r.Store.Delivered(prompt.ID); err != nil {
 		t.Fatal(err)
 	}
-	if err := r.Handle(context.Background(), input(32, 10, 7, 1, "some follow-up")); err != nil {
+	if err := r.Handle(context.Background(), input(32, -10, 7, 1, "some follow-up")); err != nil {
 		t.Fatal(err)
 	}
 	reply, ok := r.Store.Pending()
@@ -122,7 +122,7 @@ func TestShellPromptBlocksSteerUntilResolved(t *testing.T) {
 	if err := r.Store.Delivered(reply.ID); err != nil {
 		t.Fatal(err)
 	}
-	if err := r.Handle(context.Background(), input(33, 10, 7, 1, "kill")); err != nil {
+	if err := r.Handle(context.Background(), input(33, -10, 7, 1, "kill")); err != nil {
 		t.Fatal(err)
 	}
 	if got := <-done; got {

@@ -35,10 +35,15 @@ mkdir -p ~/.config/q-agent
 cp config.example.toml ~/.config/q-agent/config.toml
 ```
 
-Edit `~/.config/q-agent/config.toml`: set the model, approved Telegram user IDs,
-and approved chat IDs. **Both allowlists must match every prompt and command.**
-For a private chat, the chat ID normally equals the user's ID; group chat IDs are
-usually negative.
+Edit `~/.config/q-agent/config.toml`: set the model, `telegram.allowed_users`
+(private contacts) and `telegram.allowed_groups` (groups/channels). A private
+chat is allowed when its ID (which equals the user's ID) is in `allowed_users`
+and the sender matches that chat. A group message is allowed when its chat ID
+(usually negative) is in `allowed_groups`, regardless of sender — no per-user
+listing is needed. Rejected messages are dropped silently (log-only); check the
+journal for `rejected (not approved)` with chat/user IDs to discover IDs.
+Old `approved_user_ids`/`approved_chat_ids` configs migrate automatically on
+load; do not mix old and new keys.
 Configuration uses TOML, rejects unknown fields, and resolves relative paths
 against the configuration file's directory. Credentials are environment values,
 not configuration values.
@@ -104,8 +109,7 @@ removed from tool environments. Additional providers must be configured by the
 operator; Telegram users cannot supply credentials or arbitrary endpoints.
 
 For example, `/provider openai`, `/model YOUR_OPENAI_MODEL`, and `/think high`
-change only the current private chat or group. Only approved users in approved
-chats can change settings. All topics in a group share these overrides. Changes
+change only the current private chat or group. Only allowed users/groups can change settings. All topics in a group share these overrides. Changes
 are rejected while a task in that chat is active. Preferences survive restarts
 and `/new`, and apply to scheduled agent tasks. Unset models use the selected
 provider's model; unset thinking uses that provider's configured thinking when
@@ -120,7 +124,7 @@ selections remain readable; no migration of the state directory is required.
 ### Telegram commands
 
 - `/update`: install the latest stable GitHub Release and restart the systemd
-  user service; configured administrator in an approved private chat only.
+  user service; configured administrator in an allowed private chat only.
 - `/restart`: restart that service without updating; same restrictions.
   Both bypass the model, work in host/sandbox modes, and reject requests while
   any agent task is active. They are disabled until `telegram.admin_user_ids`
@@ -151,7 +155,7 @@ selections remain readable; no migration of the state directory is required.
   without calling the model, provisioning a workspace, or changing history.
 - `/models`: browse the active provider's models with inline buttons (eight per
   page, previous/next navigation). The current model is marked with a check.
-  Only the approved user who opened the menu can use it, in the original
+  Only the user who opened the menu can use it, in the original
   chat/topic. Menus expire after 15 minutes or a service restart; opening another
   menu in the same topic replaces your old one. Discovery failures are reported
   without exposing provider diagnostics.
@@ -173,7 +177,7 @@ selections remain readable; no migration of the state directory is required.
 - `/ask <prompt>`: submit a prompt or steer your active task (plain text also
   works in private chats).
 
-All commands require an approved user and chat. In groups, use
+All commands require an allowed private user or allowed group. In groups, use
 `/status@your_bot`, `/status @your_bot`, or reply to the bot with `/status`;
 unaddressed commands and commands for another bot are ignored. Replies preserve
 the original chat/topic and use the durable outbox, including initial model
@@ -207,9 +211,11 @@ execution, so a crash after accept loses both the reply and its memory
 source. In-process retries remain idempotent; moving the commit after
 execution would risk duplicate tool effects.
 
-At startup and each configured `[memory]` daily wall time (server-local midnight
+At each configured `[memory]` daily wall time (server-local midnight
 by default), one worker visits chats fairly, committing at most one batch per
-chat in each round. Busy chats and maintenance defer work; task completion wakes
+chat in each round. Startup does not enroll new pending work; it only resumes
+already-enrolled retry/deferred work, so pending journal waits for the next
+midnight. Busy chats and maintenance defer work; task completion wakes
 the worker and a minute tick catches missed wakes. Model/storage failures retry
 with exponential delays of 1, 2, 4, 8, 16, 32, then at most 60 minutes. Per-chat
 retry state survives restart when storage is writable; unwritable storage also
@@ -428,7 +434,7 @@ inside the user namespace. Namespace or mapping failure stops execution.
 PID isolation ends background processes when the tool finishes, including on
 cancellation. Networking deliberately uses the host network namespace, so local
 network services are reachable. It is filesystem isolation, with networking
-available to approved users. Tool-result envelopes mark observations as untrusted
+available to allowed users/groups. Tool-result envelopes mark observations as untrusted
 reference data. Known credential values and qcode's credential patterns are
 redacted from replies, persisted text, and diagnostics.
 
@@ -476,7 +482,7 @@ Changing a conversation's configured provider or model starts fresh history.
 
 ### Steering an active task
 
-New Telegram text (including `/ask`) from the task's original approved sender
+New Telegram text (including `/ask`) from the task's original allowed sender
 in the same chat/topic is **steering**, not a new independent task. This also
 works during workspace provisioning and while an owned scheduled agent task is
 running. Normal group addressing and both allowlists still apply. Other topics

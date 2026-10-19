@@ -136,7 +136,7 @@ func TestRuntimeLiveStreamingKeepsDurableReply(t *testing.T) {
 	r.Sink = sink
 	provider := &streamTestProvider{chunks: []string{"para one\n\n", "para two"}, answer: "para one\n\npara two"}
 	r.Providers = func(_ state.Conversation) (llm.Provider, error) { return provider, nil }
-	m := input(1, 10, 0, 1, "go")
+	m := input(1, -10, 0, 1, "go")
 	if err := r.Handle(context.Background(), m); err != nil {
 		t.Fatal(err)
 	}
@@ -171,7 +171,7 @@ func TestRuntimeSlowProvisioningShowsPreparing(t *testing.T) {
 	w.started = make(chan struct{}, 1)
 	provider := &streamTestProvider{answer: "done"}
 	r.Providers = func(_ state.Conversation) (llm.Provider, error) { return provider, nil }
-	m := input(1, 10, 0, 1, "go")
+	m := input(1, -10, 0, 1, "go")
 	if err := r.Handle(context.Background(), m); err != nil {
 		t.Fatal(err)
 	}

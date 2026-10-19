@@ -30,10 +30,12 @@ token_env = "TELEGRAM_BOT_TOKEN"
 # Optional file containing the Telegram bot token. Mutually exclusive with
 # token_env: clear token_env to use it. Same strict file rules as api_key_path.
 # token_path = "~/.config/q-agent/telegram.token"
-approved_user_ids = [123456789]
-approved_chat_ids = [123456789, -1001234567890]
-# Optional: /update and /restart, only in approved private chats. Empty disables.
-# Administrators must also be listed in approved_user_ids.
+# Private 1:1 contacts: one entry authorizes that private chat (ChatID == UserID).
+allowed_users = [123456789]
+# Groups/channels: anyone in a listed group can talk; no per-user listing needed.
+allowed_groups = [-1001234567890]
+# Optional: /update and /restart, only in allowed private chats. Empty disables.
+# Administrators must also be listed in allowed_users.
 admin_user_ids = []
 
 [sandbox]

@@ -26,7 +26,7 @@ func TestServeTelegramFollowupSteersActiveTask(t *testing.T) {
 	t.Setenv("TELEGRAM_BOT_TOKEN", "test-steer-token")
 	c := config.Defaults()
 	c.StateDir = t.TempDir()
-	c.Telegram.ApprovedUsers, c.Telegram.ApprovedChats = []int64{1}, []int64{10}
+	c.Telegram.AllowedUsers, c.Telegram.AllowedGroups = []int64{1}, []int64{-10}
 	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
 	defer cancel()
 	started, acknowledged, delivered := make(chan struct{}), make(chan struct{}), make(chan struct{}, 1)
@@ -95,10 +95,10 @@ func TestServeTelegramFollowupSteersActiveTask(t *testing.T) {
 				<-r.Context().Done()
 				return
 			}
-			update := telegram.Update{ID: id, Message: &telegram.Message{ID: id, TopicID: 7, From: &telegram.User{ID: 1}, Chat: telegram.Chat{ID: 10, Type: "supergroup"}, Text: text}}
+			update := telegram.Update{ID: id, Message: &telegram.Message{ID: id, TopicID: 7, From: &telegram.User{ID: 1}, Chat: telegram.Chat{ID: -10, Type: "supergroup"}, Text: text}}
 			updates := []telegram.Update{update}
 			if id == 2 {
-				updates = append(updates, telegram.Update{ID: 3, Message: &telegram.Message{ID: 3, TopicID: 7, From: &telegram.User{ID: 1}, Chat: telegram.Chat{ID: 10, Type: "supergroup"}, Text: "/ask@test_bot with extra detail"}})
+				updates = append(updates, telegram.Update{ID: 3, Message: &telegram.Message{ID: 3, TopicID: 7, From: &telegram.User{ID: 1}, Chat: telegram.Chat{ID: -10, Type: "supergroup"}, Text: "/ask@test_bot with extra detail"}})
 			}
 			json.NewEncoder(w).Encode(map[string]any{"ok": true, "result": updates})
 		case "sendMessage", "editMessageText":
@@ -110,7 +110,7 @@ func TestServeTelegramFollowupSteersActiveTask(t *testing.T) {
 			if err := json.NewDecoder(r.Body).Decode(&body); err != nil {
 				t.Error(err)
 			}
-			if body.ChatID != 10 {
+			if body.ChatID != -10 {
 				t.Error("reply escaped chat")
 			}
 			if strings.HasPrefix(body.Text, "Follow-up received;") {
@@ -158,7 +158,7 @@ func TestServeTelegramFollowupSteersActiveTask(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	route := platform.Message{Platform: "telegram", ChatID: 10, TopicID: 7}
+	route := platform.Message{Platform: "telegram", ChatID: -10, TopicID: 7}
 	conversation, err := store.Load(route.ConversationKey())
 	if err != nil || len(conversation.Pairs) != 1 || conversation.Pairs[0].Answer != "revised final" || len(conversation.Pairs[0].Steers) != 1 || conversation.Pairs[0].Steers[0] != "new instruction\n\nwith extra detail" || requests.Load() != 2 {
 		t.Fatalf("conversation: %+v, requests=%d, error=%v", conversation, requests.Load(), err)

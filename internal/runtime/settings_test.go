@@ -14,7 +14,7 @@ import (
 func TestChatSettingsRoutingPersistenceAndDefaults(t *testing.T) {
 	r, _, p := pickerFixture(t)
 	r.Config.Provider.Thinking = "low"
-	r.Config.Telegram.ApprovedChats = append(r.Config.Telegram.ApprovedChats, -100)
+	r.Config.Telegram.AllowedGroups = append(r.Config.Telegram.AllowedGroups, -100)
 	r.Config.Providers = map[string]config.Provider{"openai": {Name: "openai", Model: "remote", Thinking: "medium"}}
 	var routes []state.Conversation
 	r.Providers = func(c state.Conversation) (llm.Provider, error) { routes = append(routes, c); return p, nil }
@@ -50,7 +50,7 @@ func TestChatSettingsRoutingPersistenceAndDefaults(t *testing.T) {
 	if after.Thinking != "medium" {
 		t.Fatalf("profile default: %+v", after)
 	}
-	send(10, 0, "other chat")
+	send(-10, 0, "other chat")
 	if p.requests[1].Model != r.Config.Provider.Model || p.requests[1].Thinking != "low" {
 		t.Fatal("group settings leaked into another chat")
 	}
@@ -93,7 +93,7 @@ func TestChatSettingsRoutingPersistenceAndDefaults(t *testing.T) {
 
 func TestChatSettingsRejectBusyUnauthorizedAndUnknownProvider(t *testing.T) {
 	r, _, _ := pickerFixture(t)
-	m := input(1, 10, 0, 1, "/provider unknown")
+	m := input(1, -10, 0, 1, "/provider unknown")
 	must(t, r.Handle(context.Background(), m))
 	raw, err := r.Store.ChatModel(m.WorkspaceKey())
 	must(t, err)
@@ -110,10 +110,12 @@ func TestChatSettingsRejectBusyUnauthorizedAndUnknownProvider(t *testing.T) {
 		t.Fatal("busy settings changed")
 	}
 	delete(r.active, m.WorkspaceKey())
+	origKey := m.WorkspaceKey()
 	m.UpdateID++
+	m.ChatID = -99
 	m.UserID = 999
 	must(t, r.Handle(context.Background(), m))
-	raw, err = r.Store.ChatModel(m.WorkspaceKey())
+	raw, err = r.Store.ChatModel(origKey)
 	must(t, err)
 	if raw.Thinking != nil {
 		t.Fatal("unauthorized settings changed")
@@ -123,10 +125,10 @@ func TestChatSettingsRejectBusyUnauthorizedAndUnknownProvider(t *testing.T) {
 func TestChatSettingsInvalidateMenusAndResetHistory(t *testing.T) {
 	r, _, _ := pickerFixture(t)
 	r.Config.Providers = map[string]config.Provider{"openai": {Name: "openai", Model: "remote"}}
-	token, _ := openPicker(t, r, 1, 10, 0)
-	must(t, r.Handle(context.Background(), input(2, 10, 0, 1, "first")))
+	token, _ := openPicker(t, r, 1, -10, 0)
+	must(t, r.Handle(context.Background(), input(2, -10, 0, 1, "first")))
 	r.Wait()
-	m := input(3, 10, 0, 1, "/provider openai")
+	m := input(3, -10, 0, 1, "/provider openai")
 	must(t, r.Handle(context.Background(), m))
 	if _, ok := r.modelMenus[token]; ok {
 		t.Fatal("stale provider menu retained")
@@ -136,20 +138,20 @@ func TestChatSettingsInvalidateMenusAndResetHistory(t *testing.T) {
 	if len(c.Pairs) != 0 || c.Provider != "openai" {
 		t.Fatalf("provider history: %+v", c)
 	}
-	must(t, r.Handle(context.Background(), input(4, 10, 0, 1, "/provider default")))
+	must(t, r.Handle(context.Background(), input(4, -10, 0, 1, "/provider default")))
 	c, err = r.loadModelConversation(m)
 	must(t, err)
 	if len(c.Pairs) != 0 {
 		t.Fatal("A -> B -> A restored stale history")
 	}
 	// Menus for nondefault providers use that provider and preserve thinking.
-	must(t, r.Handle(context.Background(), input(5, 10, 0, 1, "/provider openai")))
-	must(t, r.Handle(context.Background(), input(6, 10, 0, 1, "/think high")))
-	token, reply := openPicker(t, r, 7, 10, 0)
+	must(t, r.Handle(context.Background(), input(5, -10, 0, 1, "/provider openai")))
+	must(t, r.Handle(context.Background(), input(6, -10, 0, 1, "/think high")))
+	token, reply := openPicker(t, r, 7, -10, 0)
 	if !strings.Contains(reply.Parts[0], "openai") {
 		t.Fatal("wrong provider menu")
 	}
-	callback(t, r, 8, 10, 0, 1, "models:"+token+":s:0")
+	callback(t, r, 8, -10, 0, 1, "models:"+token+":s:0")
 	selected, err := r.chatModel(m)
 	must(t, err)
 	if selected.Provider != "openai" || !selected.ProviderPinned || *selected.Thinking != "high" {
@@ -166,7 +168,7 @@ func (*thinkingPickerProvider) ThinkingCapability(string) llm.ThinkingCapability
 func TestThinkingValidationAndRepeatedSettingsRetainHistory(t *testing.T) {
 	r, _, p := pickerFixture(t)
 	r.Providers = func(state.Conversation) (llm.Provider, error) { return &thinkingPickerProvider{p}, nil }
-	m := input(1, 10, 0, 1, "first")
+	m := input(1, -10, 0, 1, "first")
 	must(t, r.Handle(context.Background(), m))
 	r.Wait()
 	for i, command := range []string{"/think high", "/provider ollama", "/model default", "/provider default"} {
@@ -202,7 +204,7 @@ func TestThinkingValidationAndRepeatedSettingsRetainHistory(t *testing.T) {
 func TestBareThinkListsLevelsForCurrentModel(t *testing.T) {
 	r, _, p := pickerFixture(t)
 	r.Providers = func(state.Conversation) (llm.Provider, error) { return &thinkingPickerProvider{p}, nil }
-	must(t, r.Handle(context.Background(), input(1, 10, 0, 1, "/think")))
+	must(t, r.Handle(context.Background(), input(1, -10, 0, 1, "/think")))
 	reply, ok := r.Store.Pending()
 	if !ok {
 		t.Fatal("missing /think reply")
@@ -217,11 +219,11 @@ func TestBareThinkListsLevelsForCurrentModel(t *testing.T) {
 		t.Fatalf("bare /think dumped status: %s", text)
 	}
 	must(t, r.Store.Delivered(reply.ID))
-	must(t, r.Handle(context.Background(), input(2, 10, 0, 1, "/think high")))
+	must(t, r.Handle(context.Background(), input(2, -10, 0, 1, "/think high")))
 	for old, ok := r.Store.Pending(); ok; old, ok = r.Store.Pending() {
 		must(t, r.Store.Delivered(old.ID))
 	}
-	must(t, r.Handle(context.Background(), input(3, 10, 0, 1, "/think")))
+	must(t, r.Handle(context.Background(), input(3, -10, 0, 1, "/think")))
 	reply, ok = r.Store.Pending()
 	if !ok {
 		t.Fatal("missing /think reply after set")

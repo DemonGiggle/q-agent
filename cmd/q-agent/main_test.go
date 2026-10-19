@@ -43,8 +43,8 @@ func testServe(t *testing.T, isolated bool) {
 	t.Setenv("TELEGRAM_BOT_TOKEN", "fake-telegram-test-token")
 	c := config.Defaults()
 	c.StateDir = t.TempDir()
-	c.Telegram.ApprovedChats = []int64{-10}
-	c.Telegram.ApprovedUsers = []int64{1}
+	c.Telegram.AllowedGroups = []int64{-10}
+	c.Telegram.AllowedUsers = []int64{1}
 	c.Sandbox.BaseImage = image
 	c.Sandbox.Worker = worker
 	c.Sandbox.Enabled = isolated
@@ -143,7 +143,7 @@ func testServe(t *testing.T, isolated bool) {
 				case <-r.Context().Done():
 					return
 				}
-				fmt.Fprintln(w, `{"ok":true,"result":[{"update_id":1,"message":{"message_id":1,"from":{"id":2},"chat":{"id":-10,"type":"supergroup"},"text":"/ask@test_bot unauthorized"}},{"update_id":2,"message":{"message_id":2,"message_thread_id":7,"from":{"id":1},"chat":{"id":-10,"type":"supergroup"},"text":"/ask@test_bot write a file"}}]}`)
+				fmt.Fprintln(w, `{"ok":true,"result":[{"update_id":1,"message":{"message_id":1,"from":{"id":2},"chat":{"id":-99,"type":"supergroup"},"text":"/ask@test_bot unauthorized"}},{"update_id":2,"message":{"message_id":2,"message_thread_id":7,"from":{"id":1},"chat":{"id":-10,"type":"supergroup"},"text":"/ask@test_bot write a file"}}]}`)
 			} else {
 				<-r.Context().Done()
 			}

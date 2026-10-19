@@ -16,6 +16,7 @@ import (
 
 // Values returns the effective configuration using the documented TOML keys.
 // It contains credential references, never resolved credential values.
+// Deprecated approved_* keys are hidden; use allowed_users/allowed_groups.
 func Values(c Config) map[string]any {
 	result := map[string]any{}
 	var walk func(reflect.Value, string)
@@ -35,11 +36,21 @@ func Values(c Config) map[string]any {
 		}
 	}
 	walk(reflect.ValueOf(c), "")
+	delete(result, "telegram.approved_user_ids")
+	delete(result, "telegram.approved_chat_ids")
 	return result
+}
+
+// legacyKeyHint reports the replacement for removed allowlist keys.
+func legacyKeyHint(key string) bool {
+	return key == "telegram.approved_user_ids" || key == "telegram.approved_chat_ids"
 }
 
 // ParseValue accepts plain strings and TOML literals for numeric/bool/array fields.
 func ParseValue(key, text string) (any, error) {
+	if legacyKeyHint(key) {
+		return nil, fmt.Errorf("%q was replaced by telegram.allowed_users and telegram.allowed_groups; old configs migrate automatically on load", key)
+	}
 	exemplar, ok := Values(Defaults())[key]
 	if !ok {
 		return nil, fmt.Errorf("unknown configuration key %q", key)
@@ -77,6 +88,9 @@ func nodeKey(n *unstable.Node) string {
 func patch(data []byte, changes map[string]any) ([]byte, error) {
 	remaining := map[string]string{}
 	for key, value := range changes {
+		if legacyKeyHint(key) {
+			return nil, fmt.Errorf("%q was replaced by telegram.allowed_users and telegram.allowed_groups; old configs migrate automatically on load", key)
+		}
 		sample, ok := Values(Defaults())[key]
 		if !ok || reflect.TypeOf(value) != reflect.TypeOf(sample) {
 			return nil, fmt.Errorf("invalid configuration key/type %q", key)

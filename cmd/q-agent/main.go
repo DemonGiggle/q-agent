@@ -170,8 +170,8 @@ func serveWithMaintenance(ctx context.Context, c config.Config, policy *redactio
 	if runtime.GOOS != "linux" {
 		return fmt.Errorf("q-agent runtime requires Linux")
 	}
-	if len(c.Telegram.ApprovedUsers) == 0 || len(c.Telegram.ApprovedChats) == 0 {
-		return fmt.Errorf("approved_user_ids and approved_chat_ids are both required")
+	if len(c.Telegram.AllowedUsers) == 0 && len(c.Telegram.AllowedGroups) == 0 {
+		return fmt.Errorf("telegram.allowed_users and/or telegram.allowed_groups are required")
 	}
 	token, err := c.Telegram.Token()
 	if err != nil {

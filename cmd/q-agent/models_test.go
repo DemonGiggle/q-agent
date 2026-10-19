@@ -25,8 +25,8 @@ func TestServeModelsPaginationAndRouting(t *testing.T) {
 	t.Setenv("TELEGRAM_BOT_TOKEN", "test-model-picker-token")
 	c := config.Defaults()
 	c.StateDir = t.TempDir()
-	c.Telegram.ApprovedUsers = []int64{1}
-	c.Telegram.ApprovedChats = []int64{10}
+	c.Telegram.AllowedUsers = []int64{1}
+	c.Telegram.AllowedGroups = []int64{-10}
 	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
 	defer cancel()
 	model := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
@@ -59,7 +59,7 @@ func TestServeModelsPaginationAndRouting(t *testing.T) {
 	delivered := make(chan struct{}, 1)
 	sendUpdate := func(w http.ResponseWriter, id int64, text, data string) {
 		update := telegram.Update{ID: id}
-		msg := &telegram.Message{ID: 100, TopicID: 7, Chat: telegram.Chat{ID: 10, Type: "supergroup"}}
+		msg := &telegram.Message{ID: 100, TopicID: 7, Chat: telegram.Chat{ID: -10, Type: "supergroup"}}
 		if data != "" {
 			msg.From = &telegram.User{ID: 99}
 			update.Callback = &telegram.CallbackQuery{ID: fmt.Sprint(id), From: &telegram.User{ID: 1}, Message: msg, Data: data}
@@ -121,7 +121,7 @@ func TestServeModelsPaginationAndRouting(t *testing.T) {
 			if err := json.NewDecoder(r.Body).Decode(&body); err != nil {
 				t.Error(err)
 			}
-			if body.ChatID != 10 {
+			if body.ChatID != -10 {
 				t.Error("wrong chat")
 			}
 			if body.Keyboard != nil && len(body.Keyboard.Rows) > 0 {
@@ -163,7 +163,7 @@ func TestServeModelsPaginationAndRouting(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	m := platform.Message{Platform: "telegram", ChatID: 10, TopicID: 7}
+	m := platform.Message{Platform: "telegram", ChatID: -10, TopicID: 7}
 	choice, err := store.ChatModel(m.WorkspaceKey())
 	if err != nil || choice.Model != "model-09" {
 		t.Fatalf("choice: %+v %v", choice, err)

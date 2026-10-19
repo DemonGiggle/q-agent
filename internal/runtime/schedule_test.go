@@ -32,7 +32,7 @@ func must(t *testing.T, err error) {
 
 func TestScheduledReminderBypassesModelAndPreservesTopic(t *testing.T) {
 	r, w, p := fixture(t)
-	m := input(0, 10, 7, 1, "")
+	m := input(0, -10, 7, 1, "")
 	enqueue(t, r, m, "reminder", time.Now())
 	must(t, r.dispatchScheduled(context.Background()))
 	r.Wait()
@@ -40,7 +40,7 @@ func TestScheduledReminderBypassesModelAndPreservesTopic(t *testing.T) {
 		t.Fatal("reminder ran agent")
 	}
 	reply, ok := r.Store.Pending()
-	if !ok || reply.Route.ChatID != 10 || reply.Route.TopicID != 7 || reply.Parts[0] != "scheduled work" {
+	if !ok || reply.Route.ChatID != -10 || reply.Route.TopicID != 7 || reply.Parts[0] != "scheduled work" {
 		t.Fatalf("%+v", reply)
 	}
 	must(t, r.dispatchScheduled(context.Background()))
@@ -54,13 +54,13 @@ func TestScheduledTasksWaitForBusyChatAndGlobalCapacity(t *testing.T) {
 	w.block = make(chan struct{})
 	w.started = make(chan struct{}, 4)
 	ctx := context.Background()
-	must(t, r.Handle(ctx, input(1, 10, 7, 1, "interactive")))
+	must(t, r.Handle(ctx, input(1, -10, 7, 1, "interactive")))
 	<-w.started
-	must(t, r.Handle(ctx, input(2, 20, 0, 1, "interactive")))
+	must(t, r.Handle(ctx, input(2, -20, 0, 1, "interactive")))
 	<-w.started
 	now := time.Now()
-	enqueue(t, r, input(0, 10, 8, 1, ""), "agent", now)
-	enqueue(t, r, input(0, 30, 0, 1, ""), "agent", now)
+	enqueue(t, r, input(0, -10, 8, 1, ""), "agent", now)
+	enqueue(t, r, input(0, -30, 0, 1, ""), "agent", now)
 	must(t, r.dispatchScheduled(ctx))
 	if len(r.Store.PendingRuns()) != 2 {
 		t.Fatal("busy jobs dropped")
@@ -77,7 +77,7 @@ func TestScheduledTasksWaitForBusyChatAndGlobalCapacity(t *testing.T) {
 	if !strings.Contains(p.requests[2].Messages[len(p.requests[2].Messages)-1].Content, "scheduled work") {
 		t.Fatal("saved instruction missing")
 	}
-	mem, err := r.Store.LoadMemory(platform.WorkspaceKey("telegram", 30))
+	mem, err := r.Store.LoadMemory(platform.WorkspaceKey("telegram", -30))
 	must(t, err)
 	if len(mem.Pending) != 1 || !strings.HasPrefix(mem.Pending[0].ID, "schedule:") || !strings.Contains(mem.Pending[0].Transcript, "scheduled work") {
 		t.Fatalf("scheduled source missing: %+v", mem)
@@ -94,12 +94,13 @@ func TestScheduledTasksWaitForBusyChatAndGlobalCapacity(t *testing.T) {
 }
 func TestScheduledAuthorizationRevokedAndDeleted(t *testing.T) {
 	r, w, _ := fixture(t)
-	owner := input(0, 10, 7, 1, "")
+	owner := input(0, -10, 7, 1, "")
 	at := time.Now()
 	v := enqueue(t, r, owner, "agent", at)
 	must(t, r.Store.DeleteSchedule(owner, v.ID))
 	enqueue(t, r, owner, "reminder", at.Add(time.Second))
-	r.Config.Telegram.ApprovedUsers = nil
+	r.Config.Telegram.AllowedUsers = nil
+	r.Config.Telegram.AllowedGroups = nil
 	must(t, r.dispatchScheduled(context.Background()))
 	r.Wait()
 	if w.calls != 0 {
@@ -115,7 +116,7 @@ func TestScheduledAuthorizationRevokedAndDeleted(t *testing.T) {
 func TestSchedulerStartupDrainsPersistedPendingAndStops(t *testing.T) {
 	r, _, p := fixture(t)
 	p.started = make(chan struct{}, 1)
-	enqueue(t, r, input(0, 10, 0, 1, ""), "agent", time.Now())
+	enqueue(t, r, input(0, -10, 0, 1, ""), "agent", time.Now())
 	must(t, r.StartScheduler(context.Background()))
 	select {
 	case <-p.started:
@@ -132,9 +133,9 @@ func TestSchedulerWakeDrainsAfterInteractiveCompletion(t *testing.T) {
 	w.block = make(chan struct{})
 	w.started = make(chan struct{}, 4)
 	ctx := context.Background()
-	must(t, r.Handle(ctx, input(1, 10, 0, 1, "interactive")))
+	must(t, r.Handle(ctx, input(1, -10, 0, 1, "interactive")))
 	<-w.started
-	enqueue(t, r, input(0, 10, 0, 1, ""), "agent", time.Now())
+	enqueue(t, r, input(0, -10, 0, 1, ""), "agent", time.Now())
 	must(t, r.StartScheduler(ctx))
 	close(w.block)
 	// Both tasks reach the provider without waiting for a minute boundary.
@@ -147,7 +148,7 @@ func TestSchedulerWakeDrainsAfterInteractiveCompletion(t *testing.T) {
 }
 func TestScheduleToolsCreateListDeleteScopeAndSystemPrompt(t *testing.T) {
 	r, _, _ := fixture(t)
-	owner := input(4, 10, 7, 1, "create")
+	owner := input(4, -10, 7, 1, "create")
 	tools := &scheduleTools{base: noTools{}, runtime: r, owner: owner}
 	prompt := tools.SystemPrompt()
 	if !strings.Contains(prompt, "Current time:") || !strings.Contains(prompt, "schedule_create") {
@@ -164,7 +165,7 @@ func TestScheduleToolsCreateListDeleteScopeAndSystemPrompt(t *testing.T) {
 	if created.Route.UserID != 1 || created.Route.TopicID != 7 || created.Route.UpdateID != 0 {
 		t.Fatalf("%+v", created)
 	}
-	other := &scheduleTools{base: noTools{}, runtime: r, owner: input(0, 10, 8, 1, "")}
+	other := &scheduleTools{base: noTools{}, runtime: r, owner: input(0, -10, 8, 1, "")}
 	deletion, _ := json.Marshal(map[string]string{"id": created.ID})
 	if _, err = other.Execute(context.Background(), llm.ToolCall{Name: "schedule_delete", Arguments: deletion}); err == nil {
 		t.Fatal("cross-topic deletion allowed")
@@ -190,7 +191,7 @@ func TestScheduleToolsCreateListDeleteScopeAndSystemPrompt(t *testing.T) {
 
 func TestScheduleToolPaginationFitsOutputLimit(t *testing.T) {
 	r, _, _ := fixture(t)
-	owner := input(0, 10, 7, 1, "")
+	owner := input(0, -10, 7, 1, "")
 	at := time.Now().Add(time.Hour)
 	for i := 0; i < 12; i++ {
 		_, err := r.Store.CreateSchedule(state.Schedule{Route: owner, Kind: "reminder", Text: strings.Repeat("字", 2500), At: at.Add(time.Duration(i) * time.Minute), Repeat: "once", Timezone: "Asia/Taipei"}, time.Now())
@@ -221,7 +222,7 @@ func TestScheduleToolPaginationFitsOutputLimit(t *testing.T) {
 func TestScheduledAgentFailureRecordedWithoutRetry(t *testing.T) {
 	r, w, _ := fixture(t)
 	w.fail = true
-	owner := input(0, 10, 0, 1, "")
+	owner := input(0, -10, 0, 1, "")
 	enqueue(t, r, owner, "agent", time.Now())
 	must(t, r.dispatchScheduled(context.Background()))
 	r.Wait()
@@ -240,7 +241,7 @@ func TestScheduledAgentCancelDoesNotRetry(t *testing.T) {
 	r, _, p := fixture(t)
 	p.block = true
 	p.started = make(chan struct{}, 1)
-	owner := input(0, 10, 7, 1, "")
+	owner := input(0, -10, 7, 1, "")
 	enqueue(t, r, owner, "agent", time.Now())
 	must(t, r.dispatchScheduled(context.Background()))
 	select {
@@ -248,7 +249,7 @@ func TestScheduledAgentCancelDoesNotRetry(t *testing.T) {
 	case <-time.After(2 * time.Second):
 		t.Fatal("scheduled agent did not start")
 	}
-	must(t, r.Handle(context.Background(), input(1, 10, 7, 1, "/cancel")))
+	must(t, r.Handle(context.Background(), input(1, -10, 7, 1, "/cancel")))
 	r.Wait()
 	_, runs := r.Store.ListSchedules(owner)
 	if len(runs) != 1 || runs[0].Status != "cancelled" {
@@ -266,7 +267,7 @@ type describedTools struct{ noTools }
 func (describedTools) SystemPrompt() string { return "host-mode sentinel" }
 func TestScheduleToolsPreserveExecutionModePromptAndLocalTools(t *testing.T) {
 	r, _, _ := fixture(t)
-	tools := &scheduleTools{base: describedTools{}, runtime: r, owner: input(0, 10, 0, 1, "")}
+	tools := &scheduleTools{base: describedTools{}, runtime: r, owner: input(0, -10, 0, 1, "")}
 	if !strings.HasPrefix(tools.SystemPrompt(), "host-mode sentinel") {
 		t.Fatal("wrapper lost execution-mode instructions")
 	}

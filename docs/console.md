@@ -106,7 +106,7 @@ configuration inspection or edits.
 `q-agent config` shows effective settings with defaults, lets you edit one
 setting at a time, and can validate the file. Use the dotted keys from the
 TOML configuration, for example `provider.model`, `sandbox.enabled`, or
-`telegram.approved_chat_ids`.
+`telegram.allowed_groups`.
 
 ```sh
 q-agent config show --json
@@ -114,7 +114,8 @@ q-agent config get provider.model --json
 q-agent config validate --json
 q-agent config set limits.task_timeout 10m
 q-agent config set sandbox.enabled true
-q-agent config set telegram.approved_chat_ids '[123456789, -1001234567890]'
+q-agent config set telegram.allowed_users '[123456789]'
+q-agent config set telegram.allowed_groups '[-1001234567890]'
 ```
 
 String values are plain text; integers, booleans, and ID arrays use TOML literals.

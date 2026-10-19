@@ -37,17 +37,17 @@ base_url = "http://localhost:11434"
 
 [telegram]
 # keep my allowlists
-approved_user_ids = [1, 2]
-approved_chat_ids = [
- 1, # mine
- -10,
+allowed_users = [1, 2]
+allowed_groups = [
+ -10, # mine
+ -20,
 ] # chat note
 
 [limits]
 max_steps = 8
 `
 	path := editFile(t, text)
-	err := Update(path, map[string]any{"provider.model": "new\"model\nnext", "provider.thinking": "high", "telegram.approved_chat_ids": []int64{3, -20}, "limits.max_steps": 12, "sandbox.enabled": true})
+	err := Update(path, map[string]any{"provider.model": "new\"model\nnext", "provider.thinking": "high", "telegram.allowed_groups": []int64{-20, -30}, "limits.max_steps": 12, "sandbox.enabled": true})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -58,11 +58,11 @@ max_steps = 8
 	if cfg.Provider.Model != "new\"model\nnext" || cfg.Provider.Thinking != "high" || cfg.Limits.MaxSteps != 12 || !cfg.Sandbox.Enabled {
 		t.Fatalf("wrong settings: %+v", cfg)
 	}
-	if cfg.Telegram.ApprovedChats[1] != -20 || cfg.StateDir != filepath.Join(filepath.Dir(path), "state") {
+	if cfg.Telegram.AllowedGroups[1] != -30 || cfg.StateDir != filepath.Join(filepath.Dir(path), "state") {
 		t.Fatalf("paths or arrays changed: %+v", cfg)
 	}
 	data := string(readEdit(t, path))
-	for _, part := range []string{"# My configuration", "state_dir = './state' # relative path", "[provider] # selected provider", "# keep this comment", "# keep my allowlists", "approved_user_ids = [1, 2]", "# chat note"} {
+	for _, part := range []string{"# My configuration", "state_dir = './state' # relative path", "[provider] # selected provider", "# keep this comment", "# keep my allowlists", "allowed_users = [1, 2]", "# chat note"} {
 		if !strings.Contains(data, part) {
 			t.Errorf("lost %q in\n%s", part, data)
 		}
@@ -152,9 +152,9 @@ func TestParseEditValue(t *testing.T) {
 		key, text string
 		valid     bool
 	}{
-		{"limits.max_steps", "12", true}, {"sandbox.enabled", "true", true}, {"telegram.approved_chat_ids", "[1, -20]", true},
+		{"limits.max_steps", "12", true}, {"sandbox.enabled", "true", true}, {"telegram.allowed_groups", "[-20, -30]", true},
 		{"provider.model", "literal\nmodel", true}, {"limits.max_steps", "1.5", false}, {"limits.max_steps", "'12'", false},
-		{"limits.max_steps", "12\nextra = 4", false}, {"telegram.approved_chat_ids", "[1, 'two']", false}, {"secret", "value", false},
+		{"limits.max_steps", "12\nextra = 4", false}, {"telegram.allowed_groups", "[-20, 'two']", false}, {"secret", "value", false},
 	} {
 		t.Run(test.key+test.text, func(t *testing.T) {
 			_, err := ParseValue(test.key, test.text)

@@ -59,7 +59,7 @@ func digestRetryDelay(attempt int) time.Duration {
 	return delay
 }
 
-// Startup and nightly sweeps enroll pending work; completion wakes only resume
+// Nightly sweeps enroll pending work; completion wakes only resume
 // enrolled work. One worker visits each chat once per round for fair batching.
 func (r *Runtime) digestSweep(ctx context.Context) error { return r.digestWork(ctx, true) }
 
@@ -467,6 +467,8 @@ func renderMemoryText(mem state.ChatMemory, limit int, heading string) string {
 
 // A single digest worker handles nightly, deferred, and retry work. The minute
 // tick also recovers from a missed wake or a failed registry/storage read.
+// No startup sweep: pending journal waits for the next wall-clock digest;
+// boot only resumes already-enrolled retry/deferred work.
 func (r *Runtime) digestLoop(ctx context.Context) {
 	loc := memoryLocation(r.Config.Memory.Timezone)
 	hour, minute, err := parseDigestAtLocal(r.Config.Memory.DigestAt)
@@ -475,7 +477,7 @@ func (r *Runtime) digestLoop(ctx context.Context) {
 		return
 	}
 	next := time.Now().Add(untilNextDigest(time.Now(), loc, hour, minute))
-	pendingSweep := true
+	pendingSweep := false
 	globalRetry := state.MemoryRetry{}
 	for ctx.Err() == nil {
 		now := time.Now()

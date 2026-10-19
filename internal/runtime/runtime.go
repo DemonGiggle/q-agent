@@ -68,14 +68,31 @@ type Runtime struct {
 }
 
 func (r *Runtime) allowed(m platform.Message) bool {
-	user, chat := false, false
-	for _, id := range r.Config.Telegram.ApprovedUsers {
-		user = user || m.UserID == id
+	if m.Platform != "telegram" {
+		return false
 	}
-	for _, id := range r.Config.Telegram.ApprovedChats {
-		chat = chat || m.ChatID == id
+	// Private 1:1 chat: ChatID equals UserID and that ID is listed once.
+	if m.ChatID > 0 {
+		if m.ChatID != m.UserID {
+			return false
+		}
+		for _, id := range r.Config.Telegram.AllowedUsers {
+			if m.ChatID == id {
+				return true
+			}
+		}
+		return false
 	}
-	return user && chat && m.Platform == "telegram"
+	// Group/channel chat (negative ID): any sender is allowed when the
+	// group itself is listed. No per-user enumeration required.
+	if m.ChatID < 0 {
+		for _, id := range r.Config.Telegram.AllowedGroups {
+			if m.ChatID == id {
+				return true
+			}
+		}
+	}
+	return false
 }
 func (r *Runtime) report(err error) {
 	if err != nil && r.Report != nil {

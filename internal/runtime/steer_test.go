@@ -77,21 +77,21 @@ func drainReplies(t *testing.T, store *state.Store) []string {
 
 func TestTelegramSteerSameRunIsolationHistoryAndDedup(t *testing.T) {
 	r, w, p := setupSteer(t)
-	r.Config.Telegram.ApprovedUsers = []int64{1, 2}
+	r.Config.Telegram.AllowedUsers = []int64{1, 2}
 	ctx := context.Background()
-	must(t, r.Handle(ctx, input(1, 10, 7, 1, "original")))
+	must(t, r.Handle(ctx, input(1, -10, 7, 1, "original")))
 	if got := userTexts(request(t, p)); strings.Join(got, "|") != "original" {
 		t.Fatalf("initial: %v", got)
 	}
-	followup := input(2, 10, 7, 1, "correction")
+	followup := input(2, -10, 7, 1, "correction")
 	must(t, r.Handle(ctx, followup))
 	must(t, r.Handle(ctx, followup)) // At most once, including while active.
-	must(t, r.Handle(ctx, input(3, 10, 7, 1, "additional detail")))
-	must(t, r.Handle(ctx, input(4, 10, 7, 99, "unauthorized")))
-	must(t, r.Handle(ctx, input(5, 10, 7, 1, "/status")))
-	must(t, r.Handle(ctx, input(6, 10, 7, 1, "/help")))
-	must(t, r.Handle(ctx, input(7, 10, 8, 1, "other topic")))
-	must(t, r.Handle(ctx, input(8, 10, 7, 2, "other owner")))
+	must(t, r.Handle(ctx, input(3, -10, 7, 1, "additional detail")))
+	must(t, r.Handle(ctx, input(4, -99, 7, 99, "unauthorized")))
+	must(t, r.Handle(ctx, input(5, -10, 7, 1, "/status")))
+	must(t, r.Handle(ctx, input(6, -10, 7, 1, "/help")))
+	must(t, r.Handle(ctx, input(7, -10, 8, 1, "other topic")))
+	must(t, r.Handle(ctx, input(8, -10, 7, 2, "other owner")))
 	p.responses <- steerResponse{text: "superseded"}
 	if got := userTexts(request(t, p)); strings.Join(got, "|") != "original|correction\n\nadditional detail" {
 		t.Fatalf("steering: %v", got)
@@ -118,7 +118,7 @@ func TestTelegramSteerSameRunIsolationHistoryAndDedup(t *testing.T) {
 		t.Fatalf("steering missing from durable source: %+v", mem)
 	}
 	r.Store = reopened // No goroutines remain; exercise reopened history.
-	must(t, r.Handle(ctx, input(9, 10, 7, 1, "next task")))
+	must(t, r.Handle(ctx, input(9, -10, 7, 1, "next task")))
 	got := request(t, p)
 	if strings.Join(userTexts(got), "|") != "original|correction\n\nadditional detail|next task" {
 		t.Fatalf("history: %+v", got.Messages)
@@ -135,9 +135,9 @@ func TestTelegramSteerSameRunIsolationHistoryAndDedup(t *testing.T) {
 func TestSteerDuringProvisioning(t *testing.T) {
 	r, w, p := setupSteer(t)
 	w.block, w.started = make(chan struct{}), make(chan struct{}, 1)
-	must(t, r.Handle(context.Background(), input(1, 10, 7, 1, "original")))
+	must(t, r.Handle(context.Background(), input(1, -10, 7, 1, "original")))
 	<-w.started
-	must(t, r.Handle(context.Background(), input(2, 10, 7, 1, "provisioning follow-up")))
+	must(t, r.Handle(context.Background(), input(2, -10, 7, 1, "provisioning follow-up")))
 	close(w.block)
 	if got := userTexts(request(t, p)); strings.Join(got, "|") != "original|provisioning follow-up" {
 		t.Fatalf("input: %v", got)
@@ -152,28 +152,28 @@ func TestSteerDuringProvisioning(t *testing.T) {
 func TestSteerBoundsAndCancellation(t *testing.T) {
 	r, _, p := setupSteer(t)
 	ctx := context.Background()
-	must(t, r.Handle(ctx, input(1, 10, 7, 1, "original")))
+	must(t, r.Handle(ctx, input(1, -10, 7, 1, "original")))
 	request(t, p)
 	for i := 0; i < maxPendingSteers; i++ {
-		must(t, r.Handle(ctx, input(int64(i+2), 10, 7, 1, fmt.Sprintf("follow-up %d", i))))
+		must(t, r.Handle(ctx, input(int64(i+2), -10, 7, 1, fmt.Sprintf("follow-up %d", i))))
 	}
-	must(t, r.Handle(ctx, input(100, 10, 7, 1, "one too many")))
-	must(t, r.Handle(ctx, input(101, 10, 7, 1, "/cancel")))
+	must(t, r.Handle(ctx, input(100, -10, 7, 1, "one too many")))
+	must(t, r.Handle(ctx, input(101, -10, 7, 1, "/cancel")))
 	r.Wait()
 	output := strings.Join(drainReplies(t, r.Store), "\n")
 	if !strings.Contains(output, "Too many pending") || !strings.Contains(output, "Task cancelled.") || !strings.Contains(output, "16 pending follow-up") {
 		t.Fatalf("output: %s", output)
 	}
-	c, err := r.Store.Load(input(0, 10, 7, 1, "").ConversationKey())
+	c, err := r.Store.Load(input(0, -10, 7, 1, "").ConversationKey())
 	must(t, err)
 	if len(c.Pairs) != 0 {
 		t.Fatal("cancelled steering saved successful history")
 	}
-	must(t, r.Handle(ctx, input(102, 10, 7, 1, "fresh task")))
+	must(t, r.Handle(ctx, input(102, -10, 7, 1, "fresh task")))
 	if got := userTexts(request(t, p)); strings.Join(got, "|") != "fresh task" {
 		t.Fatalf("cancelled steer replayed: %v", got)
 	}
-	must(t, r.Handle(ctx, input(103, 10, 7, 1, strings.Repeat("x", maxPendingSteerBytes+1))))
+	must(t, r.Handle(ctx, input(103, -10, 7, 1, strings.Repeat("x", maxPendingSteerBytes+1))))
 	p.responses <- steerResponse{text: "fresh final"}
 	r.Wait()
 	if output := strings.Join(drainReplies(t, r.Store), "\n"); !strings.Contains(output, "Too many pending") {
@@ -183,9 +183,9 @@ func TestSteerBoundsAndCancellation(t *testing.T) {
 
 func TestPendingSteerOnProviderFailureIsNotStartedSeparately(t *testing.T) {
 	r, w, p := setupSteer(t)
-	must(t, r.Handle(context.Background(), input(1, 10, 7, 1, "original")))
+	must(t, r.Handle(context.Background(), input(1, -10, 7, 1, "original")))
 	request(t, p)
-	must(t, r.Handle(context.Background(), input(2, 10, 7, 1, "follow-up")))
+	must(t, r.Handle(context.Background(), input(2, -10, 7, 1, "follow-up")))
 	p.responses <- steerResponse{err: fmt.Errorf("provider unavailable")}
 	r.Wait()
 	if w.calls != 1 {
@@ -223,7 +223,7 @@ func TestSteerRacingFinalAnswerStartsAfterCommitAndKeepsBothReplies(t *testing.T
 	r, w, p := setupSteer(t)
 	sink := &finishingSink{entered: make(chan struct{}), release: make(chan struct{})}
 	r.Sink = sink
-	must(t, r.Handle(context.Background(), input(1, 10, 7, 1, "original")))
+	must(t, r.Handle(context.Background(), input(1, -10, 7, 1, "original")))
 	request(t, p)
 	p.responses <- steerResponse{text: "first final"}
 	select {
@@ -231,8 +231,8 @@ func TestSteerRacingFinalAnswerStartsAfterCommitAndKeepsBothReplies(t *testing.T
 	case <-time.After(3 * time.Second):
 		t.Fatal("finalization not reached")
 	}
-	must(t, r.Handle(context.Background(), input(2, 10, 7, 1, "late follow-up")))
-	must(t, r.Handle(context.Background(), input(3, 10, 7, 1, "late detail")))
+	must(t, r.Handle(context.Background(), input(2, -10, 7, 1, "late follow-up")))
+	must(t, r.Handle(context.Background(), input(3, -10, 7, 1, "late detail")))
 	select {
 	case <-p.requests:
 		t.Fatal("overlapping run before previous task finalized")
@@ -256,10 +256,10 @@ func TestSteerRacingFinalAnswerStartsAfterCommitAndKeepsBothReplies(t *testing.T
 
 func TestScheduledTaskAcceptsSteerWithoutNewScheduledRun(t *testing.T) {
 	r, w, p := setupSteer(t)
-	enqueue(t, r, input(0, 10, 7, 1, ""), "agent", time.Now())
+	enqueue(t, r, input(0, -10, 7, 1, ""), "agent", time.Now())
 	must(t, r.dispatchScheduled(context.Background()))
 	request(t, p)
-	must(t, r.Handle(context.Background(), input(1, 10, 7, 1, "adjust scheduled work")))
+	must(t, r.Handle(context.Background(), input(1, -10, 7, 1, "adjust scheduled work")))
 	p.responses <- steerResponse{text: "superseded"}
 	req := request(t, p)
 	texts := userTexts(req)
@@ -279,17 +279,17 @@ func TestScheduledTaskAcceptsSteerWithoutNewScheduledRun(t *testing.T) {
 func TestPendingSteersMergePerBoundaryWithoutChangingSentBatch(t *testing.T) {
 	r, _, p := setupSteer(t)
 	ctx := context.Background()
-	must(t, r.Handle(ctx, input(1, 10, 7, 1, "original")))
+	must(t, r.Handle(ctx, input(1, -10, 7, 1, "original")))
 	request(t, p)
-	must(t, r.Handle(ctx, input(2, 10, 7, 1, "first correction")))
-	must(t, r.Handle(ctx, input(3, 10, 7, 1, "append detail")))
+	must(t, r.Handle(ctx, input(2, -10, 7, 1, "first correction")))
+	must(t, r.Handle(ctx, input(3, -10, 7, 1, "append detail")))
 	p.responses <- steerResponse{text: "old answer"}
 	sent := request(t, p)
 	if got := userTexts(sent); strings.Join(got, "|") != "original|first correction\n\nappend detail" {
 		t.Fatalf("first merged batch: %v", got)
 	}
-	must(t, r.Handle(ctx, input(4, 10, 7, 1, "second correction")))
-	must(t, r.Handle(ctx, input(5, 10, 7, 1, "append more")))
+	must(t, r.Handle(ctx, input(4, -10, 7, 1, "second correction")))
+	must(t, r.Handle(ctx, input(5, -10, 7, 1, "append more")))
 	// The provider already owns an immutable copy of the earlier request.
 	if got := userTexts(sent); strings.Join(got, "|") != "original|first correction\n\nappend detail" {
 		t.Fatal("sent request was mutated")
@@ -300,7 +300,7 @@ func TestPendingSteersMergePerBoundaryWithoutChangingSentBatch(t *testing.T) {
 	}
 	p.responses <- steerResponse{text: "final"}
 	r.Wait()
-	c, err := r.Store.Load(input(0, 10, 7, 1, "").ConversationKey())
+	c, err := r.Store.Load(input(0, -10, 7, 1, "").ConversationKey())
 	must(t, err)
 	if len(c.Pairs) != 1 || len(c.Pairs[0].Steers) != 2 || c.Pairs[0].Steers[0] != "first correction\n\nappend detail" || c.Pairs[0].Steers[1] != "second correction\n\nappend more" {
 		t.Fatalf("saved merged batches: %+v", c)

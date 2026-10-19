@@ -130,6 +130,7 @@ func (s *Store) cleanConversation(c Conversation) Conversation {
 	for i := range c.Pairs {
 		c.Pairs[i].User = s.policy.Text(redaction.Persistence, c.Pairs[i].User)
 		c.Pairs[i].Answer = s.policy.Text(redaction.Persistence, c.Pairs[i].Answer)
+		c.Pairs[i].Progress = s.policy.Text(redaction.Persistence, c.Pairs[i].Progress)
 		c.Pairs[i].Steers = append([]string(nil), c.Pairs[i].Steers...)
 		for j, steer := range c.Pairs[i].Steers {
 			c.Pairs[i].Steers[j] = s.policy.Text(redaction.Persistence, steer)

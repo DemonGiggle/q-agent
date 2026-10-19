@@ -186,6 +186,15 @@ Changing the limit does not clear conversation history or change the separate
 tool-call limit or task timeout. In groups, address the command to the bot,
 for example `/max_steps@your_bot 20`.
 
+When a running task hits a step/tool limit, provider error, or timeout, its
+original request, applied follow-ups, failure reason, and bounded tool observations
+are saved in this topic's short-term history. Adjust the limit (for example
+`/max_steps 32`) and send a follow-up such as "continue" in the same topic.
+Completed tool calls are not automatically replayed. Records persist across
+restart but follow the ordinary history retention limits; `/new` clears them.
+Explicit cancellation does not add the cancelled run to history. This is saved
+context, not an exact execution checkpoint or recovery from a process crash.
+
 Successful interactive and scheduled tasks are captured in a durable memory
 journal before prompt history is bounded. Startup and nightly digests process
 that journal across all topics. `/new`, model/provider changes, and execution

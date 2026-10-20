@@ -16,12 +16,12 @@ func TestFailureProgressContainsOnlyExecutedToolObservations(t *testing.T) {
 	p := &mockProvider{fn: func(context.Context, llm.Request) (llm.Response, error) {
 		return llm.Response{Message: llm.Message{Thinking: "PRIVATE_THINKING", ReasoningDetails: json.RawMessage(`{"private":"OPAQUE_REASONING"}`), ToolCalls: []llm.ToolCall{{Name: "shell", Arguments: json.RawMessage(`{"command":"first"}`)}, {Name: "shell", Arguments: json.RawMessage(`{"command":"NOT_EXECUTED"}`)}}}}, nil
 	}}
-	tools := &mockTools{fn: func(context.Context, llm.ToolCall) (string, error) { return "confirmed side effect", nil }}
-	result, err := Run(context.Background(), p, tools, nil, "original", Options{MaxSteps: 2, MaxToolCalls: 1})
+	tools := &mockTools{fn: func(context.Context, llm.ToolCall) (string, error) { return "confirmed side effect", fatalError{} }}
+	result, err := Run(context.Background(), p, tools, nil, "original", Options{MaxSteps: 2})
 	if err == nil || len(tools.calls) != 1 {
-		t.Fatal("expected tool budget failure")
+		t.Fatal("expected fatal tool failure")
 	}
-	for _, want := range []string{"first", "confirmed side effect", "Completed"} {
+	for _, want := range []string{"first", "confirmed side effect", "Failed"} {
 		if !strings.Contains(result.Progress, want) {
 			t.Fatalf("missing %q: %s", want, result.Progress)
 		}

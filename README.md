@@ -183,11 +183,10 @@ agent task, `/max_steps 20` to set it to a positive integer, and
 The setting persists across restarts and `/new`, and is shared by all topics
 in a chat/group, including scheduled agent tasks. Changes are rejected while
 the chat has an active task. `/settings reset` clears this override too.
-Changing the limit does not clear conversation history or change the separate
-tool-call limit or task timeout. In groups, address the command to the bot,
+Changing the limit does not clear conversation history or change the task timeout. In groups, address the command to the bot,
 for example `/max_steps@your_bot 20`.
 
-When a running task hits a step/tool limit, provider error, or timeout, its
+When a running task hits the step limit, provider error, or timeout, its
 original request, applied follow-ups, failure reason, and bounded tool observations
 are saved in this topic's short-term history. Adjust the limit (for example
 `/max_steps 32`) and send a follow-up such as "continue" in the same topic.

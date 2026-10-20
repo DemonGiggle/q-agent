@@ -81,7 +81,7 @@ func TestRepeatedCallsCanonical(t *testing.T) {
 	}
 }
 func TestLimitsErrorsAndCancellation(t *testing.T) {
-	for _, kind := range []string{"provider", "cancel", "tool-limit", "step-limit"} {
+	for _, kind := range []string{"provider", "cancel", "step-limit"} {
 		t.Run(kind, func(t *testing.T) {
 			p := &mockProvider{}
 			tools := &mockTools{}
@@ -97,10 +97,7 @@ func TestLimitsErrorsAndCancellation(t *testing.T) {
 				}
 				return llm.Response{Message: llm.Message{ToolCalls: []llm.ToolCall{{Name: "read", Arguments: json.RawMessage(`{}`)}, {Name: "list", Arguments: json.RawMessage(`{}`)}}}}, nil
 			}
-			o := Options{MaxSteps: 1, MaxToolCalls: 1}
-			if kind == "step-limit" {
-				o.MaxToolCalls = 5
-			}
+			o := Options{MaxSteps: 1}
 			_, err := Run(ctx, p, tools, nil, "go", o)
 			if err == nil {
 				t.Fatal("expected error")
@@ -108,8 +105,13 @@ func TestLimitsErrorsAndCancellation(t *testing.T) {
 			if kind == "cancel" && !errors.Is(err, context.Canceled) {
 				t.Fatal(err)
 			}
-			if len(tools.calls) > o.MaxToolCalls {
-				t.Fatal("tool limit exceeded")
+			if kind == "step-limit" {
+				if !strings.Contains(err.Error(), "maximum of 1 model steps") {
+					t.Fatalf("unexpected step-limit error: %v", err)
+				}
+				if len(tools.calls) != 2 {
+					t.Fatalf("expected both tools in the single step to run, got %d", len(tools.calls))
+				}
 			}
 		})
 	}

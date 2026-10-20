@@ -40,7 +40,7 @@ func TestStatusReadOnlyAndSafe(t *testing.T) {
 	if runtime.GOOS == "linux" && !regexp.MustCompile(`(?m)^Memory \(RSS, q-agent\): [0-9]+\.[0-9] MiB$`).MatchString(text) {
 		t.Fatalf("missing live resident memory measurement: %s", text)
 	}
-	for _, want := range []string{"Provider: openai", "Model: configured-model", "Thinking: high", "Execution: Sandbox", "This topic: Idle", "Active tasks: 0/2", "Scheduler: Stopped", "Model steps: 8", "Tool calls: 16", "Task timeout: 5m", "Shell timeout: 2m"} {
+	for _, want := range []string{"Provider: openai", "Model: configured-model", "Thinking: high", "Execution: Sandbox", "This topic: Idle", "Active tasks: 0/2", "Scheduler: Stopped", "Model steps: 8", "Task timeout: 5m", "Shell timeout: 2m"} {
 		if !strings.Contains(text, want) {
 			t.Errorf("missing %q: %s", want, text)
 		}

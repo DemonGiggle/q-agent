@@ -37,7 +37,7 @@ func (r *Runtime) chatSettings(m platform.Message, fields []string) error {
 			if err != nil {
 				return err
 			}
-			return r.reply(m, fmt.Sprintf("Maximum model steps: %d\nUse /max_steps <positive integer> or /max_steps default. Applies to this entire chat (all topics), including scheduled tasks. Tool-call and timeout limits still apply.", selected.MaxSteps))
+			return r.reply(m, fmt.Sprintf("Maximum model steps: %d\nUse /max_steps <positive integer> or /max_steps default. Applies to this entire chat (all topics), including scheduled tasks. Timeout limits still apply.", selected.MaxSteps))
 		}
 		if fields[0] == "/think" {
 			return r.reply(m, r.thinkLevelsLocked(m))

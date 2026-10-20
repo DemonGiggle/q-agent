@@ -31,9 +31,9 @@ type Tools interface {
 	Execute(context.Context, llm.ToolCall) (string, error)
 }
 type Options struct {
-	Model, Thinking        string
-	MaxSteps, MaxToolCalls int
-	Redaction              *redaction.Policy
+	Model, Thinking string
+	MaxSteps       int
+	Redaction      *redaction.Policy
 	// Logger receives agent-loop progress (steps, tool calls, retries,
 	// timing). It must write to the console only (for example the
 	// process stderr logger). It is never sent to Telegram, the
@@ -117,9 +117,6 @@ func Run(ctx context.Context, provider llm.Provider, tools Tools, history []llm.
 	if o.MaxSteps <= 0 {
 		o.MaxSteps = 8
 	}
-	if o.MaxToolCalls <= 0 {
-		o.MaxToolCalls = 16
-	}
 	if validator, ok := provider.(llm.ModelValidator); ok {
 		if err := validator.ValidateModel(o.Model); err != nil {
 			o.logf("agent run rejected model=%q err=%q", o.Model, o.redactTerminal(err.Error()))
@@ -133,7 +130,7 @@ func Run(ctx context.Context, provider llm.Provider, tools Tools, history []llm.
 	messages := []llm.Message{{Role: "system", Content: system}}
 	messages = append(messages, history...)
 	messages = append(messages, llm.Message{Role: "user", Content: text})
-	o.logf("agent start model=%q thinking=%q max_steps=%d max_tool_calls=%d history=%d", o.Model, o.Thinking, o.MaxSteps, o.MaxToolCalls, len(history))
+	o.logf("agent start model=%q thinking=%q max_steps=%d history=%d", o.Model, o.Thinking, o.MaxSteps, len(history))
 	identical := map[string]int{}
 	recovery := ""
 	applySteer := func(inputs []string) {
@@ -243,12 +240,8 @@ func Run(ctx context.Context, provider llm.Provider, tools Tools, history []llm.
 				recovery = fmt.Sprintf(repeatedToolRecoveryTemplate, call.Name, identical[fingerprint])
 				o.logf("agent retry tool=%q unchanged=%d injecting recovery after=%s", call.Name, identical[fingerprint], time.Since(runStart).Truncate(time.Millisecond))
 			}
-			if result.ToolCalls >= o.MaxToolCalls {
-				o.logf("agent giving up tools=%d/%d after=%s", result.ToolCalls, o.MaxToolCalls, time.Since(runStart).Truncate(time.Millisecond))
-				return result, fmt.Errorf("reached the maximum of %d tool calls", o.MaxToolCalls)
-			}
 			result.ToolCalls++
-			o.logf("agent tool %q start step=%d call=%d/%d args=%s", call.Name, step+1, result.ToolCalls, o.MaxToolCalls, o.redactTerminal(summarizeArgs(call)))
+			o.logf("agent tool %q start step=%d call=%d args=%s", call.Name, step+1, result.ToolCalls, o.redactTerminal(summarizeArgs(call)))
 			if o.OnToolStart != nil {
 				o.OnToolStart(call.Name)
 			}

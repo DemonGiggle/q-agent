@@ -56,7 +56,6 @@ type Sandbox struct {
 }
 type Limits struct {
 	MaxSteps      int    `toml:"max_steps"`
-	MaxToolCalls  int    `toml:"max_tool_calls"`
 	MaxConcurrent int    `toml:"max_concurrent"`
 	TaskTimeout   string `toml:"task_timeout"`
 	ShellTimeout  string `toml:"shell_timeout"`
@@ -84,7 +83,7 @@ type Memory struct {
 }
 
 func Defaults() Config {
-	return Config{StateDir: "~/.local/share/q-agent", Provider: Provider{Name: "ollama", Model: "qwen3"}, Telegram: Telegram{TokenEnv: "TELEGRAM_BOT_TOKEN"}, Sandbox: Sandbox{Bubblewrap: "bwrap", NewUIDMap: "newuidmap", NewGIDMap: "newgidmap", MMdebstrap: "mmdebstrap"}, Limits: Limits{MaxSteps: 8, MaxToolCalls: 16, MaxConcurrent: 2, TaskTimeout: "5m", ShellTimeout: "2m", ShellPromptTimeout: "90s", ShellMaxExtends: 2}, Memory: Memory{Enabled: true, DigestAt: "00:00", MaxBytes: 8192, MaxContextBytes: 2000, MaxPendingBytes: 4 << 20}}
+	return Config{StateDir: "~/.local/share/q-agent", Provider: Provider{Name: "ollama", Model: "qwen3"}, Telegram: Telegram{TokenEnv: "TELEGRAM_BOT_TOKEN"}, Sandbox: Sandbox{Bubblewrap: "bwrap", NewUIDMap: "newuidmap", NewGIDMap: "newgidmap", MMdebstrap: "mmdebstrap"}, Limits: Limits{MaxSteps: 8, MaxConcurrent: 2, TaskTimeout: "5m", ShellTimeout: "2m", ShellPromptTimeout: "90s", ShellMaxExtends: 2}, Memory: Memory{Enabled: true, DigestAt: "00:00", MaxBytes: 8192, MaxContextBytes: 2000, MaxPendingBytes: 4 << 20}}
 }
 func Load(path string) (Config, error) {
 	c := Defaults()
@@ -194,7 +193,7 @@ func Load(path string) (Config, error) {
 			return c, fmt.Errorf("telegram.admin_user_ids must contain positive IDs from allowed_users")
 		}
 	}
-	if c.Limits.MaxSteps < 1 || c.Limits.MaxToolCalls < 1 || c.Limits.MaxConcurrent < 1 || c.Limits.MaxConcurrent > 2 {
+	if c.Limits.MaxSteps < 1 || c.Limits.MaxConcurrent < 1 || c.Limits.MaxConcurrent > 2 {
 		return c, fmt.Errorf("positive limits required; max_concurrent must be 1 or 2")
 	}
 	for _, s := range []string{c.Limits.TaskTimeout, c.Limits.ShellTimeout} {

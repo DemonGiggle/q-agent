@@ -44,7 +44,6 @@ base_image = "~/.local/share/q-agent/images/debian-trixie.tar"
 
 [limits]
 max_steps = 8
-max_tool_calls = 16
 max_concurrent = 2
 task_timeout = "5m"
 shell_timeout = "2m"

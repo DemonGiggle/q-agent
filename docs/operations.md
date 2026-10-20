@@ -538,7 +538,7 @@ into one prompt for that next task. No runs overlap within a chat, and acknowled
 separate outbox IDs so they cannot suppress the later final reply.
 
 At most 16 messages and 64 KiB may be pending per chat. Excess input is rejected
-explicitly. Steering does not reset model-step, tool-call, or deadline limits.
+explicitly. Steering does not reset model-step or deadline limits.
 Repeated-tool recovery is reset for a changed instruction, but task budgets
 remain in force. `/status` includes the pending count while running. Cancellation
 or failure discards unapplied follow-ups, reporting their count in the terminal

@@ -58,6 +58,6 @@ func (r *Runtime) forgetMemory(m platform.Message) error {
 	r.mu.Lock()
 	delete(r.digestRetries, m.WorkspaceKey())
 	r.mu.Unlock()
-	r.logf("telegram update=%d /forget cleared long-term notes and pending sources", m.UpdateID)
+	r.logf("[MEMORY] Notes and pending sources cleared | update=%d", m.UpdateID)
 	return r.reply(m, "Long-term memory and pending sources cleared for this entire chat (all topics). History, files, schedules, and settings retained. Running tasks may add new memory sources when they finish.")
 }

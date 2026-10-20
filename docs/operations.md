@@ -416,6 +416,41 @@ never streamed. The preview is deleted on success or edited to the terminal
 status on failure/cancel; the durable outbox reply that follows remains the
 authoritative answer and still resumes after restart.
 
+### Diagnostic logs
+
+Console and systemd journal diagnostics use the existing timestamp followed by
+`[CATEGORY] Event description | key=value ...`. Categories identify the activity:
+`[SERVICE]` for service and maintenance events, `[TELEGRAM]` for updates and reply
+delivery, `[RUN]` for task lifecycle and follow-ups, `[MODEL]` for model steps,
+`[TOOL]` for tool execution and repeated-call recovery, `[SHELL]` for timeout
+decisions, and `[MEMORY]` for memory clearing and digest failures.
+
+Logs keep IDs, model settings, step and tool counts, timings, and redacted error
+reasons. Message text, tool argument previews, shell command previews, and
+payload-length fields are omitted. Agent completion and failure summaries label
+cumulative `input_tokens`, `output_tokens`, and `total_tokens` explicitly;
+`usage_missing_steps` counts model requests without reported usage, so totals may
+be partial. `duration` measures the named operation; `elapsed` measures time
+since the task or agent started.
+
+For example (timestamps omitted):
+
+```text
+[TELEGRAM] Message received | update=42 chat=123 topic=0 user=123
+[RUN] Task started | update=42 chat=123 topic=0
+[RUN] Agent started | model="qwen3" thinking="" max_steps=8
+[MODEL] Step started | step=1/8 model="qwen3"
+[MODEL] Step completed | step=1/8 duration=1.2s tool_calls=1
+[TOOL] Tool started | name="read" step=1 call=1
+[TOOL] Tool completed | name="read" duration=12ms
+[MODEL] Step started | step=2/8 model="qwen3"
+[MODEL] Step completed | step=2/8 duration=280ms tool_calls=0
+[RUN] Agent completed | steps=2 tool_calls=1 duration=1.492s input_tokens=120 output_tokens=40 total_tokens=160 usage_missing_steps=0
+```
+
+Diagnostics remain on stderr and use the existing terminal redaction policy.
+Telegram replies and live previews retain their separate presentation.
+
 ## Isolation and state
 
 Host tools run as the service account with ordinary host permissions. Chat folders

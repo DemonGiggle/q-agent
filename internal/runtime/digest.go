@@ -186,7 +186,7 @@ func (r *Runtime) digestPass(ctx context.Context, sweep bool) (bool, error) {
 			retry.NextAt = time.Now().Add(digestRetryDelay(retry.Attempts))
 			r.rememberDigestRetry(chat.Key, mem.Epoch, retry)
 			r.report(err)
-			r.logf("digest workspace=%s error: %q", chat.Key, r.Options.Redaction.Text(redaction.Terminal, err.Error()))
+			r.logf("[MEMORY] Digest failed; retry scheduled | workspace=%s attempt=%d retry_at=%s error=%q", chat.Key, retry.Attempts, retry.NextAt.Format(time.RFC3339), r.Options.Redaction.Text(redaction.Terminal, err.Error()))
 			continue
 		}
 		r.mu.Lock()

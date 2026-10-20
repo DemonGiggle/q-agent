@@ -41,7 +41,7 @@ func (r *Runtime) steerLocked(m platform.Message, active task) error {
 	}
 	active.pending = append(active.pending, m)
 	r.active[m.WorkspaceKey()] = active
-	r.logf("telegram update=%d follow-up accepted pending=%d finishing=%t", m.UpdateID, len(active.pending), active.finishing)
+	r.logf("[RUN] Follow-up accepted | update=%d pending_inputs=%d finishing=%t", m.UpdateID, len(active.pending), active.finishing)
 	return nil
 }
 

@@ -73,7 +73,7 @@ func (r *Runtime) requestShellExtend(ctx context.Context, owner platform.Message
 	// Queue first so observers seeing shellPrompts always find the prompt
 	// already in the outbox (reply formatting must not widen the race).
 	if err := r.reply(owner, prompt); err != nil {
-		r.logf("shell prompt queue failed: %q", r.Options.Redaction.Text(redaction.Terminal, err.Error()))
+		r.logf("[SHELL] Timeout prompt queueing failed | workspace=%s error=%q", key, r.Options.Redaction.Text(redaction.Terminal, err.Error()))
 		return false
 	}
 	dec := &shellDecision{ch: make(chan bool, 1), owner: owner, command: command}
@@ -88,7 +88,7 @@ func (r *Runtime) requestShellExtend(ctx context.Context, owner platform.Message
 	}
 	r.shellPrompts[key] = dec
 	r.mu.Unlock()
-	r.logf("shell timeout prompt workspace=%s command=%.60q lines=%d", key, command, len(lastLines))
+	r.logf("[SHELL] Timeout reached; awaiting extension decision | workspace=%s wait=%s", key, wait.Truncate(time.Second))
 
 	timer := time.NewTimer(wait)
 	defer timer.Stop()
@@ -108,7 +108,7 @@ func (r *Runtime) requestShellExtend(ctx context.Context, owner platform.Message
 			delete(r.shellPrompts, key)
 		}
 		r.mu.Unlock()
-		r.logf("shell prompt timed out after %s, terminating", wait.Truncate(time.Second))
+		r.logf("[SHELL] Extension decision timed out; terminating shell | workspace=%s duration=%s", key, wait.Truncate(time.Second))
 		return false
 	}
 }

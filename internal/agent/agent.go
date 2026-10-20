@@ -75,20 +75,6 @@ func (o Options) redactTerminal(s string) string {
 	return o.Redaction.Text(redaction.Terminal, s)
 }
 
-func summarizeArgs(call llm.ToolCall) string {
-	raw := strings.TrimSpace(string(call.Arguments))
-	if raw == "" {
-		return "{}"
-	}
-	// Avoid dumping full file content to the console: keep a short
-	// preview plus the total size. Structured args stay readable.
-	const previewLimit = 300
-	if len(raw) > previewLimit {
-		return raw[:previewLimit] + fmt.Sprintf("… (len %d)", len(raw))
-	}
-	return raw
-}
-
 type Result struct {
 	Progress   string           `json:"progress,omitempty"`
 	Answer     string           `json:"answer"`
@@ -110,6 +96,14 @@ func Run(ctx context.Context, provider llm.Provider, tools Tools, history []llm.
 	defer func() {
 		if err == nil {
 			result.Progress = "" // Successful turns retain the ordinary compact history.
+		} else {
+			outcome := "failed"
+			if errors.Is(err, context.Canceled) {
+				outcome = "cancelled"
+			} else if errors.Is(err, context.DeadlineExceeded) {
+				outcome = "timed out"
+			}
+			o.logf("[RUN] Agent %s | steps=%d tool_calls=%d duration=%s input_tokens=%d output_tokens=%d total_tokens=%d usage_missing_steps=%d error=%q", outcome, result.ModelSteps, result.ToolCalls, time.Since(runStart).Truncate(time.Millisecond), result.Usage.InputTokens, result.Usage.OutputTokens, result.Usage.TotalTokens, result.Usage.Missing, o.redactTerminal(err.Error()))
 		}
 		result.Answer = o.Redaction.Text(redaction.Remote, result.Answer)
 		err = o.Redaction.Error(redaction.Remote, err)
@@ -119,7 +113,7 @@ func Run(ctx context.Context, provider llm.Provider, tools Tools, history []llm.
 	}
 	if validator, ok := provider.(llm.ModelValidator); ok {
 		if err := validator.ValidateModel(o.Model); err != nil {
-			o.logf("agent run rejected model=%q err=%q", o.Model, o.redactTerminal(err.Error()))
+			o.logf("[MODEL] Model rejected | model=%q error=%q", o.Model, o.redactTerminal(err.Error()))
 			return result, err
 		}
 	}
@@ -130,7 +124,7 @@ func Run(ctx context.Context, provider llm.Provider, tools Tools, history []llm.
 	messages := []llm.Message{{Role: "system", Content: system}}
 	messages = append(messages, history...)
 	messages = append(messages, llm.Message{Role: "user", Content: text})
-	o.logf("agent start model=%q thinking=%q max_steps=%d history=%d", o.Model, o.Thinking, o.MaxSteps, len(history))
+	o.logf("[RUN] Agent started | model=%q thinking=%q max_steps=%d", o.Model, o.Thinking, o.MaxSteps)
 	identical := map[string]int{}
 	recovery := ""
 	applySteer := func(inputs []string) {
@@ -150,14 +144,14 @@ func Run(ctx context.Context, provider llm.Provider, tools Tools, history []llm.
 		}
 		identical = map[string]int{}
 		recovery = ""
-		o.logf("agent steering applied inputs=%d", len(inputs))
+		o.logf("[RUN] Follow-up instructions applied | inputs=%d", len(inputs))
 		if o.OnSteer != nil {
 			o.OnSteer()
 		}
 	}
 	for step := 0; step < o.MaxSteps; step++ {
 		if err := ctx.Err(); err != nil {
-			o.logf("agent cancel step=%d/%d after=%s err=%q", step+1, o.MaxSteps, time.Since(runStart).Truncate(time.Millisecond), o.redactTerminal(err.Error()))
+			o.logf("[RUN] Agent stopping before model step | step=%d/%d elapsed=%s error=%q", step+1, o.MaxSteps, time.Since(runStart).Truncate(time.Millisecond), o.redactTerminal(err.Error()))
 			return result, err
 		}
 		if o.NextInput != nil {
@@ -170,7 +164,7 @@ func Run(ctx context.Context, provider llm.Provider, tools Tools, history []llm.
 			recovery = ""
 		}
 		result.ModelSteps++
-		o.logf("agent step %d/%d start messages=%d recovery=%t", step+1, o.MaxSteps, len(requestMessages), recoveryInjected)
+		o.logf("[MODEL] Step started | step=%d/%d model=%q", step+1, o.MaxSteps, o.Model)
 		modelStart := time.Now()
 		response, err := provider.Complete(ctx, llm.Request{Model: o.Model, Thinking: o.Thinking, Messages: requestMessages, Tools: tools.Schemas(), Temperature: 0.2}, o.OnStream)
 		modelElapsed := time.Since(modelStart)
@@ -182,18 +176,14 @@ func Run(ctx context.Context, provider llm.Provider, tools Tools, history []llm.
 			result.Usage.TotalTokens += response.Usage.InputTokens + response.Usage.OutputTokens
 		}
 		if ctx.Err() != nil {
-			o.logf("agent step %d/%d cancelled after=%s model_elapsed=%s", step+1, o.MaxSteps, time.Since(runStart).Truncate(time.Millisecond), modelElapsed.Truncate(time.Millisecond))
+			o.logf("[MODEL] Step interrupted | step=%d/%d duration=%s error=%q", step+1, o.MaxSteps, modelElapsed.Truncate(time.Millisecond), o.redactTerminal(ctx.Err().Error()))
 			return result, ctx.Err()
 		}
 		if err != nil {
-			o.logf("agent step %d/%d model error after=%s model_elapsed=%s usage=%d/%d/%d missing=%d err=%q", step+1, o.MaxSteps, time.Since(runStart).Truncate(time.Millisecond), modelElapsed.Truncate(time.Millisecond), result.Usage.InputTokens, result.Usage.OutputTokens, result.Usage.TotalTokens, result.Usage.Missing, o.redactTerminal(err.Error()))
+			o.logf("[MODEL] Step failed | step=%d/%d duration=%s error=%q", step+1, o.MaxSteps, modelElapsed.Truncate(time.Millisecond), o.redactTerminal(err.Error()))
 			return result, err
 		}
-		toolNames := make([]string, 0, len(response.Message.ToolCalls))
-		for _, call := range response.Message.ToolCalls {
-			toolNames = append(toolNames, call.Name)
-		}
-		o.logf("agent step %d/%d model ok after=%s model_elapsed=%s content_len=%d tools=%d [%s] usage=%d/%d/%d", step+1, o.MaxSteps, time.Since(runStart).Truncate(time.Millisecond), modelElapsed.Truncate(time.Millisecond), len(response.Message.Content), len(toolNames), o.redactTerminal(strings.Join(toolNames, ",")), result.Usage.InputTokens, result.Usage.OutputTokens, result.Usage.TotalTokens)
+		o.logf("[MODEL] Step completed | step=%d/%d duration=%s tool_calls=%d", step+1, o.MaxSteps, modelElapsed.Truncate(time.Millisecond), len(response.Message.ToolCalls))
 		response.Message.Role = "assistant"
 		for i := range response.Message.ToolCalls {
 			if response.Message.ToolCalls[i].ID == "" {
@@ -212,13 +202,13 @@ func Run(ctx context.Context, provider llm.Provider, tools Tools, history []llm.
 				return result, err
 			}
 			result.Answer = response.Message.Content
-			o.logf("agent done steps=%d tools=%d after=%s usage=%d/%d/%d answer_len=%d", result.ModelSteps, result.ToolCalls, time.Since(runStart).Truncate(time.Millisecond), result.Usage.InputTokens, result.Usage.OutputTokens, result.Usage.TotalTokens, len(result.Answer))
+			o.logf("[RUN] Agent completed | steps=%d tool_calls=%d duration=%s input_tokens=%d output_tokens=%d total_tokens=%d usage_missing_steps=%d", result.ModelSteps, result.ToolCalls, time.Since(runStart).Truncate(time.Millisecond), result.Usage.InputTokens, result.Usage.OutputTokens, result.Usage.TotalTokens, result.Usage.Missing)
 			return result, nil
 		}
 		var pendingSteer []string
 		for _, call := range response.Message.ToolCalls {
 			if ctx.Err() != nil {
-				o.logf("agent cancel tool=%q after=%s err=%q", call.Name, time.Since(runStart).Truncate(time.Millisecond), o.redactTerminal(ctx.Err().Error()))
+				o.logf("[TOOL] Tool skipped after interruption | name=%q step=%d elapsed=%s error=%q", o.redactTerminal(call.Name), step+1, time.Since(runStart).Truncate(time.Millisecond), o.redactTerminal(ctx.Err().Error()))
 				return result, ctx.Err()
 			}
 			if len(pendingSteer) == 0 && o.NextInput != nil {
@@ -233,15 +223,15 @@ func Run(ctx context.Context, provider llm.Provider, tools Tools, history []llm.
 			fingerprint := toolFingerprint(call)
 			identical[fingerprint]++
 			if identical[fingerprint] >= maxIdenticalToolCalls {
-				o.logf("agent giving up tool=%q unchanged=%d after=%s", call.Name, identical[fingerprint], time.Since(runStart).Truncate(time.Millisecond))
+				o.logf("[TOOL] Repeated call limit reached | name=%q identical_calls=%d elapsed=%s", o.redactTerminal(call.Name), identical[fingerprint], time.Since(runStart).Truncate(time.Millisecond))
 				return result, fmt.Errorf("stopped after tool %q was requested unchanged %d times", call.Name, identical[fingerprint])
 			}
 			if identical[fingerprint] == maxIdenticalToolCalls-1 {
 				recovery = fmt.Sprintf(repeatedToolRecoveryTemplate, call.Name, identical[fingerprint])
-				o.logf("agent retry tool=%q unchanged=%d injecting recovery after=%s", call.Name, identical[fingerprint], time.Since(runStart).Truncate(time.Millisecond))
+				o.logf("[TOOL] Repeated call detected; recovery instructions queued | name=%q identical_calls=%d elapsed=%s", o.redactTerminal(call.Name), identical[fingerprint], time.Since(runStart).Truncate(time.Millisecond))
 			}
 			result.ToolCalls++
-			o.logf("agent tool %q start step=%d call=%d args=%s", call.Name, step+1, result.ToolCalls, o.redactTerminal(summarizeArgs(call)))
+			o.logf("[TOOL] Tool started | name=%q step=%d call=%d", o.redactTerminal(call.Name), step+1, result.ToolCalls)
 			if o.OnToolStart != nil {
 				o.OnToolStart(call.Name)
 			}
@@ -253,23 +243,23 @@ func Run(ctx context.Context, provider llm.Provider, tools Tools, history []llm.
 			}
 			toolElapsed := time.Since(toolStart)
 			if ctx.Err() != nil {
-				o.logf("agent tool %q cancelled after=%s tool_elapsed=%s", call.Name, time.Since(runStart).Truncate(time.Millisecond), toolElapsed.Truncate(time.Millisecond))
+				o.logf("[TOOL] Tool interrupted | name=%q duration=%s error=%q", o.redactTerminal(call.Name), toolElapsed.Truncate(time.Millisecond), o.redactTerminal(ctx.Err().Error()))
 				return result, ctx.Err()
 			}
 			if errors.Is(toolErr, context.Canceled) || errors.Is(toolErr, context.DeadlineExceeded) {
-				o.logf("agent tool %q context error after=%s tool_elapsed=%s err=%q", call.Name, time.Since(runStart).Truncate(time.Millisecond), toolElapsed.Truncate(time.Millisecond), o.redactTerminal(toolErr.Error()))
+				o.logf("[TOOL] Tool interrupted | name=%q duration=%s error=%q", o.redactTerminal(call.Name), toolElapsed.Truncate(time.Millisecond), o.redactTerminal(toolErr.Error()))
 				return result, toolErr
 			}
 			var fatal interface{ Fatal() bool }
 			if errors.As(toolErr, &fatal) && fatal.Fatal() {
-				o.logf("agent tool %q fatal after=%s tool_elapsed=%s err=%q", call.Name, time.Since(runStart).Truncate(time.Millisecond), toolElapsed.Truncate(time.Millisecond), o.redactTerminal(toolErr.Error()))
+				o.logf("[TOOL] Fatal tool error; stopping agent | name=%q duration=%s error=%q", o.redactTerminal(call.Name), toolElapsed.Truncate(time.Millisecond), o.redactTerminal(toolErr.Error()))
 				return result, toolErr
 			}
 			if toolErr != nil {
-				o.logf("agent tool %q error after=%s tool_elapsed=%s output_len=%d err=%q", call.Name, time.Since(runStart).Truncate(time.Millisecond), toolElapsed.Truncate(time.Millisecond), len(output), o.redactTerminal(toolErr.Error()))
+				o.logf("[TOOL] Tool failed | name=%q duration=%s error=%q", o.redactTerminal(call.Name), toolElapsed.Truncate(time.Millisecond), o.redactTerminal(toolErr.Error()))
 				output += "\nERROR: " + toolErr.Error()
 			} else {
-				o.logf("agent tool %q ok after=%s tool_elapsed=%s output_len=%d", call.Name, time.Since(runStart).Truncate(time.Millisecond), toolElapsed.Truncate(time.Millisecond), len(output))
+				o.logf("[TOOL] Tool completed | name=%q duration=%s", o.redactTerminal(call.Name), toolElapsed.Truncate(time.Millisecond))
 			}
 			// Match qcode's reset after successful changes to the workspace.
 			if toolErr == nil && (call.Name == "write" || call.Name == "edit" || call.Name == "shell") {
@@ -279,7 +269,7 @@ func Run(ctx context.Context, provider llm.Provider, tools Tools, history []llm.
 		}
 		applySteer(pendingSteer)
 	}
-	o.logf("agent giving up steps=%d/%d tools=%d after=%s usage=%d/%d/%d", o.MaxSteps, o.MaxSteps, result.ToolCalls, time.Since(runStart).Truncate(time.Millisecond), result.Usage.InputTokens, result.Usage.OutputTokens, result.Usage.TotalTokens)
+	o.logf("[RUN] Model step limit reached | max_steps=%d tool_calls=%d elapsed=%s", o.MaxSteps, result.ToolCalls, time.Since(runStart).Truncate(time.Millisecond))
 	return result, fmt.Errorf("reached the maximum of %d model steps", o.MaxSteps)
 }
 func toolFingerprint(call llm.ToolCall) string {

@@ -39,7 +39,12 @@ func main() {
 	policy, _ := redaction.New(redaction.Config{}, redaction.EnvironmentValues())
 	log.SetOutput(&redaction.DiagnosticWriter{Policy: policy, Sink: redaction.Terminal, Out: os.Stderr})
 	if err := mainRun(); err != nil {
-		log.Print(err)
+		// mainRun may install the configured policy. Redact before quoting so
+		// escaping cannot hide credential assignments from the diagnostic writer.
+		if writer, ok := log.Writer().(*redaction.DiagnosticWriter); ok {
+			policy = writer.Policy
+		}
+		log.Printf("[SERVICE] Command failed | error=%q", policy.Text(redaction.Terminal, err.Error()))
 		os.Exit(1)
 	}
 }
@@ -246,13 +251,15 @@ func serveWithMaintenance(ctx context.Context, c config.Config, policy *redactio
 		syncCtx, cancel := context.WithTimeout(ctx, 15*time.Second)
 		defer cancel()
 		if err := bot.SyncCommands(syncCtx); err != nil {
-			log.Printf("telegram sync commands: %v", err)
+			log.Printf("[TELEGRAM] Command menu synchronization failed | error=%q", policy.Text(redaction.Terminal, err.Error()))
 		}
 	}()
 	// Every provider instance has its own routing identity and state, while all
 	// completions reuse this transport's connection pool.
 	httpClient := &http.Client{Transport: http.DefaultTransport.(*http.Transport).Clone()}
-	rt := &run.Runtime{Config: c, Store: store, Workspaces: workspaces, Tools: tools, Sink: bot, Version: version, Options: agent.Options{Model: c.Provider.Model, Thinking: c.Provider.Thinking, MaxSteps: c.Limits.MaxSteps, Redaction: policy, Logger: log.Default()}, Report: func(err error) { log.Print(err) }}
+	rt := &run.Runtime{Config: c, Store: store, Workspaces: workspaces, Tools: tools, Sink: bot, Version: version, Options: agent.Options{Model: c.Provider.Model, Thinking: c.Provider.Thinking, MaxSteps: c.Limits.MaxSteps, Redaction: policy, Logger: log.Default()}, Report: func(err error) {
+		log.Printf("[SERVICE] Runtime error reported | error=%q", policy.Text(redaction.Terminal, err.Error()))
+	}}
 	management.StateDir, management.Version, management.Notify = c.StateDir, version, bot.Send
 	if c.Sandbox.Enabled {
 		management.Worker = c.Sandbox.Worker
@@ -274,7 +281,7 @@ func serveWithMaintenance(ctx context.Context, c config.Config, policy *redactio
 		defer ticker.Stop()
 		for {
 			if err := management.Report(managementCtx, store); err != nil {
-				log.Print(err)
+				log.Printf("[SERVICE] Maintenance status reporting failed | error=%q", policy.Text(redaction.Terminal, err.Error()))
 			}
 			select {
 			case <-managementCtx.Done():
@@ -287,9 +294,14 @@ func serveWithMaintenance(ctx context.Context, c config.Config, policy *redactio
 	deliveryCtx, cancelDelivery := context.WithCancel(context.Background())
 	defer cancelDelivery()
 	deliveryDone := make(chan struct{})
-	go func() { defer close(deliveryDone); bot.Deliver(deliveryCtx, store, func(err error) { log.Print(err) }) }()
+	go func() {
+		defer close(deliveryDone)
+		bot.Deliver(deliveryCtx, store, func(err error) {
+			log.Printf("[TELEGRAM] Reply delivery failed | error=%q", policy.Text(redaction.Terminal, err.Error()))
+		})
+	}()
 	defer func() { rt.Close(); cancelDelivery(); <-deliveryDone }()
-	log.Printf("serving as @%s (%s execution)", identity.Username, mode)
+	log.Printf("[SERVICE] Bot started | username=@%s execution=%s", identity.Username, mode)
 	for ctx.Err() == nil {
 		updates, err := bot.Updates(ctx, store.Cursor()+1)
 		if err != nil {
@@ -300,7 +312,7 @@ func serveWithMaintenance(ctx context.Context, c config.Config, policy *redactio
 			if errors.As(err, &api) && (api.Code == 401 || api.Code == 409) {
 				return err
 			}
-			log.Print(err)
+			log.Printf("[TELEGRAM] Update polling failed; retrying | retry_in=2s error=%q", policy.Text(redaction.Terminal, err.Error()))
 			timer := time.NewTimer(2 * time.Second)
 			select {
 			case <-ctx.Done():
@@ -311,7 +323,7 @@ func serveWithMaintenance(ctx context.Context, c config.Config, policy *redactio
 		}
 		sort.Slice(updates, func(i, j int) bool { return updates[i].ID < updates[j].ID })
 		if len(updates) > 0 {
-			log.Printf("telegram poll updates=%d cursor=%d", len(updates), store.Cursor())
+			log.Printf("[TELEGRAM] Updates received | updates=%d cursor=%d", len(updates), store.Cursor())
 		}
 		for _, update := range updates {
 			message, ok := telegram.Normalize(update, identity)
@@ -320,7 +332,7 @@ func serveWithMaintenance(ctx context.Context, c config.Config, policy *redactio
 			} else {
 				// Console-only: group messages without a mention/reply and
 				// non-text updates are filtered here and never reach Handle.
-				log.Printf("telegram update=%d ignored (not addressed to @%s or non-text)", update.ID, identity.Username)
+				log.Printf("[TELEGRAM] Update ignored | update=%d reason=%q", update.ID, "not addressed to @"+identity.Username+" or non-text")
 				_, err = store.Accept(update.ID)
 			}
 			if err != nil {

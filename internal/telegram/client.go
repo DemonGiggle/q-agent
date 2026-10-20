@@ -374,51 +374,51 @@ func (c *Client) SendPhoto(ctx context.Context, m platform.Message, localPath, r
 			var body2 bytes.Buffer
 			w2 := multipart.NewWriter(&body2)
 			_ = w2.WriteField("chat_id", fmt.Sprint(m.ChatID))
-				if m.TopicID != 0 {
+			if m.TopicID != 0 {
 				_ = w2.WriteField("message_thread_id", fmt.Sprint(m.TopicID))
-				}
+			}
 			_ = w2.WriteField("caption", plain)
-				f2, openErr := os.Open(localPath)
-				if openErr != nil {
-					return openErr
-				}
-				defer f2.Close()
-				fw2, cerr := w2.CreateFormFile("photo", filepath.Base(localPath))
-				if cerr != nil {
-					return cerr
-				}
-				if _, cerr := io.Copy(fw2, f2); cerr != nil {
-					return cerr
-				}
-				if cerr := w2.Close(); cerr != nil {
-					return cerr
-				}
-				req2, rerr := http.NewRequestWithContext(ctx, "POST", c.BaseURL+"/bot"+c.Token+"/sendPhoto", &body2)
-				if rerr != nil {
-					return rerr
-				}
-				req2.Header.Set("Content-Type", w2.FormDataContentType())
-				resp2, derr := c.HTTP.Do(req2)
-				if derr != nil {
-					return derr
-				}
-				defer resp2.Body.Close()
-				var env2 struct {
-					OK          bool            `json:"ok"`
-					Result      json.RawMessage `json:"result"`
-					Code        int             `json:"error_code"`
-					Description string          `json:"description"`
-					Parameters  struct {
-						RetryAfter int `json:"retry_after"`
-					} `json:"parameters"`
-				}
-				if derr = json.NewDecoder(io.LimitReader(resp2.Body, 4<<20)).Decode(&env2); derr != nil {
-					return fmt.Errorf("decode Telegram response (%s): %w", resp2.Status, derr)
-				}
-				if !env2.OK {
-					return &APIError{Code: env2.Code, Description: env2.Description, RetryAfter: env2.Parameters.RetryAfter}
-				}
-				return nil
+			f2, openErr := os.Open(localPath)
+			if openErr != nil {
+				return openErr
+			}
+			defer f2.Close()
+			fw2, cerr := w2.CreateFormFile("photo", filepath.Base(localPath))
+			if cerr != nil {
+				return cerr
+			}
+			if _, cerr := io.Copy(fw2, f2); cerr != nil {
+				return cerr
+			}
+			if cerr := w2.Close(); cerr != nil {
+				return cerr
+			}
+			req2, rerr := http.NewRequestWithContext(ctx, "POST", c.BaseURL+"/bot"+c.Token+"/sendPhoto", &body2)
+			if rerr != nil {
+				return rerr
+			}
+			req2.Header.Set("Content-Type", w2.FormDataContentType())
+			resp2, derr := c.HTTP.Do(req2)
+			if derr != nil {
+				return derr
+			}
+			defer resp2.Body.Close()
+			var env2 struct {
+				OK          bool            `json:"ok"`
+				Result      json.RawMessage `json:"result"`
+				Code        int             `json:"error_code"`
+				Description string          `json:"description"`
+				Parameters  struct {
+					RetryAfter int `json:"retry_after"`
+				} `json:"parameters"`
+			}
+			if derr = json.NewDecoder(io.LimitReader(resp2.Body, 4<<20)).Decode(&env2); derr != nil {
+				return fmt.Errorf("decode Telegram response (%s): %w", resp2.Status, derr)
+			}
+			if !env2.OK {
+				return &APIError{Code: env2.Code, Description: env2.Description, RetryAfter: env2.Parameters.RetryAfter}
+			}
+			return nil
 		}
 		return api
 	}

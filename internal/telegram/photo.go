@@ -43,7 +43,7 @@ func ExtractPhotos(answer, workspaceRoot string) (photos []state.PhotoAttachment
 		if strings.HasPrefix(src, "https://") {
 			if !validPhotoURL(src) {
 				notes = append(notes, "Image "+quoteAlt(alt)+" could not be posted as a photo: invalid URL. Link: "+src)
-				out.WriteString("\n["+displayAlt(alt, src)+"]("+src+")\n")
+				out.WriteString("\n[" + displayAlt(alt, src) + "](" + src + ")\n")
 				continue
 			}
 			caption := Escape(alt)
@@ -59,42 +59,42 @@ func ExtractPhotos(answer, workspaceRoot string) (photos []state.PhotoAttachment
 		// Reject exotic schemes (http, data, file, tg, etc.).
 		if strings.Contains(src, "://") {
 			notes = append(notes, "Image "+quoteAlt(alt)+" could not be posted as a photo: only https:// URLs and workspace files are supported ("+src+").")
-			out.WriteString("\nImage "+displayAlt(alt, src)+" could not be posted: unsupported source.\n")
+			out.WriteString("\nImage " + displayAlt(alt, src) + " could not be posted: unsupported source.\n")
 			continue
 		}
 		localPath, err := resolvePhotoPath(workspaceRoot, src)
 		if err != nil {
 			notes = append(notes, "Image "+quoteAlt(alt)+" could not be posted as a photo: "+err.Error()+".")
-			out.WriteString("\nImage "+displayAlt(alt, src)+" ("+src+") could not be posted: "+err.Error()+".\n")
+			out.WriteString("\nImage " + displayAlt(alt, src) + " (" + src + ") could not be posted: " + err.Error() + ".\n")
 			continue
 		}
 		ext := strings.ToLower(filepath.Ext(localPath))
 		if !allowedPhotoExt[ext] {
 			notes = append(notes, "Image "+quoteAlt(alt)+" could not be posted as a photo: unsupported type "+ext+" (use jpg, png, webp, gif).")
-			out.WriteString("\nImage "+displayAlt(alt, src)+" could not be posted: unsupported type.\n")
+			out.WriteString("\nImage " + displayAlt(alt, src) + " could not be posted: unsupported type.\n")
 			continue
 		}
 		st, err := os.Stat(localPath)
 		if err != nil {
 			notes = append(notes, "Image "+quoteAlt(alt)+" could not be posted as a photo: file not found ("+src+").")
-			out.WriteString("\nImage "+displayAlt(alt, src)+" ("+src+") could not be posted: file not found.\n")
+			out.WriteString("\nImage " + displayAlt(alt, src) + " (" + src + ") could not be posted: file not found.\n")
 			continue
 		}
 		if !st.Mode().IsRegular() {
 			notes = append(notes, "Image "+quoteAlt(alt)+" could not be posted as a photo: not a regular file.")
-			out.WriteString("\nImage "+displayAlt(alt, src)+" could not be posted: not a regular file.\n")
+			out.WriteString("\nImage " + displayAlt(alt, src) + " could not be posted: not a regular file.\n")
 			continue
 		}
 		if st.Size() == 0 || st.Size() > MaxPhotoBytes {
 			notes = append(notes, "Image "+quoteAlt(alt)+" could not be posted as a photo: file size must be 1 byte–10MB.")
-			out.WriteString("\nImage "+displayAlt(alt, src)+" could not be posted: file size must be 1 byte-10MB.\n")
+			out.WriteString("\nImage " + displayAlt(alt, src) + " could not be posted: file size must be 1 byte-10MB.\n")
 			continue
 		}
 		// Symlink escape: resolve and re-check containment.
 		if resolved, err := filepath.EvalSymlinks(localPath); err == nil {
 			if !withinDir(workspaceBase(workspaceRoot), resolved) && !withinDir(workspaceRoot, resolved) {
 				notes = append(notes, "Image "+quoteAlt(alt)+" could not be posted as a photo: path escapes workspace.")
-				out.WriteString("\nImage "+displayAlt(alt, src)+" could not be posted: path escapes workspace.\n")
+				out.WriteString("\nImage " + displayAlt(alt, src) + " could not be posted: path escapes workspace.\n")
 				continue
 			}
 			localPath = resolved

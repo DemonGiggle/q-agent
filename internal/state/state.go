@@ -82,6 +82,7 @@ type Reply struct {
 
 // Total counts deliverable items: photos first, then text parts.
 func (r Reply) Total() int { return len(r.Photos) + len(r.Parts) }
+
 type Store struct {
 	mu              sync.Mutex
 	dir             string

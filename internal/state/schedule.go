@@ -32,12 +32,12 @@ type Schedule struct {
 }
 
 type ScheduledRun struct {
-	ID          string           `json:"id"`
-	ScheduleID  string           `json:"schedule_id"`
-	Route       platform.Message `json:"route"`
-	Kind        string           `json:"kind"`
-	Text        string           `json:"text"`
-	ScheduledAt time.Time        `json:"scheduled_at"`
+	ID          string            `json:"id"`
+	ScheduleID  string            `json:"schedule_id"`
+	Route       platform.Message  `json:"route"`
+	Kind        string            `json:"kind"`
+	Text        string            `json:"text"`
+	ScheduledAt time.Time         `json:"scheduled_at"`
 	Status      string            `json:"status"`
 	Parts       []string          `json:"parts,omitempty"`
 	Photos      []PhotoAttachment `json:"photos,omitempty"`

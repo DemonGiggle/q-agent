@@ -32,8 +32,8 @@ type Tools interface {
 }
 type Options struct {
 	Model, Thinking string
-	MaxSteps       int
-	Redaction      *redaction.Policy
+	MaxSteps        int
+	Redaction       *redaction.Policy
 	// Logger receives agent-loop progress (steps, tool calls, retries,
 	// timing). It must write to the console only (for example the
 	// process stderr logger). It is never sent to Telegram, the

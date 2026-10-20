@@ -141,3 +141,30 @@ func TestSteerBatchesConsumedBeforeSameRequestAreMerged(t *testing.T) {
 		t.Fatalf("%+v %v", result, err)
 	}
 }
+
+func TestMultimodalInputAndSteering(t *testing.T) {
+	var pending []llm.Message
+	p := &mockProvider{}
+	p.fn = func(_ context.Context, req llm.Request) (llm.Response, error) {
+		original := req.Messages[1]
+		if len(original.Images) != 1 || string(original.Images[0].Data) != "original" {
+			t.Fatal("initial image missing")
+		}
+		if len(p.requests) == 1 {
+			pending = []llm.Message{{Role: "user", Content: "use this image too", Images: []llm.Image{{MediaType: "image/png", Data: []byte("followup")}}}}
+			return llm.Response{Message: llm.Message{Content: "superseded"}}, nil
+		}
+		last := req.Messages[len(req.Messages)-1]
+		if last.Content != "use this image too" || len(last.Images) != 1 || string(last.Images[0].Data) != "followup" {
+			t.Fatalf("image steer lost: %+v", last)
+		}
+		return llm.Response{Message: llm.Message{Content: "revised"}}, nil
+	}
+	result, err := Run(context.Background(), p, &mockTools{}, nil, "original", Options{
+		Images:       []llm.Image{{MediaType: "image/png", Data: []byte("original")}},
+		NextMessages: func(bool) []llm.Message { inputs := pending; pending = nil; return inputs },
+	})
+	if err != nil || result.Answer != "revised" || len(result.Steers) != 1 {
+		t.Fatalf("result=%+v err=%v", result, err)
+	}
+}

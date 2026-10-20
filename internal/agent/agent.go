@@ -49,12 +49,16 @@ type Options struct {
 	// directly; the runtime formats the preview.
 	OnToolStart func(name string)
 	OnToolEnd   func(name string, err error)
+	// Images are input-only attachments for the initial user message.
+	Images []llm.Image
 	// NextInput drains follow-up user input at safe boundaries. When final is
 	// true and no input is returned, it must atomically seal this run against
 	// further steering; later input belongs to the next run. It must not wait
 	// for new input to arrive.
 	NextInput func(final bool) []string
-	OnSteer   func()
+	// NextMessages is the multimodal equivalent of NextInput; when set it takes precedence.
+	NextMessages func(final bool) []llm.Message
+	OnSteer      func()
 }
 
 func (o Options) logf(format string, args ...any) {
@@ -123,23 +127,42 @@ func Run(ctx context.Context, provider llm.Provider, tools Tools, history []llm.
 	}
 	messages := []llm.Message{{Role: "system", Content: system}}
 	messages = append(messages, history...)
-	messages = append(messages, llm.Message{Role: "user", Content: text})
+	messages = append(messages, llm.Message{Role: "user", Content: text, Images: o.Images})
 	o.logf("[RUN] Agent started | model=%q thinking=%q max_steps=%d", o.Model, o.Thinking, o.MaxSteps)
 	identical := map[string]int{}
 	recovery := ""
-	applySteer := func(inputs []string) {
+	nextInput := func(final bool) []llm.Message {
+		if o.NextMessages != nil {
+			return o.NextMessages(final)
+		}
+		var inputs []llm.Message
+		if o.NextInput != nil {
+			for _, text := range o.NextInput(final) {
+				inputs = append(inputs, llm.Message{Role: "user", Content: text})
+			}
+		}
+		return inputs
+	}
+	applySteer := func(inputs []llm.Message) {
 		if len(inputs) == 0 {
 			return
 		}
-		text := strings.Join(inputs, "\n\n")
+		var texts []string
+		var images []llm.Image
+		for _, input := range inputs {
+			texts = append(texts, input.Content)
+			images = append(images, input.Images...)
+		}
+		text := strings.Join(texts, "\n\n")
 		// Multiple boundary checks may consume input before the same next
 		// request (for example after skipping tools and at the loop head).
 		// Keep those unsent batches together, but never mutate a sent request.
 		if len(result.Steers) > 0 && messages[len(messages)-1].Role == "user" {
 			messages[len(messages)-1].Content += "\n\n" + text
+			messages[len(messages)-1].Images = append(messages[len(messages)-1].Images, images...)
 			result.Steers[len(result.Steers)-1] += "\n\n" + text
 		} else {
-			messages = append(messages, llm.Message{Role: "user", Content: text})
+			messages = append(messages, llm.Message{Role: "user", Content: text, Images: images})
 			result.Steers = append(result.Steers, text)
 		}
 		identical = map[string]int{}
@@ -154,8 +177,8 @@ func Run(ctx context.Context, provider llm.Provider, tools Tools, history []llm.
 			o.logf("[RUN] Agent stopping before model step | step=%d/%d elapsed=%s error=%q", step+1, o.MaxSteps, time.Since(runStart).Truncate(time.Millisecond), o.redactTerminal(err.Error()))
 			return result, err
 		}
-		if o.NextInput != nil {
-			applySteer(o.NextInput(false))
+		if o.NextInput != nil || o.NextMessages != nil {
+			applySteer(nextInput(false))
 		}
 		requestMessages := append([]llm.Message(nil), messages...)
 		recoveryInjected := recovery != ""
@@ -192,8 +215,8 @@ func Run(ctx context.Context, provider llm.Provider, tools Tools, history []llm.
 		}
 		messages = append(messages, response.Message)
 		if len(response.Message.ToolCalls) == 0 {
-			if o.NextInput != nil {
-				if inputs := o.NextInput(true); len(inputs) > 0 {
+			if o.NextInput != nil || o.NextMessages != nil {
+				if inputs := nextInput(true); len(inputs) > 0 {
 					applySteer(inputs)
 					continue
 				}
@@ -205,14 +228,14 @@ func Run(ctx context.Context, provider llm.Provider, tools Tools, history []llm.
 			o.logf("[RUN] Agent completed | steps=%d tool_calls=%d duration=%s input_tokens=%d output_tokens=%d total_tokens=%d usage_missing_steps=%d", result.ModelSteps, result.ToolCalls, time.Since(runStart).Truncate(time.Millisecond), result.Usage.InputTokens, result.Usage.OutputTokens, result.Usage.TotalTokens, result.Usage.Missing)
 			return result, nil
 		}
-		var pendingSteer []string
+		var pendingSteer []llm.Message
 		for _, call := range response.Message.ToolCalls {
 			if ctx.Err() != nil {
 				o.logf("[TOOL] Tool skipped after interruption | name=%q step=%d elapsed=%s error=%q", o.redactTerminal(call.Name), step+1, time.Since(runStart).Truncate(time.Millisecond), o.redactTerminal(ctx.Err().Error()))
 				return result, ctx.Err()
 			}
-			if len(pendingSteer) == 0 && o.NextInput != nil {
-				pendingSteer = o.NextInput(false)
+			if len(pendingSteer) == 0 && (o.NextInput != nil || o.NextMessages != nil) {
+				pendingSteer = nextInput(false)
 			}
 			if len(pendingSteer) > 0 {
 				// Complete the provider's tool-call pairing without executing

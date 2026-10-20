@@ -44,6 +44,7 @@ func (r *Runtime) startLocked(ctx context.Context, m platform.Message, runID str
 				next := finished.pending
 				message := next[0]
 				message.Text = mergeFollowups(next)
+				message.Images = mergeImages(next)
 				if err := r.startLocked(ctx, message, ""); err != nil {
 					r.report(err)
 				}

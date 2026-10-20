@@ -275,6 +275,9 @@ func (s *Store) queueWithPhotos(route platform.Message, parts []string, photos [
 		return fmt.Errorf("at most 10 photos per reply")
 	}
 	route.Text = ""
+	route.Images = nil
+	route.PhotoIDs = nil
+	route.ReplyTo = nil
 	id := fmt.Sprintf("%s:%d%s", route.Platform, route.UpdateID, suffix)
 	for _, r := range s.outbox {
 		if r.ID == id {

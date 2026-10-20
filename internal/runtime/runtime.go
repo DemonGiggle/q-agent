@@ -170,6 +170,27 @@ func (r *Runtime) Handle(ctx context.Context, m platform.Message) error {
 	if m.Text == "/models" {
 		return r.showModels(ctx, m)
 	}
+	// Only authorized, accepted messages may cause a Telegram file download.
+	if len(m.PhotoIDs) > 0 && !strings.HasPrefix(m.Text, "/") {
+		loader, ok := r.Sink.(interface {
+			DownloadPhoto(context.Context, string) (llm.Image, error)
+		})
+		if !ok {
+			return r.reply(m, "Image input is unavailable in this adapter.")
+		}
+		if len(m.PhotoIDs) > 2 {
+			return r.reply(m, "Too many attached images (maximum 2 per message).")
+		}
+		for _, id := range m.PhotoIDs {
+			image, err := loader.DownloadPhoto(ctx, id)
+			if err != nil {
+				return r.reply(m, "Could not load the attached image: "+err.Error()+". Please resend it.")
+			}
+			m.Images = append(m.Images, image)
+		}
+		m.PhotoIDs = nil
+		m.Text += "\n\n[Attached image(s) are available for this task only; resend them if needed in a later task.]"
+	}
 	r.mu.Lock()
 	if r.active == nil {
 		r.active = map[string]task{}
@@ -328,7 +349,9 @@ func (r *Runtime) run(ctx context.Context, m platform.Message, runID string) boo
 					options.Model = conversation.Model
 					options.Thinking = conversation.Thinking
 					options.MaxSteps = conversation.MaxSteps
-					options.NextInput = func(final bool) []string { return r.takeSteer(m.WorkspaceKey(), final) }
+					options.Images = m.Images
+					options.NextInput = nil
+					options.NextMessages = func(final bool) []llm.Message { return r.takeSteer(m.WorkspaceKey(), final) }
 					options.OnSteer = live.Steered
 					live.SetStatus("Working\u2026 contacting " + conversation.Model)
 					toolCount := 0

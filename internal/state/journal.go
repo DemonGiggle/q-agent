@@ -325,6 +325,9 @@ func (s *Store) addMemoryNotice(mem *ChatMemory, route platform.Message, id stri
 		return
 	}
 	route.Text = ""
+	route.Images = nil
+	route.PhotoIDs = nil
+	route.ReplyTo = nil
 	parts = append([]string(nil), parts...)
 	for i := range parts {
 		parts[i] = s.policy.Text(redaction.Remote, parts[i])

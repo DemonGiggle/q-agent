@@ -175,6 +175,18 @@ the model and also work in sandbox mode. See the
 
 Send a message to give the agent a task. In groups, mention the bot or reply to it; private chats accept text directly. Address commands to your bot, for example `/status@your_bot`.
 
+**Photo input**
+
+Send a Telegram photo with a question in its caption. In groups, include
+`@your_bot` in the caption, or reply to a photo with `@your_bot` and your question.
+Private chats also accept photos without captions (the bot describes the image).
+Photos received while your task is running become follow-up input at the next safe
+boundary. Use a vision-capable model; text-only models may reject image input.
+The largest Telegram photo size is downloaded, up to 10 MB per image. Images are
+sent to your configured model provider for that task only; binary data and file
+IDs are not saved in conversation history. Resend/reply to the image for later
+tasks. Albums and images uploaded as documents are not supported.
+
 **Per-chat model-step limit**
 
 Use `/max_steps` to view the effective maximum number of model requests per
@@ -229,8 +241,9 @@ Control commands such as `/status` and `/cancel` keep their usual behavior.
 - **Schedules are minute-level, not instant.** Busy tasks may wait. Short
   outages have a five-minute catch-up window; interrupted agent work isn't
   automatically retried.
-- **The experience is text-first.** Attachments and streaming Telegram replies
-  aren't supported yet. Provider charges, if any, depend on your chosen service.
+- **Attachment support is limited.** Telegram photos are supported as model
+  input; documents, video, audio, and albums are not. Provider charges, if any,
+  depend on your chosen service.
 
 ## Go deeper
 

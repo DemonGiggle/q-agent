@@ -27,6 +27,7 @@ type Message struct {
 	From     *User    `json:"from"`
 	Chat     Chat     `json:"chat"`
 	Text     string   `json:"text"`
+	Caption  string   `json:"caption,omitempty"`
 	Entities []Entity `json:"entities"`
 	Reply    *Message `json:"reply_to_message,omitempty"`
 }
@@ -132,7 +133,17 @@ func Normalize(update Update, bot User) (platform.Message, bool) {
 			text = parts[0]
 		}
 	}
-	return platform.Message{Platform: "telegram", ChatID: m.Chat.ID, TopicID: m.TopicID, UserID: m.From.ID, MessageID: m.ID, UpdateID: update.ID, Text: text}, true
+	out := platform.Message{Platform: "telegram", ChatID: m.Chat.ID, TopicID: m.TopicID, UserID: m.From.ID, MessageID: m.ID, UpdateID: update.ID, Text: text}
+	if reply := m.Reply; reply != nil {
+		replyText := reply.Text
+		if strings.TrimSpace(replyText) == "" {
+			replyText = reply.Caption
+		}
+		if strings.TrimSpace(replyText) != "" {
+			out.ReplyTo = &platform.ReplyContext{Text: replyText, FromSelf: reply.From != nil && reply.From.ID == bot.ID}
+		}
+	}
+	return out, true
 }
 
 // Split uses UTF-16 code units, a conservative interpretation of Telegram's

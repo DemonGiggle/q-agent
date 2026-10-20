@@ -16,6 +16,14 @@ type Message struct {
 	Text         string `json:"text"`
 	CallbackID   string `json:"callback_id,omitempty"`
 	CallbackData string `json:"callback_data,omitempty"`
+	// ReplyTo is input-only context. The runtime folds it into the user prompt
+	// before saving history; delivery and schedule routes must not persist it.
+	ReplyTo *ReplyContext `json:"-"`
+}
+
+type ReplyContext struct {
+	Text     string
+	FromSelf bool
 }
 
 func WorkspaceKey(platform string, chatID int64) string {

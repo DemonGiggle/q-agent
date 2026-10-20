@@ -140,7 +140,6 @@ func (r *Runtime) replyAnswer(m platform.Message, answer, root string) error {
 	return r.Store.QueueWithPhotos(m, parts, photos, nil)
 }
 
-
 // Handle commits the update before doing work. Authorized commands use the
 // same path as prompts, and provisioning consumes the same concurrency slot.
 // All progress logs here are console-only; user-visible replies go through reply().
@@ -266,6 +265,10 @@ func (r *Runtime) Handle(ctx context.Context, m platform.Message) error {
 		r.logf("telegram update=%d /new cleared conversation", m.UpdateID)
 		return r.reply(m, "Conversation cleared. Workspace and pending memory sources retained.")
 	}
+	// Keep command and shell-decision parsing on the user's actual text. Fold
+	// reply context once here so new tasks, steers, and late follow-ups all
+	// retain it through the ordinary prompt/history path.
+	m = withReplyContext(m)
 	limit := r.Config.Limits.MaxConcurrent
 	if r.Maintenance != nil && r.Maintenance.Busy() {
 		r.mu.Unlock()

@@ -1,11 +1,68 @@
 package telegram
 
 import (
+	"encoding/json"
 	"strings"
 	"testing"
 	"unicode/utf16"
 	"unicode/utf8"
 )
+
+func TestNormalizeReplyContext(t *testing.T) {
+	bot := User{ID: 99, IsBot: true, Username: "our_bot"}
+	for _, tc := range []struct {
+		name, kind, text, reply string
+		wantText                string
+		wantSelf, wantAccepted  bool
+	}{
+		{"private bot reply", "private", "tell me more", `{"from":{"id":99,"is_bot":true},"text":"The riot began after an election."}`, "The riot began after an election.", true, true},
+		{"group bot reply", "supergroup", "tell me more", `{"from":{"id":99,"is_bot":true},"text":"The riot began after an election.","message_thread_id":8}`, "The riot began after an election.", true, true},
+		{"photo caption", "private", "explain this", `{"from":{"id":99,"is_bot":true},"caption":"A map of the riot in 台北 🙂"}`, "A map of the riot in 台北 🙂", true, true},
+		{"blank text uses caption", "private", "explain this", `{"from":{"id":99},"text":"  ","caption":"Map caption"}`, "Map caption", true, true},
+		{"text preferred", "private", "explain this", `{"from":{"id":99},"text":"Original @our_bot text","caption":"Other text"}`, "Original @our_bot text", true, true},
+		{"mentioned human reply", "group", "@our_bot explain this", `{"from":{"id":2},"text":"A participant's message"}`, "A participant's message", false, true},
+		{"other bot reply", "private", "explain this", `{"from":{"id":88,"is_bot":true},"text":"Another bot's message"}`, "Another bot's message", false, true},
+		{"unknown sender", "private", "explain this", `{"text":"Original message"}`, "Original message", false, true},
+		{"unaddressed human reply", "group", "explain this", `{"from":{"id":2},"text":"Not addressed to q-agent"}`, "", false, false},
+		{"no reply content", "private", "explain this", `{"from":{"id":99}}`, "", false, true},
+		{"only immediate reply", "private", "explain this", `{"from":{"id":99},"text":"Immediate message","reply_to_message":{"text":"Nested message"}}`, "Immediate message", true, true},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			data, err := json.Marshal(map[string]any{
+				"update_id": 3,
+				"message": map[string]any{
+					"message_id": 4, "message_thread_id": 7, "from": User{ID: 1},
+					"chat": Chat{ID: -10, Type: tc.kind}, "text": tc.text,
+					"reply_to_message": json.RawMessage(tc.reply),
+				},
+			})
+			if err != nil {
+				t.Fatal(err)
+			}
+			var update Update
+			if err := json.Unmarshal(data, &update); err != nil {
+				t.Fatal(err)
+			}
+			out, ok := Normalize(update, bot)
+			if ok != tc.wantAccepted {
+				t.Fatalf("accepted=%t, want %t", ok, tc.wantAccepted)
+			}
+			if !ok {
+				return
+			}
+			if out.Text != strings.TrimSpace(strings.TrimPrefix(tc.text, "@our_bot")) || out.ChatID != -10 || out.TopicID != 7 || out.MessageID != 4 || out.UpdateID != 3 {
+				t.Fatalf("reply changed user text or routing: %+v", out)
+			}
+			if tc.wantText == "" {
+				if out.ReplyTo != nil {
+					t.Fatalf("empty reply context: %+v", out.ReplyTo)
+				}
+			} else if out.ReplyTo == nil || out.ReplyTo.Text != tc.wantText || out.ReplyTo.FromSelf != tc.wantSelf {
+				t.Fatalf("reply context: %+v", out.ReplyTo)
+			}
+		})
+	}
+}
 
 func TestAddressing(t *testing.T) {
 	bot := User{ID: 99, Username: "our_bot"}

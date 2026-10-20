@@ -231,7 +231,8 @@ func TestSteerRacingFinalAnswerStartsAfterCommitAndKeepsBothReplies(t *testing.T
 	case <-time.After(3 * time.Second):
 		t.Fatal("finalization not reached")
 	}
-	must(t, r.Handle(context.Background(), input(2, -10, 7, 1, "late follow-up")))
+	const previous = "The riot began after an election."
+	must(t, r.Handle(context.Background(), telegramReply(t, 2, -10, 7, "supergroup", "late follow-up", previous)))
 	must(t, r.Handle(context.Background(), input(3, -10, 7, 1, "late detail")))
 	select {
 	case <-p.requests:
@@ -240,7 +241,8 @@ func TestSteerRacingFinalAnswerStartsAfterCommitAndKeepsBothReplies(t *testing.T
 	}
 	close(sink.release)
 	req := request(t, p)
-	if strings.Join(userTexts(req), "|") != "original|late follow-up\n\nlate detail" || req.Messages[2].Content != "first final" {
+	texts := userTexts(req)
+	if len(texts) != 2 || texts[0] != "original" || strings.Count(texts[1], previous) != 1 || !strings.HasSuffix(texts[1], "late follow-up\n\nlate detail") || req.Messages[2].Content != "first final" {
 		t.Fatalf("committed history: %+v", req.Messages)
 	}
 	p.responses <- steerResponse{text: "second final"}

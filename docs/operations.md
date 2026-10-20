@@ -503,6 +503,12 @@ serialized history; whole oldest pairs are removed, including an oversized newes
 pair if necessary. Tool exchanges and reasoning stay inside the active run.
 Changing a conversation's configured provider or model starts fresh history.
 
+Telegram replies include the replied-to message's text (or photo/media caption)
+as reference context alongside your new message. This works for older answers
+outside recent history and after `/new`; only the message you reply to is
+included, not its earlier reply chain. The context follows the usual redaction
+and history limits and also accompanies follow-ups steering a running task.
+
 ### Steering an active task
 
 New Telegram text from the task's original allowed sender

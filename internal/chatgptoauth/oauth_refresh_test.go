@@ -11,6 +11,7 @@ import (
 	"strings"
 	"sync"
 	"sync/atomic"
+	"syscall"
 	"testing"
 	"time"
 )
@@ -131,6 +132,120 @@ func TestRefreshAndSaveWithStaleReusesFresh(t *testing.T) {
 	path := filepath.Join(dir, "oauth.json")
 	fresh := Tokens{AccessToken: "fresh-access", RefreshToken: "fresh-refresh", ExpiresAt: time.Now().Add(time.Hour).Unix(), AccountID: "a9"}
 	writeTokens(t, path, fresh)
+	called := false
+	do := stubDoer(func(r *http.Request) (*http.Response, error) {
+		called = true
+		return &http.Response{StatusCode: 200, Status: "200 OK", Header: make(http.Header), Body: io.NopCloser(strings.NewReader(`{}`))}, nil
+	})
+	got, err := RefreshAndSaveWithStale(context.Background(), do, path, "stale-access")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got.AccessToken != "fresh-access" {
+		t.Fatalf("should reuse fresh, got %+v", got)
+	}
+	if called {
+		t.Fatal("should not call token endpoint when fresh already")
+	}
+}
+
+func TestGetValidTokensFastPathSkipsFileLock(t *testing.T) {
+	dir := t.TempDir()
+	path := filepath.Join(dir, "oauth.json")
+	fresh := Tokens{AccessToken: "fresh-access", RefreshToken: "fresh-refresh", ExpiresAt: time.Now().Add(time.Hour).Unix()}
+	writeTokens(t, path, fresh)
+	full, err := ResolvePath(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	// Hold the cross-process lock: fresh credentials must return via the
+	// lock-free fast path without blocking.
+	lockFile, err := os.OpenFile(full+".lock", os.O_CREATE|os.O_RDWR, 0600)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer lockFile.Close()
+	if err := syscall.Flock(int(lockFile.Fd()), syscall.LOCK_EX); err != nil {
+		t.Skipf("flock unavailable: %v", err)
+	}
+	defer syscall.Flock(int(lockFile.Fd()), syscall.LOCK_UN)
+	do := stubDoer(func(r *http.Request) (*http.Response, error) {
+		t.Error("token endpoint must not be called on fresh fast path")
+		return &http.Response{StatusCode: 500, Status: "500", Header: make(http.Header), Body: io.NopCloser(strings.NewReader(""))}, nil
+	})
+	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
+	defer cancel()
+	start := time.Now()
+	got, err := GetValidTokens(ctx, do, path)
+	elapsed := time.Since(start)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got.AccessToken != "fresh-access" {
+		t.Fatalf("got %+v", got)
+	}
+	if elapsed > time.Second {
+		t.Fatalf("fast path blocked on file lock for %v", elapsed)
+	}
+}
+
+func TestGetValidTokensStaleRespectsContextOnLockedFile(t *testing.T) {
+	dir := t.TempDir()
+	path := filepath.Join(dir, "oauth.json")
+	stale := Tokens{AccessToken: "stale-access", RefreshToken: "stale-refresh", ExpiresAt: time.Now().Add(-time.Hour).Unix()}
+	writeTokens(t, path, stale)
+	full, err := ResolvePath(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	lockFile, err := os.OpenFile(full+".lock", os.O_CREATE|os.O_RDWR, 0600)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer lockFile.Close()
+	if err := syscall.Flock(int(lockFile.Fd()), syscall.LOCK_EX); err != nil {
+		t.Skipf("flock unavailable: %v", err)
+	}
+	defer syscall.Flock(int(lockFile.Fd()), syscall.LOCK_UN)
+	called := false
+	do := stubDoer(func(r *http.Request) (*http.Response, error) {
+		called = true
+		return &http.Response{StatusCode: 200, Status: "200 OK", Header: make(http.Header), Body: io.NopCloser(strings.NewReader(`{}`))}, nil
+	})
+	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Millisecond)
+	defer cancel()
+	start := time.Now()
+	_, err = GetValidTokens(ctx, do, path)
+	elapsed := time.Since(start)
+	if err == nil {
+		t.Fatal("expected context error while file lock held, got success")
+	}
+	if elapsed > 2*time.Second {
+		t.Fatalf("did not respect context deadline, blocked %v", elapsed)
+	}
+	if called {
+		t.Fatal("token endpoint must not be called while blocked on file lock")
+	}
+}
+
+func TestRefreshStaleFastPathSkipsLockedFile(t *testing.T) {
+	dir := t.TempDir()
+	path := filepath.Join(dir, "oauth.json")
+	fresh := Tokens{AccessToken: "fresh-access", RefreshToken: "fresh-refresh", ExpiresAt: time.Now().Add(time.Hour).Unix(), AccountID: "a9"}
+	writeTokens(t, path, fresh)
+	full, err := ResolvePath(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	lockFile, err := os.OpenFile(full+".lock", os.O_CREATE|os.O_RDWR, 0600)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer lockFile.Close()
+	if err := syscall.Flock(int(lockFile.Fd()), syscall.LOCK_EX); err != nil {
+		t.Skipf("flock unavailable: %v", err)
+	}
+	defer syscall.Flock(int(lockFile.Fd()), syscall.LOCK_UN)
 	called := false
 	do := stubDoer(func(r *http.Request) (*http.Response, error) {
 		called = true

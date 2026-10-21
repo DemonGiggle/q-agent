@@ -124,3 +124,58 @@ func TestChatGPT401RefreshesOnceWithStaleReuse(t *testing.T) {
 		t.Fatalf("refresh calls = %d, want 1", calls)
 	}
 }
+
+func TestChatGPTModelsCodexCatalog(t *testing.T) {
+	oauthPath := writeChatGPTOAuth(t, "test-access", "test-refresh", "acct-1", time.Now().Add(time.Hour))
+	var gotURL, gotAccount string
+	client := doerFunc(func(request *http.Request) (*http.Response, error) {
+		gotURL = request.URL.String()
+		gotAccount = request.Header.Get("ChatGPT-Account-Id")
+		body := `{"models":[{"slug":"gpt-5.6-codex","display_name":"Codex","visibility":"list"},{"slug":"hidden-1","display_name":"Hidden","visibility":"hidden"},{"slug":"","display_name":"Empty","visibility":"list"}]}`
+		return &http.Response{StatusCode: 200, Status: "200 OK", Header: make(http.Header), Body: io.NopCloser(strings.NewReader(body))}, nil
+	})
+	prov, err := newChatGPT(Config{ChatGPTOAuthPath: oauthPath, HTTP: client})
+	if err != nil {
+		t.Fatal(err)
+	}
+	ml, ok := prov.(ModelLister)
+	if !ok {
+		t.Fatal("chatgpt provider does not implement ModelLister")
+	}
+	models, err := ml.Models(context.Background())
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(models) != 1 || models[0] != "gpt-5.6-codex" {
+		t.Fatalf("models = %v, want [gpt-5.6-codex]", models)
+	}
+	if !strings.Contains(gotURL, "client_version=") {
+		t.Fatalf("catalog URL missing client_version: %q", gotURL)
+	}
+	if gotAccount != "acct-1" {
+		t.Fatalf("account header = %q, want acct-1", gotAccount)
+	}
+}
+
+func TestChatGPTModelsLegacyDataFallback(t *testing.T) {
+	oauthPath := writeChatGPTOAuth(t, "test-access", "test-refresh", "acct-1", time.Now().Add(time.Hour))
+	client := doerFunc(func(request *http.Request) (*http.Response, error) {
+		body := `{"data":[{"id":"gpt-5.6-codex"}]}`
+		return &http.Response{StatusCode: 200, Status: "200 OK", Header: make(http.Header), Body: io.NopCloser(strings.NewReader(body))}, nil
+	})
+	prov, err := newChatGPT(Config{ChatGPTOAuthPath: oauthPath, HTTP: client})
+	if err != nil {
+		t.Fatal(err)
+	}
+	ml, ok := prov.(ModelLister)
+	if !ok {
+		t.Fatal("chatgpt provider does not implement ModelLister")
+	}
+	models, err := ml.Models(context.Background())
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(models) != 1 || models[0] != "gpt-5.6-codex" {
+		t.Fatalf("legacy fallback models = %v", models)
+	}
+}

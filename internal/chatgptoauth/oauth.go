@@ -18,6 +18,7 @@ import (
 	"crypto/sha256"
 	"encoding/base64"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
 	"net/http"
@@ -466,43 +467,132 @@ func lockFor(resolved string) *sync.Mutex {
 	return mu
 }
 
+// lockMutexContext acquires mu or returns ctx.Err(). Polling with TryLock keeps
+// startup/task deadlines and cancellation working while another goroutine
+// holds the per-path lock.
+func lockMutexContext(ctx context.Context, mu *sync.Mutex) error {
+	if mu.TryLock() {
+		return nil
+	}
+	ticker := time.NewTicker(5 * time.Millisecond)
+	defer ticker.Stop()
+	for {
+		select {
+		case <-ctx.Done():
+			return ctx.Err()
+		case <-ticker.C:
+			if mu.TryLock() {
+				return nil
+			}
+		}
+	}
+}
+
 // withRefreshFileLock holds an exclusive advisory lock on path+".lock" while
 // fn runs. It is best-effort across processes; intra-process safety comes
 // from lockFor. Non-Linux platforms skip the syscall.
 func withRefreshFileLock(resolved string, fn func() error) error {
+	return withRefreshFileLockContext(context.Background(), resolved, fn)
+}
+
+// withRefreshFileLockContext is the cancellable variant. It uses a
+// non-blocking flock with retry so a stale holder cannot wedge startup
+// (EnsureValid 30s), /models (15s), or task cancellation forever. The fast
+// path in GetValidTokens avoids taking this lock at all when the stored
+// token is still fresh.
+func withRefreshFileLockContext(ctx context.Context, resolved string, fn func() error) error {
 	if runtime.GOOS != "linux" {
+		if err := ctx.Err(); err != nil {
+			return err
+		}
 		return fn()
 	}
 	dir := filepath.Dir(resolved)
 	if err := os.MkdirAll(dir, 0700); err != nil {
+		if ctx.Err() != nil {
+			return ctx.Err()
+		}
 		return fn()
 	}
 	f, err := os.OpenFile(resolved+".lock", os.O_CREATE|os.O_RDWR, 0600)
 	if err != nil {
+		if ctx.Err() != nil {
+			return ctx.Err()
+		}
 		return fn()
 	}
 	defer f.Close()
-	if err := syscall.Flock(int(f.Fd()), syscall.LOCK_EX); err != nil {
-		return fn()
+	ticker := time.NewTicker(10 * time.Millisecond)
+	defer ticker.Stop()
+	for {
+		err := syscall.Flock(int(f.Fd()), syscall.LOCK_EX|syscall.LOCK_NB)
+		if err == nil {
+			defer syscall.Flock(int(f.Fd()), syscall.LOCK_UN)
+			if err := ctx.Err(); err != nil {
+				return err
+			}
+			return fn()
+		}
+		if !errors.Is(err, syscall.EWOULDBLOCK) {
+			// Unexpected flock failure: best-effort fallback without the
+			// cross-process lock, but still honor cancellation.
+			if ctx.Err() != nil {
+				return ctx.Err()
+			}
+			return fn()
+		}
+		select {
+		case <-ctx.Done():
+			return ctx.Err()
+		case <-ticker.C:
+		}
 	}
-	defer syscall.Flock(int(f.Fd()), syscall.LOCK_UN)
-	return fn()
 }
 
 // GetValidTokens returns usable credentials, refreshing and persisting when
-// the stored token is near expiry. The refresh transaction re-reads the file
-// under the per-path lock so concurrent callers share one refresh.
+// the stored token is near expiry. A lock-free fast path returns fresh tokens
+// without taking any lock; only the refresh transaction re-reads the file
+// under the cancellable per-path + file locks so concurrent callers share one
+// refresh and startup/task deadlines stay effective.
 func GetValidTokens(ctx context.Context, do Doer, path string) (Tokens, error) {
+	if err := ctx.Err(); err != nil {
+		return Tokens{}, err
+	}
+	// Fast path: no locks, so a stuck sibling cannot block fresh credentials
+	// and cannot wedge EnsureValid / Models deadlines.
+	if t, err := Load(path); err == nil {
+		if !t.NeedsRefresh(time.Now()) {
+			redactTokens(t)
+			return t, nil
+		}
+	} else {
+		// Load failures (missing file, bad mode, bad JSON) need no
+		// serialization: report them without acquiring locks.
+		// Fall through to the locked path only when the file exists but
+		// needs a refresh; re-check there. To keep it simple and preserve
+		// error text, return Load errors directly unless refresh is needed.
+		// We cannot tell without the file, so return the error.
+		// However a concurrent refresh may have just fixed it; the locked
+		// path re-reads. Distinguish: if the error is "needs refresh"-like
+		// it never is — Load never reports expiry. So return directly.
+		// The only case that needs the lock is a present-but-stale file,
+		// which Load returns successfully. Hence any Load error is final.
+		return Tokens{}, err
+	}
 	full, err := ResolvePath(path)
 	if err != nil {
 		return Tokens{}, err
 	}
 	mu := lockFor(full)
-	mu.Lock()
+	if err := lockMutexContext(ctx, mu); err != nil {
+		return Tokens{}, err
+	}
 	defer mu.Unlock()
 	var out Tokens
-	var refreshErr error
-	lockErr := withRefreshFileLock(full, func() error {
+	lockErr := withRefreshFileLockContext(ctx, full, func() error {
+		if err := ctx.Err(); err != nil {
+			return err
+		}
 		t, err := Load(path)
 		if err != nil {
 			return err
@@ -517,7 +607,6 @@ func GetValidTokens(ctx context.Context, do Doer, path string) (Tokens, error) {
 		}
 		next, err := Refresh(ctx, do, t.RefreshToken)
 		if err != nil {
-			refreshErr = err
 			return fmt.Errorf("chatgpt token refresh failed; run `q-agent login chatgpt` again: %w", err)
 		}
 		if next.AccountID == "" {
@@ -535,9 +624,6 @@ func GetValidTokens(ctx context.Context, do Doer, path string) (Tokens, error) {
 	if lockErr != nil {
 		return Tokens{}, lockErr
 	}
-	if refreshErr != nil {
-		return Tokens{}, refreshErr
-	}
 	return out, nil
 }
 
@@ -552,18 +638,36 @@ func GetValidToken(ctx context.Context, do Doer, path string) (string, error) {
 }
 
 // RefreshAndSaveWithStale forces a refresh (used for a 401 retry) but first
-// re-reads under the per-path lock: if another goroutine already rotated past
-// staleAccess, its fresh token is reused instead of spending the new refresh.
+// re-reads under the cancellable per-path lock: if another goroutine already
+// rotated past staleAccess, its fresh token is reused instead of spending the
+// new refresh. A lock-free fast path covers that reuse case so 401 retries do
+// not block on a stuck holder when the file is already fresh.
 func RefreshAndSaveWithStale(ctx context.Context, do Doer, path, staleAccess string) (Tokens, error) {
+	if err := ctx.Err(); err != nil {
+		return Tokens{}, err
+	}
+	if staleAccess != "" {
+		if t, err := Load(path); err == nil {
+			if t.AccessToken != staleAccess && !t.NeedsRefresh(time.Now()) {
+				redactTokens(t)
+				return t, nil
+			}
+		}
+	}
 	full, err := ResolvePath(path)
 	if err != nil {
 		return Tokens{}, err
 	}
 	mu := lockFor(full)
-	mu.Lock()
+	if err := lockMutexContext(ctx, mu); err != nil {
+		return Tokens{}, err
+	}
 	defer mu.Unlock()
 	var out Tokens
-	lockErr := withRefreshFileLock(full, func() error {
+	lockErr := withRefreshFileLockContext(ctx, full, func() error {
+		if err := ctx.Err(); err != nil {
+			return err
+		}
 		t, err := Load(path)
 		if err != nil {
 			return err

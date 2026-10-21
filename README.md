@@ -72,7 +72,7 @@ aren't supported; q-agent doesn't include an interactive browser or stock-price 
 You'll need **Linux**, **Go 1.22+**, **Git**, **Make**, a Telegram bot token from
 [@BotFather](https://t.me/BotFather), and a model provider. The example configuration
 uses Ollama with `qwen3`; have Ollama running and that model available, or choose
-another provider in the [setup guide](docs/operations.md#setup).
+another provider in the [setup guide](docs/operations.md#1-setup).
 
 ### 1. Get q-agent
 
@@ -112,7 +112,7 @@ or `/help` to see the available commands.
 
 **Using a group?** Disable bot privacy through BotFather, then mention the bot,
 reply to it, or mention it (for example `<request> @your_bot`). Replies stay in the original topic.
-See the [group setup details](docs/operations.md#setup).
+See the [group setup details](docs/operations.md#1-setup).
 
 ### Keep it running with systemd
 
@@ -147,21 +147,22 @@ The update command installs the latest GitHub Release for Linux amd64 or arm64
 over the executable you invoked. If you run from the source checkout, use
 `./bin/q-agent update`. It preserves configuration and chat data; restart your
 running service when ready to use the new version. See the
-[upgrade guide](docs/operations.md#upgrading) for permissions and release details.
+[upgrade guide](docs/operations.md#6-upgrading) for permissions and release details.
 
 For a systemd user service, configured administrators can instead send `/update`
-or `/restart` in a private Telegram chat. `/update` also works for a foreground
-`serve` process, installing without stopping and asking for a manual restart.
-These host-side commands do not call
+or `/restart` in a private Telegram chat. Both also work for a foreground
+`serve` process via a detached helper (SIGTERM + re-exec); without re-exec
+argv, `/restart` is rejected and `/update` installs without stopping and asks
+for a manual restart. These host-side commands do not call
 the model and also work in sandbox mode. See the
-[service administration setup](docs/systemd.md#telegram-administration).
+[service administration setup](docs/systemd.md#restart-and-update).
 
 ### Telegram commands
 
 | Command | What it does |
 | --- | --- |
-| `/update` | Install the latest stable GitHub Release and restart (systemd) or install without stopping (foreground serve); private administrator only. |
-| `/restart` | Restart the systemd user service; private administrator only. |
+| `/update` | Install the latest stable GitHub Release and restart (systemd or foreground serve with re-exec; otherwise install without stopping); private administrator only. |
+| `/restart` | Restart the service (systemd or foreground re-exec); private administrator only. |
 | `/status` | Show your provider, model, activity, process RSS memory, and current settings — even while busy. |
 | `/models` | Browse the selected provider’s models and switch this chat’s model. |
 | `/provider <name\|default>` | Select a configured provider for this chat/group; `/provider` lists choices. |
@@ -177,62 +178,37 @@ the model and also work in sandbox mode. See the
 
 Send a message to give the agent a task. In groups, mention the bot or reply to it; private chats accept text directly. Address commands to your bot, for example `/status@your_bot`.
 
-**Per-chat model-step limit**
+**Photo input**
 
-Use `/max_steps` to view the effective maximum number of model requests per
-agent task, `/max_steps 20` to set it to a positive integer, and
-`/max_steps default` to inherit `[limits].max_steps` from the configuration.
-The setting persists across restarts and `/new`, and is shared by all topics
-in a chat/group, including scheduled agent tasks. Changes are rejected while
-the chat has an active task. `/settings reset` clears this override too.
-Changing the limit does not clear conversation history or change the task timeout. In groups, address the command to the bot,
-for example `/max_steps@your_bot 20`.
+Send a Telegram photo with a question in its caption. In groups, include
+`@your_bot` in the caption, or reply to a photo with `@your_bot` and your question.
+Private chats also accept photos without captions (the bot describes the image).
+Photos received while your task is running become follow-up input at the next safe
+boundary. Use a vision-capable model; text-only models may reject image input.
+The largest Telegram photo size is downloaded, up to 10 MB per image. Images are
+sent to your configured model provider for that task only; binary data and file
+IDs are not saved in conversation history. Resend/reply to the image for later
+tasks. Albums and images uploaded as documents are not supported.
 
-When a running task hits the step limit, provider error, or timeout, its
-original request, applied follow-ups, failure reason, and bounded tool observations
-are saved in this topic's short-term history. Adjust the limit (for example
-`/max_steps 32`) and send a follow-up such as "continue" in the same topic.
-Completed tool calls are not automatically replayed. Records persist across
-restart but follow the ordinary history retention limits; `/new` clears them.
-Explicit cancellation does not add the cancelled run to history. This is saved
-context, not an exact execution checkpoint or recovery from a process crash.
-
-Successful interactive and scheduled tasks are captured in a durable memory
-journal before prompt history is bounded. Startup and nightly digests process
-that journal across all topics. `/new`, model/provider changes, and execution
-mode changes retain pending sources. `/forget` clears notes and pending sources
-for the entire chat; a running task may add a new source when it finishes.
-
-Memory uses hard UTF-8 byte limits. Pending sources default to 4 MiB; overflow
-removes the oldest sources with a warning and loss counters. Exceptional events
-retain a marked head and tail within 256 KiB. Old summaries survive the one-time
-storage migration within the configured budget; pre-upgrade pending history is
-outside the new baseline and is not imported. See [memory operations](docs/operations.md#long-term-memory).
-
-`/status` reports the q-agent bot process's current resident memory (RSS) in MiB,
-read from Linux `/proc/self/status` on each request. This is physical resident
-memory, not virtual size, Go heap usage, or a historical peak. It includes shared
-resident pages and excludes sandbox workers and other child processes. If the
-kernel metric cannot be read, it shows `Unavailable` instead of a substitute.
-
-**Want to adjust a task while it runs?** Send another message in the same
-chat/topic. Your follow-up steers your current task at the next safe boundary,
-without cancelling an operation already in progress. Only the task's original
-sender can steer it; other topics and users do not change its instructions.
-Follow-ups still waiting to be consumed are merged in order and sent together.
-Control commands such as `/status` and `/cancel` keep their usual behavior.
+Full behavior — history clearing, busy rules, steering, schedules, memory —
+lives in [talking to the bot](docs/operations.md#3-talking-to-the-bot).
+In short: `/provider` / `/model` switches start fresh topic history next task;
+failed tasks save bounded context you can continue with a follow-up;
+`/status` shows live RSS; new text in the same chat/topic steers the running
+task at the next safe boundary.
 
 ## A few things worth knowing
 
 - **It runs where you host it.** By default, tools use your Linux service
   account's permissions. Chat folders organize files; they are not security
-  boundaries. An optional [Debian sandbox](docs/operations.md#sandbox-opt-in)
+  boundaries. An optional [Debian sandbox](docs/operations.md#2-how-tools-run-host-vs-sandbox)
   adds filesystem isolation.
 - **Schedules are minute-level, not instant.** Busy tasks may wait. Short
   outages have a five-minute catch-up window; interrupted agent work isn't
   automatically retried.
-- **The experience is text-first.** Attachments and streaming Telegram replies
-  aren't supported yet. Provider charges, if any, depend on your chosen service.
+- **Attachment support is limited.** Telegram photos are supported as model
+  input; documents, video, audio, and albums are not. Provider charges, if any,
+  depend on your chosen service.
 
 Interactive terminal apps, REPLs and temporary servers can use task-scoped
 [process sessions](docs/operations.md#interactive-process-sessions). Browser

@@ -172,6 +172,9 @@ func (p *Policy) line(line string) string {
 		for _, literal := range p.literals {
 			part = protect(part, func(piece string) string { return strings.ReplaceAll(piece, literal, Marker) })
 		}
+		for _, literal := range dynamicSnapshot() {
+			part = protect(part, func(piece string) string { return strings.ReplaceAll(piece, literal, Marker) })
+		}
 		part = tokens.ReplaceAllString(part, Marker)
 		part = bearer.ReplaceAllString(part, Marker)
 		for _, pattern := range p.patterns {

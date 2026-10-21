@@ -24,6 +24,16 @@ thinking = ""
 # [providers.opencode-go]
 # model = "YOUR_OPENCODE_MODEL"
 # api_key_env = "OPENCODE_GO_API_KEY"
+#
+# ChatGPT subscription (no API key). Run `q-agent login chatgpt` first,
+# then switch with `q-agent models set --provider chatgpt --model gpt-5.6-codex`.
+# [providers.chatgpt]
+# model = "gpt-5.6-codex"
+
+# ChatGPT OAuth file written by `q-agent login chatgpt`. Empty uses the
+# default ~/.config/q-agent/chatgpt-oauth.json (0600, owner-only, no symlink).
+# [chatgpt]
+# oauth_path = "~/.config/q-agent/chatgpt-oauth.json"
 
 [telegram]
 token_env = "TELEGRAM_BOT_TOKEN"

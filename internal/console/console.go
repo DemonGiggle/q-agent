@@ -26,6 +26,7 @@ const Help = `q-agent — Telegram agent and local configuration console
 Human menus (require a terminal):
   q-agent models [--config FILE]
   q-agent config [--config FILE]
+  q-agent login chatgpt [--config FILE]
 
 Automation (never prompts; --json for machine-readable output):
   q-agent models show|list|providers [--config FILE] [--json]
@@ -67,13 +68,21 @@ func run(args []string, in io.Reader, out, errOut io.Writer, terminal bool) (boo
 		return true, err
 	}
 	group := args[0]
-	if group != "models" && group != "config" {
+	if group != "models" && group != "config" && group != "login" {
 		return false, nil
 	}
 	c := &console{in: bufio.NewReader(in), out: out, errOut: errOut, terminal: terminal, path: config.DefaultPath}
 	rest, err := c.options(args[1:])
 	if err != nil {
 		return true, err
+	}
+	if group == "login" {
+		if len(rest) > 0 && (rest[0] == "--help" || rest[0] == "-h") {
+			_, err := fmt.Fprint(out, Help)
+			return true, err
+		}
+		// Login is always interactive; it never has a menu or JSON mode.
+		return true, c.login(rest)
 	}
 	if len(rest) > 0 && (rest[0] == "--help" || rest[0] == "-h" ||
 		(len(rest) == 2 && (rest[1] == "--help" || rest[1] == "-h"))) {
@@ -245,6 +254,27 @@ func (c *console) action(group, action string, args []string) error {
 	}
 }
 func (c *console) listModels(cfg config.Config) error {
+	if cfg.Provider.Name == "chatgpt" {
+		p, err := llm.New(cfg.Provider.Name, llm.Config{BaseURL: cfg.Provider.BaseURL, ChatGPTOAuthPath: cfg.ChatGPT.OAuthPath, HTTP: &http.Client{Timeout: 15 * time.Second}})
+		if err != nil {
+			return fmt.Errorf("cannot initialize provider")
+		}
+		lister, ok := p.(llm.ModelLister)
+		if !ok {
+			return fmt.Errorf("provider does not support model listing")
+		}
+		ctx, cancel := context.WithTimeout(context.Background(), 15*time.Second)
+		defer cancel()
+		models, err := lister.Models(ctx)
+		if err != nil {
+			return fmt.Errorf("cannot list provider models; check login, endpoint and connectivity (run `q-agent login chatgpt`)")
+		}
+		sort.Strings(models)
+		if models == nil {
+			models = []string{}
+		}
+		return c.output(models)
+	}
 	key, err := cfg.Provider.APIKey()
 	if err != nil {
 		return fmt.Errorf("cannot read provider credential; check its reference and permissions")
@@ -432,7 +462,7 @@ func (c *console) editModels() error {
 	if err != nil {
 		return err
 	}
-	name, err := c.prompt(fmt.Sprintf("Provider [%s] (ollama/openai/opencode-go): ", cfg.Provider.Name))
+	name, err := c.prompt(fmt.Sprintf("Provider [%s] (ollama/openai/opencode-go/chatgpt): ", cfg.Provider.Name))
 	if err != nil {
 		return err
 	}

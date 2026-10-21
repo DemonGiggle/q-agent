@@ -12,6 +12,7 @@ import (
 	"os/signal"
 	"path/filepath"
 	"q-agent/internal/agent"
+	"q-agent/internal/chatgptoauth"
 	"q-agent/internal/config"
 	"q-agent/internal/console"
 	"q-agent/internal/host"
@@ -191,6 +192,23 @@ func serveWithMaintenance(ctx context.Context, c config.Config, policy *redactio
 	providerKeys := map[string]string{}
 	credentialEnvs := []string{c.Telegram.TokenEnv}
 	for name, provider := range configuredProviders(c) {
+		if provider.Name == "chatgpt" {
+			// Subscription auth: no API key. Fail fast with a usable token
+			// so the operator runs `q-agent login chatgpt` before serve.
+			// Load alone only checks file shape; EnsureValid also honors
+			// expiry by refreshing now and fails when no refresh token
+			// can produce a usable access token.
+			preflightCtx, cancel := context.WithTimeout(ctx, 30*time.Second)
+			tokens, err := chatgptoauth.EnsureValid(preflightCtx, &http.Client{Timeout: 30 * time.Second}, c.ChatGPT.OAuthPath)
+			cancel()
+			if err != nil {
+				return fmt.Errorf("chatgpt OAuth for provider %s: %w", name, err)
+			}
+			policy = policy.WithValues([]string{tokens.AccessToken, tokens.RefreshToken})
+			redaction.AddSecrets(tokens.AccessToken, tokens.RefreshToken)
+			providerKeys[name] = ""
+			continue
+		}
 		key, err := provider.APIKey()
 		if err != nil {
 			return err
@@ -261,6 +279,9 @@ func serveWithMaintenance(ctx context.Context, c config.Config, policy *redactio
 		log.Printf("[SERVICE] Runtime error reported | error=%q", policy.Text(redaction.Terminal, err.Error()))
 	}}
 	management.StateDir, management.Version, management.Notify = c.StateDir, version, bot.Send
+	if len(management.ServeArgv) == 0 && len(os.Args) > 1 && os.Args[1] == "serve" {
+		management.ServeArgv = append([]string(nil), os.Args[1:]...)
+	}
 	if c.Sandbox.Enabled {
 		management.Worker = c.Sandbox.Worker
 	}
@@ -374,6 +395,20 @@ func configuredProviderFactory(c config.Config, providerKeys map[string]string, 
 		settings, ok := c.ProviderByName(conversation.Provider)
 		if !ok {
 			return nil, fmt.Errorf("provider %q is not configured", conversation.Provider)
+		}
+		if settings.Name == "chatgpt" {
+			p, err := llm.New(settings.Name, llm.Config{BaseURL: settings.BaseURL, ChatGPTOAuthPath: c.ChatGPT.OAuthPath, HTTP: httpClient})
+			if err != nil {
+				return nil, err
+			}
+			if conversation.Identity != "" {
+				if identity, ok := p.(interface{ RestoreSessionIdentity(string) error }); ok {
+					if err = identity.RestoreSessionIdentity(conversation.Identity); err != nil {
+						return nil, err
+					}
+				}
+			}
+			return p, nil
 		}
 		p, err := llm.New(settings.Name, llm.Config{BaseURL: settings.BaseURL, APIKey: providerKeys[settings.Name], HTTP: httpClient})
 		if err != nil {

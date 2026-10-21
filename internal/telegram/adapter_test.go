@@ -173,3 +173,39 @@ func TestModelsAddressingAndCallbackNormalization(t *testing.T) {
 		}
 	}
 }
+
+func TestNormalizeIncomingPhotos(t *testing.T) {
+	bot := User{ID: 99, Username: "our_bot"}
+	for _, tc := range []struct {
+		name, raw string
+		accepted  bool
+		ids       int
+	}{
+		{"caption mention", `{"chat":{"id":-10,"type":"group"},"caption":"😀 @OUR_BOT 看看","caption_entities":[{"type":"mention","offset":3,"length":8}],"photo":[{"file_id":"small","width":10,"height":10},{"file_id":"large","width":100,"height":100}]}`, true, 1},
+		{"mention only", `{"chat":{"type":"group"},"caption":"@our_bot","photo":[{"file_id":"a"}]}`, true, 1},
+		{"private photo", `{"chat":{"type":"private"},"photo":[{"file_id":"a"}]}`, true, 1},
+		{"unaddressed photo", `{"chat":{"type":"group"},"photo":[{"file_id":"a"}]}`, false, 0},
+		{"reply photo with mention", `{"chat":{"type":"group"},"text":"@our_bot describe","reply_to_message":{"photo":[{"file_id":"a"}]}}`, true, 1},
+		{"reply photo without mention", `{"chat":{"type":"group"},"text":"describe","reply_to_message":{"from":{"id":2},"photo":[{"file_id":"a"}]}}`, false, 0},
+		{"other bot", `{"chat":{"type":"group"},"caption":"/help@other","photo":[{"file_id":"a"}]}`, false, 0},
+		{"empty", `{"chat":{"type":"private"}}`, false, 0},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			var m Message
+			if err := json.Unmarshal([]byte(tc.raw), &m); err != nil {
+				t.Fatal(err)
+			}
+			m.From = &User{ID: 1}
+			out, ok := Normalize(Update{Message: &m}, bot)
+			if ok != tc.accepted || len(out.PhotoIDs) != tc.ids {
+				t.Fatalf("ok=%v out=%+v", ok, out)
+			}
+			if ok && strings.TrimSpace(out.Text) == "" {
+				t.Fatal("missing default prompt")
+			}
+			if tc.name == "caption mention" && (out.PhotoIDs[0] != "large" || strings.Contains(out.Text, "OUR_BOT")) {
+				t.Fatalf("bad photo/mention: %+v", out)
+			}
+		})
+	}
+}

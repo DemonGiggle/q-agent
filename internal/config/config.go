@@ -25,6 +25,7 @@ type Config struct {
 	Sandbox   Sandbox             `toml:"sandbox"`
 	Limits    Limits              `toml:"limits"`
 	Memory    Memory              `toml:"memory"`
+	ChatGPT   ChatGPT             `toml:"chatgpt"`
 }
 type Provider struct {
 	Name       string `toml:"name"`
@@ -33,6 +34,13 @@ type Provider struct {
 	APIKeyEnv  string `toml:"api_key_env"`
 	APIKeyPath string `toml:"api_key_path"`
 	Thinking   string `toml:"thinking"`
+}
+
+// ChatGPT holds the console-only ChatGPT OAuth settings. OAuthPath points at
+// the JSON file written by `q-agent login chatgpt`. Empty means the default
+// ~/.config/q-agent/chatgpt-oauth.json. It never holds a secret itself.
+type ChatGPT struct {
+	OAuthPath string `toml:"oauth_path"`
 }
 type Telegram struct {
 	TokenEnv      string  `toml:"token_env"`
@@ -248,6 +256,12 @@ func Load(path string) (Config, error) {
 	if err != nil {
 		return c, err
 	}
+	if c.ChatGPT.OAuthPath != "" {
+		c.ChatGPT.OAuthPath, err = absolute(c.ChatGPT.OAuthPath, filepath.Dir(path))
+		if err != nil {
+			return c, err
+		}
+	}
 	if c.Sandbox.BaseImage == "" {
 		c.Sandbox.BaseImage = filepath.Join(c.StateDir, "images", "debian-trixie.tar")
 	} else {
@@ -435,7 +449,7 @@ func (c Config) ProviderByName(name string) (Provider, bool) {
 }
 
 func normalizeProvider(p *Provider, dir string) error {
-	if p.Name != "openai" && p.Name != "ollama" && p.Name != "opencode-go" {
+	if p.Name != "openai" && p.Name != "ollama" && p.Name != "opencode-go" && p.Name != "chatgpt" {
 		return fmt.Errorf("unknown provider %q", p.Name)
 	}
 	if p.Model == "" {
@@ -457,6 +471,9 @@ func normalizeProvider(p *Provider, dir string) error {
 		case "opencode-go":
 			p.APIKeyEnv = "OPENCODE_GO_API_KEY"
 		}
+	}
+	if p.Name == "chatgpt" && (p.APIKeyEnv != "" || p.APIKeyPath != "") {
+		return fmt.Errorf("provider chatgpt uses ChatGPT OAuth (q-agent login chatgpt); clear api_key_env and api_key_path")
 	}
 	return nil
 }

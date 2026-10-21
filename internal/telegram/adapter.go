@@ -21,15 +21,24 @@ type Entity struct {
 	Length int    `json:"length"`
 	User   *User  `json:"user,omitempty"`
 }
+type PhotoSize struct {
+	FileID   string `json:"file_id"`
+	Width    int    `json:"width"`
+	Height   int    `json:"height"`
+	FileSize int64  `json:"file_size,omitempty"`
+}
+
 type Message struct {
-	ID       int64    `json:"message_id"`
-	TopicID  int64    `json:"message_thread_id,omitempty"`
-	From     *User    `json:"from"`
-	Chat     Chat     `json:"chat"`
-	Text     string   `json:"text"`
-	Caption  string   `json:"caption,omitempty"`
-	Entities []Entity `json:"entities"`
-	Reply    *Message `json:"reply_to_message,omitempty"`
+	Photo           []PhotoSize `json:"photo,omitempty"`
+	CaptionEntities []Entity    `json:"caption_entities,omitempty"`
+	ID              int64       `json:"message_id"`
+	TopicID         int64       `json:"message_thread_id,omitempty"`
+	From            *User       `json:"from"`
+	Chat            Chat        `json:"chat"`
+	Text            string      `json:"text"`
+	Caption         string      `json:"caption,omitempty"`
+	Entities        []Entity    `json:"entities"`
+	Reply           *Message    `json:"reply_to_message,omitempty"`
 }
 type CallbackQuery struct {
 	ID      string   `json:"id"`
@@ -54,7 +63,7 @@ func entityText(text string, e Entity) string {
 // Normalize filters group addressing after Telegram privacy mode is disabled.
 func Normalize(update Update, bot User) (platform.Message, bool) {
 	if q := update.Callback; q != nil {
-		if q.ID == "" || q.From == nil || q.From.IsBot || q.Message == nil || q.Message.From == nil || q.Message.From.ID != bot.ID || !strings.HasPrefix(q.Data, "models:") {
+		if q.ID == "" || q.From == nil || q.From.IsBot || q.Message == nil || q.Message.From == nil || q.Message.From.ID != bot.ID || (!strings.HasPrefix(q.Data, "models:") && !strings.HasPrefix(q.Data, "providers:")) {
 			return platform.Message{}, false
 		}
 		m := q.Message
@@ -64,20 +73,26 @@ func Normalize(update Update, bot User) (platform.Message, bool) {
 		return platform.Message{Platform: "telegram", ChatID: m.Chat.ID, TopicID: m.TopicID, UserID: q.From.ID, MessageID: m.ID, UpdateID: update.ID, CallbackID: q.ID, CallbackData: q.Data}, true
 	}
 	m := update.Message
-	if m == nil || m.From == nil || m.From.IsBot || strings.TrimSpace(m.Text) == "" {
+	if m == nil || m.From == nil || m.From.IsBot {
 		return platform.Message{}, false
 	}
 	private := m.Chat.Type == "private"
 	if !private && m.Chat.Type != "group" && m.Chat.Type != "supergroup" {
 		return platform.Message{}, false
 	}
-	text := strings.TrimSpace(m.Text)
-	fields := strings.Fields(text)
-	first := fields[0]
+	raw, entities := m.Text, m.Entities
+	if strings.TrimSpace(raw) == "" {
+		raw, entities = m.Caption, m.CaptionEntities
+	}
+	text := strings.TrimSpace(raw)
+	first := ""
+	if fields := strings.Fields(text); len(fields) > 0 {
+		first = fields[0]
+	}
 	addressed := private || m.Reply != nil && m.Reply.From != nil && m.Reply.From.ID == bot.ID
 	mention := "@" + bot.Username
-	for _, entity := range m.Entities {
-		value := entityText(m.Text, entity)
+	for _, entity := range entities {
+		value := entityText(raw, entity)
 		if entity.Type == "mention" && strings.EqualFold(value, mention) || entity.Type == "text_mention" && entity.User != nil && entity.User.ID == bot.ID {
 			addressed = true
 			if entity.Type == "mention" {
@@ -123,8 +138,15 @@ func Normalize(update Update, bot User) (platform.Message, bool) {
 		}
 	}
 	text = strings.TrimSpace(text)
-	if !addressed || text == "" {
+	photos := photoIDs(m)
+	if m.Reply != nil {
+		photos = append(photos, photoIDs(m.Reply)...)
+	}
+	if !addressed || text == "" && len(photos) == 0 {
 		return platform.Message{}, false
+	}
+	if text == "" {
+		text = "Describe the attached image."
 	}
 	// /new and /cancel with a mention in place of a command target.
 	if strings.HasPrefix(text, "/new") || strings.HasPrefix(text, "/cancel") {
@@ -133,7 +155,7 @@ func Normalize(update Update, bot User) (platform.Message, bool) {
 			text = parts[0]
 		}
 	}
-	out := platform.Message{Platform: "telegram", ChatID: m.Chat.ID, TopicID: m.TopicID, UserID: m.From.ID, MessageID: m.ID, UpdateID: update.ID, Text: text}
+	out := platform.Message{Platform: "telegram", ChatID: m.Chat.ID, TopicID: m.TopicID, UserID: m.From.ID, MessageID: m.ID, UpdateID: update.ID, Text: text, PhotoIDs: photos}
 	if reply := m.Reply; reply != nil {
 		replyText := reply.Text
 		if strings.TrimSpace(replyText) == "" {
@@ -167,4 +189,19 @@ func Split(text string) []string {
 		count += width
 	}
 	return append(parts, text[start:])
+}
+
+// Telegram photo contains multiple sizes of the same image, not separate images.
+func photoIDs(m *Message) []string {
+	var best *PhotoSize
+	for i := range m.Photo {
+		p := &m.Photo[i]
+		if p.FileID != "" && (best == nil || int64(p.Width)*int64(p.Height) > int64(best.Width)*int64(best.Height)) {
+			best = p
+		}
+	}
+	if best == nil {
+		return nil
+	}
+	return []string{best.FileID}
 }

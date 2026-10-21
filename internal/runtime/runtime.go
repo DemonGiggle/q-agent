@@ -59,6 +59,7 @@ type Runtime struct {
 	wg                sync.WaitGroup
 	closed            bool
 	modelMenus        map[string]modelMenu
+	providerMenus     map[string]providerMenu
 	scheduleCancel    context.CancelFunc
 	scheduleDone      chan struct{}
 	scheduleWake      chan struct{}
@@ -162,7 +163,7 @@ func (r *Runtime) Handle(ctx context.Context, m platform.Message) error {
 		r.logf("[TELEGRAM] Chat recording failed | update=%d error=%q", m.UpdateID, r.Options.Redaction.Text(redaction.Terminal, err.Error()))
 	}
 	if m.CallbackID != "" {
-		return r.handleModelCallback(ctx, m)
+		return r.handleCallback(ctx, m)
 	}
 	if fields := strings.Fields(m.Text); len(fields) > 0 && (fields[0] == "/update" || fields[0] == "/restart") {
 		return r.maintenanceCommand(ctx, m, fields)
@@ -172,6 +173,27 @@ func (r *Runtime) Handle(ctx context.Context, m platform.Message) error {
 	}
 	if m.Text == "/models" {
 		return r.showModels(ctx, m)
+	}
+	// Only authorized, accepted messages may cause a Telegram file download.
+	if len(m.PhotoIDs) > 0 && !strings.HasPrefix(m.Text, "/") {
+		loader, ok := r.Sink.(interface {
+			DownloadPhoto(context.Context, string) (llm.Image, error)
+		})
+		if !ok {
+			return r.reply(m, "Image input is unavailable in this adapter.")
+		}
+		if len(m.PhotoIDs) > 2 {
+			return r.reply(m, "Too many attached images (maximum 2 per message).")
+		}
+		for _, id := range m.PhotoIDs {
+			image, err := loader.DownloadPhoto(ctx, id)
+			if err != nil {
+				return r.reply(m, "Could not load the attached image: "+err.Error()+". Please resend it.")
+			}
+			m.Images = append(m.Images, image)
+		}
+		m.PhotoIDs = nil
+		m.Text += "\n\n[Attached image(s) are available for this task only; resend them if needed in a later task.]"
 	}
 	r.mu.Lock()
 	if r.active == nil {
@@ -224,7 +246,7 @@ func (r *Runtime) Handle(ctx context.Context, m platform.Message) error {
 		return r.reply(m, text)
 	case "/help":
 		r.mu.Unlock()
-		return r.reply(m, "**q-agent commands**\n`/update` — Install the latest stable Release and restart (private admin only).\n`/restart` — Restart the systemd user service (private admin only).\n`/status` — Show current runtime, process RSS memory, and safe settings (no model call).\n`/models` — Choose a model for this chat.\n`/provider` <name|default> — Choose this chat’s provider.\n`/model` <id|default> — Set this chat’s model.\n`/think` <level|auto|default> — Set this chat’s thinking.\n`/max_steps` [number|default] — Show or set this chat’s model-step limit.\n`/settings` [reset] — Show settings or restore defaults.\n`/memory` — Show this chat’s long-term memory.\n`/forget` — Clear notes and pending memory sources across all topics; running tasks may add new sources when they finish.\n`/help` — Show this help.\n`/new` — Clear this topic's conversation; keep workspace.\n`/cancel` — Cancel this topic's active task.\n\nSend a message to start a task. Send follow-up text in the same topic to steer your running task. `/cancel` stops the task and pending follow-ups.\n\nIn groups, address commands to @your_bot (e.g. `/status@your_bot`), mention the bot, or reply to it.")
+		return r.reply(m, "**q-agent commands**\n`/update` — Install the latest stable Release and restart (private admin only).\n`/restart` — Restart the systemd user service (private admin only).\n`/status` — Show current runtime, process RSS memory, and safe settings (no model call).\n`/models` — Choose a model for this chat.\n`/provider` — Show providers or choose this chat's provider (`/provider <name|default>` also works).\n`/model` <id|default> — Set this chat’s model.\n`/think` <level|auto|default> — Set this chat’s thinking.\n`/max_steps` [number|default] — Show or set this chat’s model-step limit.\n`/settings` [reset] — Show settings or restore defaults.\n`/memory` — Show this chat’s long-term memory.\n`/forget` — Clear notes and pending memory sources across all topics; running tasks may add new sources when they finish.\n`/help` — Show this help.\n`/new` — Clear this topic's conversation; keep workspace.\n`/cancel` — Cancel this topic's active task.\n\nSend a message to start a task. Send follow-up text in the same topic to steer your running task. `/cancel` stops the task and pending follow-ups.\n\nIn groups, address commands to @your_bot (e.g. `/status@your_bot`), mention the bot, or reply to it.")
 	case "/memory":
 		text := r.memoryShow(m)
 		r.mu.Unlock()
@@ -331,7 +353,9 @@ func (r *Runtime) run(ctx context.Context, m platform.Message, runID string) boo
 					options.Model = conversation.Model
 					options.Thinking = conversation.Thinking
 					options.MaxSteps = conversation.MaxSteps
-					options.NextInput = func(final bool) []string { return r.takeSteer(m.WorkspaceKey(), final) }
+					options.Images = m.Images
+					options.NextInput = nil
+					options.NextMessages = func(final bool) []llm.Message { return r.takeSteer(m.WorkspaceKey(), final) }
 					options.OnSteer = live.Steered
 					live.SetStatus("Working\u2026 contacting " + conversation.Model)
 					toolCount := 0

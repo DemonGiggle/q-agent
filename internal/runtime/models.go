@@ -29,6 +29,12 @@ type modelMenu struct {
 	Expires  time.Time
 }
 
+type providerMenu struct {
+	Route     platform.Message
+	Providers []string
+	Expires   time.Time
+}
+
 type modelSink interface {
 	EditModels(context.Context, platform.Message, string, *platform.InlineKeyboard) error
 	AnswerCallback(context.Context, string, string) error
@@ -180,7 +186,77 @@ func modelPage(token string, menu modelMenu, current string, page int) (string, 
 	return telegram.Format(raw), keyboard
 }
 
-func (r *Runtime) handleModelCallback(ctx context.Context, m platform.Message) error {
+func (r *Runtime) showProviders(m platform.Message) error {
+	// Caller holds r.mu (chatSettings bare /provider path).
+	names := []string{r.Config.Provider.Name}
+	for name := range r.Config.Providers {
+		names = append(names, name)
+	}
+	sort.Strings(names)
+	current := ""
+	if selected, err := r.chatModel(m); err == nil {
+		current = selected.Provider
+	} else if raw, err := r.Store.ChatModel(m.WorkspaceKey()); err == nil && raw.Provider != "" {
+		current = raw.Provider
+	}
+	var tokenBytes [8]byte
+	if _, err := rand.Read(tokenBytes[:]); err != nil {
+		return err
+	}
+	token := hex.EncodeToString(tokenBytes[:])
+	menu := providerMenu{Route: m, Providers: names, Expires: time.Now().Add(modelMenuLifetime)}
+	if r.closed {
+		return context.Canceled
+	}
+	if r.providerMenus == nil {
+		r.providerMenus = map[string]providerMenu{}
+	}
+	for key, old := range r.providerMenus {
+		if time.Now().After(old.Expires) || old.Route.WorkspaceKey() == m.WorkspaceKey() && old.Route.UserID == m.UserID && old.Route.TopicID == m.TopicID {
+			delete(r.providerMenus, key)
+		}
+	}
+	if len(r.providerMenus) >= 128 {
+		return r.reply(m, "Too many open provider menus. Try again later.")
+	}
+	r.providerMenus[token] = menu
+	text, keyboard := providerPage(token, menu, current)
+	return r.Store.QueueKeyboard(m, []string{text}, keyboard)
+}
+
+func providerPage(token string, menu providerMenu, current string) (string, *platform.InlineKeyboard) {
+	keyboard := &platform.InlineKeyboard{}
+	for i, name := range menu.Providers {
+		label := name
+		if name == current {
+			label = "✓ " + name
+		}
+		runes := []rune(label)
+		if len(runes) > 60 {
+			label = string(runes[:59]) + "…"
+		}
+		keyboard.Rows = append(keyboard.Rows, []platform.InlineButton{{Text: label, Data: fmt.Sprintf("providers:%s:s:%d", token, i)}})
+	}
+	raw := fmt.Sprintf("Choose a provider\nCurrent: %s\n\nApplies to this entire chat (all topics). Switching starts fresh model history with the new provider's default model. Use /provider default to follow the global default. Menus expire after 15 minutes.", current)
+	return telegram.Format(raw), keyboard
+}
+
+func (r *Runtime) handleCallback(ctx context.Context, m platform.Message) error {
+	parts := strings.Split(m.CallbackData, ":")
+	if len(parts) != 4 {
+		return nil
+	}
+	switch parts[0] {
+	case "models":
+		return r.handleModelCallback(ctx, m, parts)
+	case "providers":
+		return r.handleProviderCallback(ctx, m, parts)
+	default:
+		return nil
+	}
+}
+
+func (r *Runtime) handleModelCallback(ctx context.Context, m platform.Message, parts []string) error {
 	sink, ok := r.Sink.(modelSink)
 	if !ok {
 		return nil
@@ -196,7 +272,6 @@ func (r *Runtime) handleModelCallback(ctx context.Context, m platform.Message) e
 			r.report(sink.EditModels(ctx, m, editText, editKeyboard))
 		}
 	}()
-	parts := strings.Split(m.CallbackData, ":")
 	if len(parts) != 4 || parts[0] != "models" {
 		return nil
 	}
@@ -259,6 +334,11 @@ func (r *Runtime) handleModelCallback(ctx context.Context, m platform.Message) e
 				delete(r.modelMenus, token)
 			}
 		}
+		for token, old := range r.providerMenus {
+			if old.Route.WorkspaceKey() == m.WorkspaceKey() {
+				delete(r.providerMenus, token)
+			}
+		}
 		answer = "Model selected."
 		text := "Chat model: " + menu.Models[index] + "\nApplies to all topics in this chat. The next task will use this model."
 		if err = r.reply(m, text); err != nil {
@@ -266,6 +346,102 @@ func (r *Runtime) handleModelCallback(ctx context.Context, m platform.Message) e
 		}
 		editText, editKeyboard = telegram.Format(text), &platform.InlineKeyboard{Rows: [][]platform.InlineButton{}}
 	}
+	return nil
+}
+
+func (r *Runtime) handleProviderCallback(ctx context.Context, m platform.Message, parts []string) error {
+	sink, ok := r.Sink.(modelSink)
+	if !ok {
+		return nil
+	}
+	ctx, cancel := context.WithTimeout(ctx, 10*time.Second)
+	defer cancel()
+	answer := "This menu expired. Send /provider again."
+	var editText string
+	var editKeyboard *platform.InlineKeyboard
+	defer func() {
+		r.report(sink.AnswerCallback(ctx, m.CallbackID, answer))
+		if editText != "" {
+			r.report(sink.EditModels(ctx, m, editText, editKeyboard))
+		}
+	}()
+	if len(parts) != 4 || parts[0] != "providers" || parts[2] != "s" {
+		return nil
+	}
+	index, err := strconv.Atoi(parts[3])
+	if err != nil || index < 0 {
+		return nil
+	}
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	if r.closed {
+		return context.Canceled
+	}
+	menu, ok := r.providerMenus[parts[1]]
+	if !ok || time.Now().After(menu.Expires) {
+		return nil
+	}
+	if menu.Route.ChatID != m.ChatID || menu.Route.TopicID != m.TopicID || menu.Route.UserID != m.UserID {
+		answer = "Open your own menu with /provider."
+		return nil
+	}
+	if index >= len(menu.Providers) {
+		return nil
+	}
+	if _, busy := r.active[m.WorkspaceKey()]; busy {
+		answer = "Chat is busy. Finish or cancel the active task first."
+		return nil
+	}
+	chosen := menu.Providers[index]
+	if _, ok := r.Config.ProviderByName(chosen); !ok {
+		answer = "Provider is no longer configured. Send /provider again."
+		return nil
+	}
+	selected, err := r.chatModel(m)
+	if err == nil && selected.Provider == chosen {
+		// Already on this provider; just close the menu.
+		for token, old := range r.providerMenus {
+			if old.Route.WorkspaceKey() == m.WorkspaceKey() {
+				delete(r.providerMenus, token)
+			}
+		}
+		answer = "Provider selected."
+		text := "Chat provider: " + chosen + "\nApplies to all topics in this chat. The next task will use this provider."
+		if err = r.reply(m, text); err != nil {
+			return err
+		}
+		editText, editKeyboard = telegram.Format(text), &platform.InlineKeyboard{Rows: [][]platform.InlineButton{}}
+		return nil
+	}
+	raw, err := r.Store.ChatModel(m.WorkspaceKey())
+	if err != nil {
+		return err
+	}
+	raw.Provider, raw.ProviderPinned = chosen, true
+	raw.Model = ""
+	raw.Revision = parts[1]
+	if err = r.Store.SetChatModel(m.WorkspaceKey(), raw); err != nil {
+		answer = "Unable to save provider settings."
+		return err
+	}
+	// Invalidate all old selectors for this chat; no stale menu can undo a choice.
+	for token, old := range r.modelMenus {
+		if old.Route.WorkspaceKey() == m.WorkspaceKey() {
+			delete(r.modelMenus, token)
+		}
+	}
+	for token, old := range r.providerMenus {
+		if old.Route.WorkspaceKey() == m.WorkspaceKey() {
+			delete(r.providerMenus, token)
+		}
+	}
+	answer = "Provider selected."
+	status := r.statusLocked(m)
+	text := "Chat provider: " + chosen + "\nApplies to all topics in this chat. The next task will use this provider's default model.\n\n" + status
+	if err = r.reply(m, text); err != nil {
+		return err
+	}
+	editText, editKeyboard = telegram.Format("Chat provider: "+chosen+"\nApplies to all topics in this chat. The next task will use this provider's default model."), &platform.InlineKeyboard{Rows: [][]platform.InlineButton{}}
 	return nil
 }
 

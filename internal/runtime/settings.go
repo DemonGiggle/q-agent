@@ -25,6 +25,9 @@ func (r *Runtime) chatSettings(m platform.Message, fields []string) error {
 	}
 	if len(fields) == 1 {
 		if fields[0] == "/provider" {
+			if _, ok := r.Sink.(modelSink); ok {
+				return r.showProviders(m)
+			}
 			names := []string{r.Config.Provider.Name}
 			for name := range r.Config.Providers {
 				names = append(names, name)
@@ -167,6 +170,11 @@ func (r *Runtime) chatSettings(m platform.Message, fields []string) error {
 	for token, menu := range r.modelMenus {
 		if menu.Route.WorkspaceKey() == m.WorkspaceKey() {
 			delete(r.modelMenus, token)
+		}
+	}
+	for token, menu := range r.providerMenus {
+		if menu.Route.WorkspaceKey() == m.WorkspaceKey() {
+			delete(r.providerMenus, token)
 		}
 	}
 	return r.reply(m, "Settings saved for this entire chat (all topics).\n"+r.statusLocked(m))

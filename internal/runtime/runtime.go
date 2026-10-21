@@ -56,6 +56,7 @@ type Runtime struct {
 	wg                sync.WaitGroup
 	closed            bool
 	modelMenus        map[string]modelMenu
+	providerMenus     map[string]providerMenu
 	scheduleCancel    context.CancelFunc
 	scheduleDone      chan struct{}
 	scheduleWake      chan struct{}
@@ -159,7 +160,7 @@ func (r *Runtime) Handle(ctx context.Context, m platform.Message) error {
 		r.logf("[TELEGRAM] Chat recording failed | update=%d error=%q", m.UpdateID, r.Options.Redaction.Text(redaction.Terminal, err.Error()))
 	}
 	if m.CallbackID != "" {
-		return r.handleModelCallback(ctx, m)
+		return r.handleCallback(ctx, m)
 	}
 	if fields := strings.Fields(m.Text); len(fields) > 0 && (fields[0] == "/update" || fields[0] == "/restart") {
 		return r.maintenanceCommand(ctx, m, fields)
@@ -242,7 +243,7 @@ func (r *Runtime) Handle(ctx context.Context, m platform.Message) error {
 		return r.reply(m, text)
 	case "/help":
 		r.mu.Unlock()
-		return r.reply(m, "**q-agent commands**\n`/update` — Install the latest stable Release and restart (private admin only).\n`/restart` — Restart the systemd user service (private admin only).\n`/status` — Show current runtime, process RSS memory, and safe settings (no model call).\n`/models` — Choose a model for this chat.\n`/provider` <name|default> — Choose this chat’s provider.\n`/model` <id|default> — Set this chat’s model.\n`/think` <level|auto|default> — Set this chat’s thinking.\n`/max_steps` [number|default] — Show or set this chat’s model-step limit.\n`/settings` [reset] — Show settings or restore defaults.\n`/memory` — Show this chat’s long-term memory.\n`/forget` — Clear notes and pending memory sources across all topics; running tasks may add new sources when they finish.\n`/help` — Show this help.\n`/new` — Clear this topic's conversation; keep workspace.\n`/cancel` — Cancel this topic's active task.\n\nSend a message to start a task. Send follow-up text in the same topic to steer your running task. `/cancel` stops the task and pending follow-ups.\n\nIn groups, address commands to @your_bot (e.g. `/status@your_bot`), mention the bot, or reply to it.")
+		return r.reply(m, "**q-agent commands**\n`/update` — Install the latest stable Release and restart (private admin only).\n`/restart` — Restart the systemd user service (private admin only).\n`/status` — Show current runtime, process RSS memory, and safe settings (no model call).\n`/models` — Choose a model for this chat.\n`/provider` — Show providers or choose this chat's provider (`/provider <name|default>` also works).\n`/model` <id|default> — Set this chat’s model.\n`/think` <level|auto|default> — Set this chat’s thinking.\n`/max_steps` [number|default] — Show or set this chat’s model-step limit.\n`/settings` [reset] — Show settings or restore defaults.\n`/memory` — Show this chat’s long-term memory.\n`/forget` — Clear notes and pending memory sources across all topics; running tasks may add new sources when they finish.\n`/help` — Show this help.\n`/new` — Clear this topic's conversation; keep workspace.\n`/cancel` — Cancel this topic's active task.\n\nSend a message to start a task. Send follow-up text in the same topic to steer your running task. `/cancel` stops the task and pending follow-ups.\n\nIn groups, address commands to @your_bot (e.g. `/status@your_bot`), mention the bot, or reply to it.")
 	case "/memory":
 		text := r.memoryShow(m)
 		r.mu.Unlock()

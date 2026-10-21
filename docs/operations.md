@@ -189,7 +189,8 @@ address the bot (`/status@your_bot`, `/status @your_bot`, or reply with
 | --- | --- |
 | `/status` | Read-only snapshot: provider, model, activity, memory use, limits. Works while busy, never calls the model. |
 | `/models` | Button picker (8 per page) for this chat's model. Chat-wide, takes effect next task, clears topic history. |
-| `/provider <name\|default>`, `/model <id\|default>` | Same as above as text commands. Provider switch clears the model override. |
+| `/provider`, `/provider <name\|default>` | Button picker for this chat's provider, or same as text command. Provider switch clears the model override. |
+| `/model <id\|default>` | Same as above as text command. |
 | `/think <level\|auto\|default>` | Thinking override for this chat. |
 | `/max_steps [n\|default]`, `/settings [reset]` | Step limit / show or clear all overrides. |
 | `/memory`, `/forget` | Show memory state / clear notes + pending sources for the whole chat. Files, history, schedules stay. |

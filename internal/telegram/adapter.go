@@ -63,7 +63,7 @@ func entityText(text string, e Entity) string {
 // Normalize filters group addressing after Telegram privacy mode is disabled.
 func Normalize(update Update, bot User) (platform.Message, bool) {
 	if q := update.Callback; q != nil {
-		if q.ID == "" || q.From == nil || q.From.IsBot || q.Message == nil || q.Message.From == nil || q.Message.From.ID != bot.ID || !strings.HasPrefix(q.Data, "models:") {
+		if q.ID == "" || q.From == nil || q.From.IsBot || q.Message == nil || q.Message.From == nil || q.Message.From.ID != bot.ID || (!strings.HasPrefix(q.Data, "models:") && !strings.HasPrefix(q.Data, "providers:")) {
 			return platform.Message{}, false
 		}
 		m := q.Message

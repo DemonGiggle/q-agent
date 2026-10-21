@@ -62,10 +62,13 @@ whitespace trimmed. Startup refuses to run if the rules are violated
 Example `service.env` next to the config (systemd only, not a shell script —
 no `export`, no substitution):
 
-```sh
+```text
 TELEGRAM_BOT_TOKEN=[REDACTED]
 OPENAI_API_KEY=sk-...
-chmod 0600 service.env
+```
+
+```sh
+chmod 0600 ~/.config/q-agent/service.env
 ```
 
 ### Providers and models
@@ -131,7 +134,10 @@ the sandbox is refused.
 
 `git clone` therefore persists in both modes — it lands in the chat's
 persistent folder above. `/tmp` and `/run` are the only truly temporary
-places (sandbox mode). Different chats never see each other's folders.
+places (sandbox mode). Only sandbox mode isolates chats: each chat gets
+its own `rootfs` tree. In host mode the per-chat folders are organizational
+only — tools run as the same service account with no path containment, so
+an absolute path or `..` can reach another chat's files.
 Switching modes does **not** migrate files: each mode keeps its own tree,
 and switching clears conversation history (files, cursor, and queued
 replies are kept). Sandbox failures never fall back to host mode.
@@ -320,7 +326,7 @@ make race                 # race detector
 go vet ./...
 make build
 make integration-host     # host-mode service test
-Q_AGENT_IMAGE="~/.local/share/q-agent/images/debian-trixie.tar" make integration
+Q_AGENT_IMAGE="$HOME/.local/share/q-agent/images/debian-trixie.tar" make integration
 ```
 
 Sandbox integration uses a real static worker and isolated rootfs trees.

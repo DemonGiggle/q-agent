@@ -122,9 +122,12 @@ selections remain readable; no migration of the state directory is required.
 
 ### Telegram commands
 
-- `/update`: install the latest stable GitHub Release and restart the systemd
-  user service; configured administrator in an allowed private chat only.
-- `/restart`: restart that service without updating; same restrictions.
+- `/update`: install the latest stable GitHub Release; configured administrator
+  in an allowed private chat only. Under the systemd user service it restarts
+  after installing, while a foreground `serve` process installs without stopping
+  and asks for a manual restart.
+- `/restart`: restart that systemd user service without updating; same
+  restrictions, and unavailable to foreground `serve` processes.
   Both bypass the model, work in host/sandbox modes, and reject requests while
   any agent task is active. They are disabled until `telegram.admin_user_ids`
   is configured. See [Telegram administration](systemd.md#telegram-administration)

@@ -80,6 +80,13 @@ func (c *Controller) Busy() bool {
 // Request validates the actual MainPID, stages a durable request, dispatches a
 // separate transient service, then arms it only after Telegram acknowledged the
 // pre-stop notice. No shell, sudo, daemon-reload or unit edits are involved.
+//
+// When this process is not MainPID of the systemd user q-agent.service (for
+// example a foreground `./bin/q-agent serve`), /restart is rejected with
+// guidance, while /update performs the same direct download-and-replace as
+// `q-agent update` and reports the result immediately without stopping the
+// process. Foreground updates still require a manual restart to run the new
+// binary.
 func (c *Controller) Request(ctx context.Context, action string, route platform.Message) error {
 	c.mu.Lock()
 	defer c.mu.Unlock()
@@ -95,7 +102,10 @@ func (c *Controller) Request(ctx context.Context, action string, route platform.
 	}
 	out, err := c.control(ctx, "show", serviceUnit, "--property=MainPID", "--value")
 	if err != nil || strings.TrimSpace(string(out)) != strconv.Itoa(os.Getpid()) {
-		return errors.New("maintenance requires this process to be MainPID of the systemd user q-agent.service")
+		if action != "update" {
+			return errors.New("restart requires this process to be MainPID of the systemd user q-agent.service; foreground serve: stop and restart this process manually")
+		}
+		return c.foregroundUpdate(ctx, route)
 	}
 	executable := c.Executable
 	if executable == "" {
@@ -168,6 +178,94 @@ func (c *Controller) Request(ctx context.Context, action string, route platform.
 	r.Phase = "armed"
 	if err := c.save(r); err != nil {
 		return fail(err)
+	}
+	return nil
+}
+
+// foregroundUpdate performs a direct `q-agent update` without stopping the
+// process. It is used when the bot runs as a foreground `serve` process
+// instead of MainPID of the systemd user service. The caller must hold c.mu
+// and have already validated that no other maintenance operation is pending.
+func (c *Controller) foregroundUpdate(ctx context.Context, route platform.Message) error {
+	executable := c.Executable
+	var err error
+	if executable == "" {
+		executable, err = os.Executable()
+		if err != nil {
+			return err
+		}
+	}
+	executable, err = filepath.EvalSymlinks(executable)
+	if err != nil {
+		return err
+	}
+	executable, err = filepath.Abs(executable)
+	if err != nil {
+		return err
+	}
+	if c.Worker != "" {
+		worker, err := filepath.EvalSymlinks(c.Worker)
+		if err != nil || worker != executable {
+			return errors.New("/update requires sandbox.worker to use the service executable; update a separately configured worker manually")
+		}
+	}
+	if c.Notify == nil {
+		return errors.New("maintenance notification transport unavailable")
+	}
+	unlock, err := state.Lock(c.path("lock"))
+	if err != nil {
+		return err
+	}
+	defer unlock()
+	nonce := make([]byte, 12)
+	if _, err := rand.Read(nonce); err != nil {
+		return err
+	}
+	id := hex.EncodeToString(nonce)
+	route.Text, route.CallbackData = "", ""
+	r := request{ID: id, Action: "update", Executable: executable, OldVersion: c.Version,
+		OldPID: os.Getpid(), Phase: "waiting", Route: route}
+	if err := c.save(r); err != nil {
+		return err
+	}
+	fail := func(err error) error {
+		r.Phase, r.Reported = "done", true
+		if saveErr := c.save(r); saveErr != nil {
+			return errors.Join(err, saveErr)
+		}
+		return err
+	}
+	var output strings.Builder
+	opts := update.Options{ExecutablePath: executable, CurrentVersion: c.Version,
+		Stdout: &output, ValidateExecutable: true}
+	runUpdate := c.Update
+	if runUpdate == nil {
+		runUpdate = func(ctx context.Context, o update.Options) error { return update.Run(ctx, nil, o) }
+	}
+	updateCtx, cancel := context.WithTimeout(ctx, 2*time.Minute)
+	err = runUpdate(updateCtx, opts)
+	cancel()
+	if err != nil {
+		return fail(err)
+	}
+	message := strings.TrimSpace(output.String())
+	if message == "" {
+		message = "Update completed."
+	} else if !strings.Contains(message, "already up to date") && !strings.Contains(message, "newer than the latest release") {
+		message += " Restart this process to use the new version."
+	}
+	noticeCtx, cancel := context.WithTimeout(ctx, 10*time.Second)
+	notifyErr := c.Notify(noticeCtx, route, message)
+	cancel()
+	r.Phase, r.Result, r.Reported = "done", message, true
+	if err := c.save(r); err != nil {
+		if notifyErr != nil {
+			return errors.Join(notifyErr, err)
+		}
+		return err
+	}
+	if notifyErr != nil {
+		return notifyErr
 	}
 	return nil
 }

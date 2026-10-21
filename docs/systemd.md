@@ -207,11 +207,18 @@ outside; networking deliberately remains available through the host network.
 ## Telegram administration
 
 `/restart` and `/update` are handled directly by the host, not the model or its
-shell tool, in both host and sandbox modes. They require the running process to
-be the actual `MainPID` of the same account's **user** `q-agent.service`.
-Foreground processes, system-wide units and differently named units are rejected.
+shell tool, in both host and sandbox modes. `/restart` requires the running
+process to be the actual `MainPID` of the same account's **user**
+`q-agent.service`. Foreground processes, system-wide units and differently
+named units are rejected for `/restart`.
+`/update` works in both modes: under systemd it stops the service, installs
+the latest stable Release, checks readiness and rolls back on failure; as a
+foreground `./bin/q-agent serve` process it performs the same direct
+download-and-replace as `q-agent update` without stopping, and asks for a
+manual restart to run the new binary.
 The account needs `systemctl`, `systemd-run`, a working user manager, and write
-access to the installed executable's directory for updates. No sudo is used.
+access to the installed executable's directory for systemd updates. Foreground
+updates only need write access to the executable directory. No sudo is used.
 
 Administration is disabled by default. Add the operator to allowed users and admins:
 
@@ -245,9 +252,13 @@ for an administrator. Neither command invokes the model or provisions a workspac
 - `/restart` stops and starts the service, then waits up to 60 seconds for a
   new MainPID and q-agent's readiness marker. Readiness means normal startup
   checks, Telegram identity lookup, store and scheduler initialization succeeded;
-  it does not prove a model completion or sandbox tool execution.
-- `/update` preserves a same-directory executable backup, stops the service,
-  installs the latest **stable GitHub Release**, and starts it. It never builds
+  it does not prove a model completion or sandbox tool execution. Foreground
+  `serve` processes cannot use `/restart`: stop and restart them manually.
+- `/update` under systemd preserves a same-directory executable backup, stops
+  the service, installs the latest **stable GitHub Release**, and starts it.
+  As a foreground `serve` process it installs the same Release directly without
+  stopping and reports the installed version immediately; restart the process
+  manually to run it. In both modes it never builds
   or pulls `main`, accepts no architecture/URL override, and validates the native
   static ELF before replacement. Download or readiness failure restores the
   previous executable and attempts startup again. A separately configured

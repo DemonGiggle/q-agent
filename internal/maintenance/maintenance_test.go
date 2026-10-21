@@ -100,7 +100,12 @@ func fixture(t *testing.T) *harness {
 		return nil, nil
 	}
 	h.c.Update = func(_ context.Context, opts update.Options) error {
-		if h.pid != 0 || !opts.ValidateExecutable {
+		if !opts.ValidateExecutable {
+			t.Fatal("update ran with validation disabled")
+		}
+		// Systemd helpers run after stop (pid 0); foreground serve updates
+		// run without stopping (pid -1 in the not-managed harness).
+		if h.pid != 0 && h.pid != -1 {
 			t.Fatal("update ran with host active or validation disabled")
 		}
 		if err := os.WriteFile(opts.ExecutablePath, []byte("new executable"), 0751); err != nil {
@@ -108,6 +113,9 @@ func fixture(t *testing.T) *harness {
 		}
 		if h.failUpdate {
 			return errors.New("simulated interrupted update")
+		}
+		if opts.Stdout != nil {
+			fmt.Fprintln(opts.Stdout, "updated q-agent at test from v1.0.0 to v1.1.0")
 		}
 		return nil
 	}
@@ -191,13 +199,14 @@ func TestLifecycleOutcomes(t *testing.T) {
 }
 
 func TestRequestPreconditionsAndFailedNoticeDoNotStop(t *testing.T) {
-	for _, name := range []string{"not managed", "launcher failure", "notification failure", "separate worker", "invalid action"} {
+	for _, name := range []string{"not managed restart", "launcher failure", "notification failure", "separate worker", "invalid action"} {
 		t.Run(name, func(t *testing.T) {
 			h := fixture(t)
 			action := "update"
 			switch name {
-			case "not managed":
+			case "not managed restart":
 				h.pid = -1
+				action = "restart"
 			case "launcher failure":
 				h.failLaunch = true
 			case "notification failure":
@@ -224,6 +233,70 @@ func TestRequestPreconditionsAndFailedNoticeDoNotStop(t *testing.T) {
 				}
 			}
 		})
+	}
+}
+
+func TestForegroundUpdateWithoutSystemd(t *testing.T) {
+	h := fixture(t)
+	h.pid = -1 // Foreground serve: not MainPID of q-agent.service.
+	if err := h.c.Request(context.Background(), "update", route()); err != nil {
+		t.Fatal(err)
+	}
+	if !h.notified {
+		t.Fatal("foreground update did not notify")
+	}
+	for _, command := range h.commands {
+		if strings.Contains(command, "systemctl --user stop ") || strings.Contains(command, "systemd-run") {
+			t.Fatalf("foreground update touched systemd: %s", command)
+		}
+	}
+	r, err := h.c.load()
+	if err != nil || r.Phase != "done" || !r.Reported || r.Action != "update" {
+		t.Fatalf("%+v %v", r, err)
+	}
+	if h.c.Busy() {
+		t.Fatal("completed foreground update blocks work")
+	}
+	if !strings.Contains(r.Result, "updated q-agent") {
+		t.Fatalf("foreground result: %q", r.Result)
+	}
+	data, _ := os.ReadFile(h.c.Executable)
+	if string(data) != "new executable" {
+		t.Fatalf("foreground update did not replace executable: %q", data)
+	}
+	store, err := state.Open(h.c.StateDir, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := h.c.Report(context.Background(), store); err != nil {
+		t.Fatal(err)
+	}
+	if _, ok := store.Pending(); ok {
+		t.Fatal("foreground result replayed via outbox after direct notification")
+	}
+	// A second foreground update is allowed once the previous result was reported.
+	h.notified = false
+	if err := h.c.Request(context.Background(), "update", route()); err != nil {
+		t.Fatal(err)
+	}
+	if !h.notified {
+		t.Fatal("second foreground update did not notify")
+	}
+}
+
+func TestForegroundUpdateFailureReleasesGate(t *testing.T) {
+	h := fixture(t)
+	h.pid = -1
+	h.failUpdate = true
+	if err := h.c.Request(context.Background(), "update", route()); err == nil {
+		t.Fatal("expected update failure")
+	}
+	r, err := h.c.load()
+	if err != nil || r.Phase != "done" || !r.Reported {
+		t.Fatalf("failed foreground update blocked: %+v %v", r, err)
+	}
+	if h.c.Busy() {
+		t.Fatal("failed foreground update blocks work")
 	}
 }
 

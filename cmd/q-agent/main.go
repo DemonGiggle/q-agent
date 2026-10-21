@@ -261,6 +261,9 @@ func serveWithMaintenance(ctx context.Context, c config.Config, policy *redactio
 		log.Printf("[SERVICE] Runtime error reported | error=%q", policy.Text(redaction.Terminal, err.Error()))
 	}}
 	management.StateDir, management.Version, management.Notify = c.StateDir, version, bot.Send
+	if len(management.ServeArgv) == 0 && len(os.Args) > 1 && os.Args[1] == "serve" {
+		management.ServeArgv = append([]string(nil), os.Args[1:]...)
+	}
 	if c.Sandbox.Enabled {
 		management.Worker = c.Sandbox.Worker
 	}

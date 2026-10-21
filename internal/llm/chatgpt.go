@@ -1,15 +1,21 @@
 package llm
 
 import (
+	"bytes"
 	"context"
+	"encoding/json"
 	"fmt"
+	"io"
+	"net/http"
 	"strings"
 
 	"q-agent/internal/chatgptoauth"
 )
 
 // chatGPTBaseURL is the subscription (Codex) endpoint, not the platform
-// api.openai.com API. The Responses wire format is reused.
+// api.openai.com API. The Responses wire format is reused with a Codex
+// request contract: top-level instructions, store:false, and the
+// ChatGPT-Account-Id header.
 const chatGPTBaseURL = "https://chatgpt.com/backend-api/codex"
 
 type chatGPTProvider struct {
@@ -35,35 +41,141 @@ func (p *chatGPTProvider) Name() string { return "chatgpt" }
 
 // Models lists models when the endpoint supports it.
 func (p *chatGPTProvider) Models(ctx context.Context) ([]string, error) {
-	token, err := chatgptoauth.GetValidToken(ctx, p.client, p.tokensPath)
+	creds, err := chatgptoauth.GetValidTokens(ctx, p.client, p.tokensPath)
 	if err != nil {
 		return nil, err
 	}
-	inner := &openAIProvider{baseURL: p.baseURL, apiKey: token, client: p.client, name: "chatgpt"}
-	return inner.Models(ctx)
+	req, err := http.NewRequestWithContext(ctx, http.MethodGet, p.baseURL+"/models", nil)
+	if err != nil {
+		return nil, err
+	}
+	req.Header.Set("Authorization", "Bearer "+creds.AccessToken)
+	if creds.AccountID != "" {
+		req.Header.Set("ChatGPT-Account-Id", creds.AccountID)
+	}
+	resp, err := p.client.Do(req)
+	if err != nil {
+		return nil, err
+	}
+	defer resp.Body.Close()
+	if resp.StatusCode < 200 || resp.StatusCode >= 300 {
+		data, _ := io.ReadAll(io.LimitReader(resp.Body, 1<<20))
+		return nil, fmt.Errorf("provider returned %s: %s", resp.Status, strings.TrimSpace(string(data)))
+	}
+	var decoded struct {
+		Data []struct {
+			ID string `json:"id"`
+		} `json:"data"`
+	}
+	data, err := io.ReadAll(io.LimitReader(resp.Body, 1<<20))
+	if err != nil {
+		return nil, err
+	}
+	if err := json.Unmarshal(data, &decoded); err != nil {
+		return nil, fmt.Errorf("decode models: %w", err)
+	}
+	models := make([]string, 0, len(decoded.Data))
+	for _, m := range decoded.Data {
+		if m.ID != "" {
+			models = append(models, m.ID)
+		}
+	}
+	return models, nil
 }
 
-// Complete sends a Responses request with the OAuth access token, refreshing
-// once on 401 before giving up.
-func (p *chatGPTProvider) Complete(ctx context.Context, input Request, onText StreamCallback) (Response, error) {
-	token, err := chatgptoauth.GetValidToken(ctx, p.client, p.tokensPath)
+// splitCodexMessages lifts system messages into top-level instructions. The
+// Codex backend rejects system roles inside input, so they must not be sent
+// there. Non-system turns keep their order and are encoded with the shared
+// Responses input helper.
+func splitCodexMessages(messages []Message) (string, []Message) {
+	var systems []string
+	rest := make([]Message, 0, len(messages))
+	for _, m := range messages {
+		if m.Role == "system" {
+			if strings.TrimSpace(m.Content) != "" {
+				systems = append(systems, m.Content)
+			}
+			continue
+		}
+		rest = append(rest, m)
+	}
+	return strings.Join(systems, "\n\n"), rest
+}
+
+// codexRequestBody builds the Codex Responses payload. It mirrors
+// completeResponses for tools/thinking/streaming but keeps the Codex
+// contract separate so OpenCode Go behavior stays untouched.
+func codexRequestBody(input Request) map[string]any {
+	instructions, rest := splitCodexMessages(input.Messages)
+	body := map[string]any{
+		"model":  input.Model,
+		"input":  responsesInput(rest),
+		"stream": true,
+		"store":  false,
+	}
+	if strings.TrimSpace(instructions) != "" {
+		body["instructions"] = instructions
+	}
+	for field, value := range thinkingFields((&chatGPTProvider{}).ThinkingCapability(input.Model), input.Thinking) {
+		body[field] = value
+	}
+	if len(input.Tools) > 0 {
+		tools := make([]map[string]any, 0, len(input.Tools))
+		for _, tool := range input.Tools {
+			tools = append(tools, map[string]any{"type": "function", "name": tool.Name, "description": tool.Description, "parameters": tool.normalizedParameters()})
+		}
+		body["tools"] = tools
+	}
+	return body
+}
+
+func (p *chatGPTProvider) doCodex(ctx context.Context, input Request, creds chatgptoauth.Tokens, onText StreamCallback) (Response, error) {
+	payload, err := json.Marshal(codexRequestBody(input))
 	if err != nil {
 		return Response{}, err
 	}
-	inner := &openAIProvider{baseURL: p.baseURL, apiKey: token, client: p.client, name: "chatgpt"}
-	resp, err := inner.completeResponses(ctx, input, onText)
+	req, err := http.NewRequestWithContext(ctx, http.MethodPost, p.baseURL+"/responses", bytes.NewReader(payload))
+	if err != nil {
+		return Response{}, err
+	}
+	req.Header.Set("Content-Type", "application/json")
+	req.Header.Set("Authorization", "Bearer "+creds.AccessToken)
+	if creds.AccountID != "" {
+		req.Header.Set("ChatGPT-Account-Id", creds.AccountID)
+	}
+	resp, err := p.client.Do(req)
+	if err != nil {
+		return Response{}, err
+	}
+	defer resp.Body.Close()
+	if resp.StatusCode < 200 || resp.StatusCode >= 300 {
+		data, _ := io.ReadAll(io.LimitReader(resp.Body, 1<<20))
+		return Response{}, fmt.Errorf("provider returned %s: %s", resp.Status, strings.TrimSpace(string(data)))
+	}
+	return parseResponsesStream(resp.Body, onText)
+}
+
+// Complete sends a Codex Responses request with the OAuth access token,
+// refreshing once on 401 before giving up. The 401 retry reuses the
+// serialized RefreshAndSaveWithStale path so a concurrent refresh is not
+// spent twice on the same rotating refresh token.
+func (p *chatGPTProvider) Complete(ctx context.Context, input Request, onText StreamCallback) (Response, error) {
+	creds, err := chatgptoauth.GetValidTokens(ctx, p.client, p.tokensPath)
+	if err != nil {
+		return Response{}, err
+	}
+	resp, err := p.doCodex(ctx, input, creds, onText)
 	if err == nil {
 		return resp, nil
 	}
 	if !isUnauthorized(err) {
 		return Response{}, err
 	}
-	token, err = chatgptoauth.RefreshAndSave(ctx, p.client, p.tokensPath)
+	fresh, err := chatgptoauth.RefreshAndSaveWithStale(ctx, p.client, p.tokensPath, creds.AccessToken)
 	if err != nil {
 		return Response{}, err
 	}
-	inner = &openAIProvider{baseURL: p.baseURL, apiKey: token, client: p.client, name: "chatgpt"}
-	return inner.completeResponses(ctx, input, onText)
+	return p.doCodex(ctx, input, fresh, onText)
 }
 
 func isUnauthorized(err error) bool {

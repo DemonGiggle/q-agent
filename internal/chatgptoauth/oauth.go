@@ -26,8 +26,11 @@ import (
 	"path/filepath"
 	"runtime"
 	"strings"
+	"sync"
 	"syscall"
 	"time"
+
+	"q-agent/internal/redaction"
 )
 
 const (
@@ -276,7 +279,17 @@ func Save(path string, t Tokens) error {
 	if err := os.Rename(tmpName, full); err != nil {
 		return fmt.Errorf("write oauth file: %w", err)
 	}
+	redactTokens(t)
 	return nil
+}
+
+// redactTokens registers current secrets in the process-wide redaction
+// registry so Policies created before a refresh (Runtime, Store, live
+// output) still mask the rotated values on every sink.
+func redactTokens(t Tokens) {
+	if t.AccessToken != "" || t.RefreshToken != "" {
+		redaction.AddSecrets(t.AccessToken, t.RefreshToken)
+	}
 }
 
 type tokenReply struct {
@@ -313,6 +326,69 @@ func postForm(ctx context.Context, do Doer, form url.Values) (tokenReply, error)
 	return reply, nil
 }
 
+// AccountIDFromAccessToken extracts the ChatGPT account identifier from the
+// Codex access-token JWT claims. The token endpoint sometimes omits the
+// top-level account_id; the JWT itself carries it. Returns "" when the token
+// is opaque or carries no recognized claim.
+func AccountIDFromAccessToken(token string) string {
+	parts := strings.Split(token, ".")
+	if len(parts) != 3 {
+		return ""
+	}
+	payload := parts[1]
+	raw, err := base64.RawURLEncoding.DecodeString(payload)
+	if err != nil {
+		// Lenient fallback: padded encoding.
+		raw, err = base64.URLEncoding.DecodeString(payload)
+		if err != nil {
+			return ""
+		}
+	}
+	var claims map[string]any
+	if err := json.Unmarshal(raw, &claims); err != nil {
+		return ""
+	}
+	for _, key := range []string{"chatgpt_account_id", "account_id", "accountId", "chatgpt-account-id"} {
+		if v, ok := claims[key]; ok {
+			if s, ok := v.(string); ok && s != "" {
+				return s
+			}
+		}
+	}
+	// Some issuers nest the account under an auth object or a namespaced
+	// claim URI. Search one level deep for the same keys.
+	for _, v := range claims {
+		obj, ok := v.(map[string]any)
+		if !ok {
+			continue
+		}
+		for _, key := range []string{"chatgpt_account_id", "account_id", "accountId"} {
+			if s, ok := obj[key].(string); ok && s != "" {
+				return s
+			}
+		}
+	}
+	return ""
+}
+
+// accountIDFor prefers the token endpoint's top-level account_id, then falls
+// back to the access-token (and id-token) JWT claims, then to the previously
+// stored value so rotations never blank a known account.
+func accountIDFor(reply tokenReply, fallback string) string {
+	if reply.AccountID != "" {
+		return reply.AccountID
+	}
+	if id := AccountIDFromAccessToken(reply.AccessToken); id != "" {
+		return id
+	}
+	if reply.IDToken != "" {
+		if id := AccountIDFromAccessToken(reply.IDToken); id != "" {
+			return id
+		}
+	}
+	return fallback
+}
+
 // Exchange swaps an authorization code plus PKCE verifier for stored tokens.
 func Exchange(ctx context.Context, do Doer, code, verifier string) (Tokens, error) {
 	form := url.Values{}
@@ -329,13 +405,15 @@ func Exchange(ctx context.Context, do Doer, code, verifier string) (Tokens, erro
 	if reply.ExpiresIn <= 0 {
 		expires = time.Now().Add(time.Hour)
 	}
-	return Tokens{
+	t := Tokens{
 		AccessToken:  reply.AccessToken,
 		RefreshToken: reply.RefreshToken,
 		ExpiresAt:    expires.Unix(),
-		AccountID:    reply.AccountID,
+		AccountID:    accountIDFor(reply, ""),
 		Email:        reply.Email,
-	}, nil
+	}
+	redactTokens(t)
+	return t, nil
 }
 
 // Refresh swaps a refresh token for new tokens.
@@ -355,65 +433,191 @@ func Refresh(ctx context.Context, do Doer, refreshToken string) (Tokens, error) 
 	if reply.RefreshToken == "" {
 		reply.RefreshToken = refreshToken
 	}
-	return Tokens{
+	t := Tokens{
 		AccessToken:  reply.AccessToken,
 		RefreshToken: reply.RefreshToken,
 		ExpiresAt:    expires.Unix(),
-		AccountID:    reply.AccountID,
+		AccountID:    accountIDFor(reply, ""),
 		Email:        reply.Email,
-	}, nil
+	}
+	redactTokens(t)
+	return t, nil
+}
+
+// Per-path refresh serialization: the default max_concurrent=2 lets two chats
+// share one OAuth file. Without it both Load the same near-expiry tokens and
+// send the same rotating refresh, and a single-use server rejects the second
+// with invalid_grant. Atomic rename only protects file completeness, not the
+// read/refresh/store transaction, so hold a process-wide lock per resolved
+// path plus a best-effort cross-process file lock during the transaction.
+var (
+	refreshMu    sync.Mutex
+	refreshLocks = map[string]*sync.Mutex{}
+)
+
+func lockFor(resolved string) *sync.Mutex {
+	refreshMu.Lock()
+	defer refreshMu.Unlock()
+	if mu, ok := refreshLocks[resolved]; ok {
+		return mu
+	}
+	mu := &sync.Mutex{}
+	refreshLocks[resolved] = mu
+	return mu
+}
+
+// withRefreshFileLock holds an exclusive advisory lock on path+".lock" while
+// fn runs. It is best-effort across processes; intra-process safety comes
+// from lockFor. Non-Linux platforms skip the syscall.
+func withRefreshFileLock(resolved string, fn func() error) error {
+	if runtime.GOOS != "linux" {
+		return fn()
+	}
+	dir := filepath.Dir(resolved)
+	if err := os.MkdirAll(dir, 0700); err != nil {
+		return fn()
+	}
+	f, err := os.OpenFile(resolved+".lock", os.O_CREATE|os.O_RDWR, 0600)
+	if err != nil {
+		return fn()
+	}
+	defer f.Close()
+	if err := syscall.Flock(int(f.Fd()), syscall.LOCK_EX); err != nil {
+		return fn()
+	}
+	defer syscall.Flock(int(f.Fd()), syscall.LOCK_UN)
+	return fn()
+}
+
+// GetValidTokens returns usable credentials, refreshing and persisting when
+// the stored token is near expiry. The refresh transaction re-reads the file
+// under the per-path lock so concurrent callers share one refresh.
+func GetValidTokens(ctx context.Context, do Doer, path string) (Tokens, error) {
+	full, err := ResolvePath(path)
+	if err != nil {
+		return Tokens{}, err
+	}
+	mu := lockFor(full)
+	mu.Lock()
+	defer mu.Unlock()
+	var out Tokens
+	var refreshErr error
+	lockErr := withRefreshFileLock(full, func() error {
+		t, err := Load(path)
+		if err != nil {
+			return err
+		}
+		if !t.NeedsRefresh(time.Now()) {
+			redactTokens(t)
+			out = t
+			return nil
+		}
+		if t.RefreshToken == "" {
+			return fmt.Errorf("chatgpt token expired and no refresh token; run `q-agent login chatgpt` again")
+		}
+		next, err := Refresh(ctx, do, t.RefreshToken)
+		if err != nil {
+			refreshErr = err
+			return fmt.Errorf("chatgpt token refresh failed; run `q-agent login chatgpt` again: %w", err)
+		}
+		if next.AccountID == "" {
+			next.AccountID = t.AccountID
+		}
+		if next.Email == "" {
+			next.Email = t.Email
+		}
+		if err := Save(path, next); err != nil {
+			return err
+		}
+		out = next
+		return nil
+	})
+	if lockErr != nil {
+		return Tokens{}, lockErr
+	}
+	if refreshErr != nil {
+		return Tokens{}, refreshErr
+	}
+	return out, nil
 }
 
 // GetValidToken returns a usable access token, refreshing and persisting when
 // the stored token is near expiry.
 func GetValidToken(ctx context.Context, do Doer, path string) (string, error) {
-	t, err := Load(path)
+	t, err := GetValidTokens(ctx, do, path)
 	if err != nil {
 		return "", err
 	}
-	if !t.NeedsRefresh(time.Now()) {
-		return t.AccessToken, nil
-	}
-	if t.RefreshToken == "" {
-		return "", fmt.Errorf("chatgpt token expired and no refresh token; run `q-agent login chatgpt` again")
-	}
-	next, err := Refresh(ctx, do, t.RefreshToken)
+	return t.AccessToken, nil
+}
+
+// RefreshAndSaveWithStale forces a refresh (used for a 401 retry) but first
+// re-reads under the per-path lock: if another goroutine already rotated past
+// staleAccess, its fresh token is reused instead of spending the new refresh.
+func RefreshAndSaveWithStale(ctx context.Context, do Doer, path, staleAccess string) (Tokens, error) {
+	full, err := ResolvePath(path)
 	if err != nil {
-		return "", fmt.Errorf("chatgpt token refresh failed; run `q-agent login chatgpt` again: %w", err)
+		return Tokens{}, err
 	}
-	if next.AccountID == "" {
-		next.AccountID = t.AccountID
+	mu := lockFor(full)
+	mu.Lock()
+	defer mu.Unlock()
+	var out Tokens
+	lockErr := withRefreshFileLock(full, func() error {
+		t, err := Load(path)
+		if err != nil {
+			return err
+		}
+		if staleAccess != "" && t.AccessToken != staleAccess && !t.NeedsRefresh(time.Now()) {
+			redactTokens(t)
+			out = t
+			return nil
+		}
+		if t.RefreshToken == "" {
+			return fmt.Errorf("no refresh token; run `q-agent login chatgpt` again")
+		}
+		next, err := Refresh(ctx, do, t.RefreshToken)
+		if err != nil {
+			return fmt.Errorf("chatgpt token refresh failed; run `q-agent login chatgpt` again: %w", err)
+		}
+		if next.AccountID == "" {
+			next.AccountID = t.AccountID
+		}
+		if next.Email == "" {
+			next.Email = t.Email
+		}
+		if err := Save(path, next); err != nil {
+			return err
+		}
+		out = next
+		return nil
+	})
+	if lockErr != nil {
+		return Tokens{}, lockErr
 	}
-	if next.Email == "" {
-		next.Email = t.Email
-	}
-	if err := Save(path, next); err != nil {
-		return "", err
-	}
-	return next.AccessToken, nil
+	return out, nil
 }
 
 // RefreshAndSave forces a refresh regardless of expiry (used for a 401 retry).
 func RefreshAndSave(ctx context.Context, do Doer, path string) (string, error) {
-	t, err := Load(path)
+	t, err := RefreshAndSaveWithStale(ctx, do, path, "")
 	if err != nil {
 		return "", err
 	}
-	if t.RefreshToken == "" {
-		return "", fmt.Errorf("no refresh token; run `q-agent login chatgpt` again")
-	}
-	next, err := Refresh(ctx, do, t.RefreshToken)
+	return t.AccessToken, nil
+}
+
+// EnsureValid is the startup preflight: it loads the file and, when the
+// access token is expired or near expiry, refreshes it now instead of letting
+// the first user task fail. A missing/unusable file or a failed refresh
+// reports `run q-agent login chatgpt` before serve starts.
+func EnsureValid(ctx context.Context, do Doer, path string) (Tokens, error) {
+	t, err := GetValidTokens(ctx, do, path)
 	if err != nil {
-		return "", fmt.Errorf("chatgpt token refresh failed; run `q-agent login chatgpt` again: %w", err)
+		return Tokens{}, err
 	}
-	if next.AccountID == "" {
-		next.AccountID = t.AccountID
+	if t.AccessToken == "" {
+		return Tokens{}, fmt.Errorf("chatgpt oauth file has no access token; run `q-agent login chatgpt` again")
 	}
-	if next.Email == "" {
-		next.Email = t.Email
-	}
-	if err := Save(path, next); err != nil {
-		return "", err
-	}
-	return next.AccessToken, nil
+	return t, nil
 }

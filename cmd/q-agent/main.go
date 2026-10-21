@@ -193,13 +193,19 @@ func serveWithMaintenance(ctx context.Context, c config.Config, policy *redactio
 	credentialEnvs := []string{c.Telegram.TokenEnv}
 	for name, provider := range configuredProviders(c) {
 		if provider.Name == "chatgpt" {
-			// Subscription auth: no API key. Fail fast when the OAuth file is
-			// missing or broken so the operator runs `q-agent login chatgpt`.
-			tokens, err := chatgptoauth.Load(c.ChatGPT.OAuthPath)
+			// Subscription auth: no API key. Fail fast with a usable token
+			// so the operator runs `q-agent login chatgpt` before serve.
+			// Load alone only checks file shape; EnsureValid also honors
+			// expiry by refreshing now and fails when no refresh token
+			// can produce a usable access token.
+			preflightCtx, cancel := context.WithTimeout(ctx, 30*time.Second)
+			tokens, err := chatgptoauth.EnsureValid(preflightCtx, &http.Client{Timeout: 30 * time.Second}, c.ChatGPT.OAuthPath)
+			cancel()
 			if err != nil {
 				return fmt.Errorf("chatgpt OAuth for provider %s: %w", name, err)
 			}
 			policy = policy.WithValues([]string{tokens.AccessToken, tokens.RefreshToken})
+			redaction.AddSecrets(tokens.AccessToken, tokens.RefreshToken)
 			providerKeys[name] = ""
 			continue
 		}

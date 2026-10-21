@@ -72,7 +72,7 @@ aren't supported; q-agent doesn't include an interactive browser or stock-price 
 You'll need **Linux**, **Go 1.22+**, **Git**, **Make**, a Telegram bot token from
 [@BotFather](https://t.me/BotFather), and a model provider. The example configuration
 uses Ollama with `qwen3`; have Ollama running and that model available, or choose
-another provider in the [setup guide](docs/operations.md#setup).
+another provider in the [setup guide](docs/operations.md#1-setup).
 
 ### 1. Get q-agent
 
@@ -112,7 +112,7 @@ or `/help` to see the available commands.
 
 **Using a group?** Disable bot privacy through BotFather, then mention the bot,
 reply to it, or mention it (for example `<request> @your_bot`). Replies stay in the original topic.
-See the [group setup details](docs/operations.md#setup).
+See the [group setup details](docs/operations.md#1-setup).
 
 ### Keep it running with systemd
 
@@ -147,12 +147,12 @@ The update command installs the latest GitHub Release for Linux amd64 or arm64
 over the executable you invoked. If you run from the source checkout, use
 `./bin/q-agent update`. It preserves configuration and chat data; restart your
 running service when ready to use the new version. See the
-[upgrade guide](docs/operations.md#upgrading) for permissions and release details.
+[upgrade guide](docs/operations.md#6-upgrading) for permissions and release details.
 
 For a systemd user service, configured administrators can instead send `/update`
 or `/restart` in a private Telegram chat. These host-side commands do not call
 the model and also work in sandbox mode. See the
-[service administration setup](docs/systemd.md#telegram-administration).
+[service administration setup](docs/systemd.md#restart-and-update).
 
 ### Telegram commands
 
@@ -187,56 +187,18 @@ sent to your configured model provider for that task only; binary data and file
 IDs are not saved in conversation history. Resend/reply to the image for later
 tasks. Albums and images uploaded as documents are not supported.
 
-**Per-chat model-step limit**
-
-Use `/max_steps` to view the effective maximum number of model requests per
-agent task, `/max_steps 20` to set it to a positive integer, and
-`/max_steps default` to inherit `[limits].max_steps` from the configuration.
-The setting persists across restarts and `/new`, and is shared by all topics
-in a chat/group, including scheduled agent tasks. Changes are rejected while
-the chat has an active task. `/settings reset` clears this override too.
-Changing the limit does not clear conversation history or change the task timeout. In groups, address the command to the bot,
-for example `/max_steps@your_bot 20`.
-
-When a running task hits the step limit, provider error, or timeout, its
-original request, applied follow-ups, failure reason, and bounded tool observations
-are saved in this topic's short-term history. Adjust the limit (for example
-`/max_steps 32`) and send a follow-up such as "continue" in the same topic.
-Completed tool calls are not automatically replayed. Records persist across
-restart but follow the ordinary history retention limits; `/new` clears them.
-Explicit cancellation does not add the cancelled run to history. This is saved
-context, not an exact execution checkpoint or recovery from a process crash.
-
-Successful interactive and scheduled tasks are captured in a durable memory
-journal before prompt history is bounded. Startup and nightly digests process
-that journal across all topics. `/new`, model/provider changes, and execution
-mode changes retain pending sources. `/forget` clears notes and pending sources
-for the entire chat; a running task may add a new source when it finishes.
-
-Memory uses hard UTF-8 byte limits. Pending sources default to 4 MiB; overflow
-removes the oldest sources with a warning and loss counters. Exceptional events
-retain a marked head and tail within 256 KiB. Old summaries survive the one-time
-storage migration within the configured budget; pre-upgrade pending history is
-outside the new baseline and is not imported. See [memory operations](docs/operations.md#long-term-memory).
-
-`/status` reports the q-agent bot process's current resident memory (RSS) in MiB,
-read from Linux `/proc/self/status` on each request. This is physical resident
-memory, not virtual size, Go heap usage, or a historical peak. It includes shared
-resident pages and excludes sandbox workers and other child processes. If the
-kernel metric cannot be read, it shows `Unavailable` instead of a substitute.
-
-**Want to adjust a task while it runs?** Send another message in the same
-chat/topic. Your follow-up steers your current task at the next safe boundary,
-without cancelling an operation already in progress. Only the task's original
-sender can steer it; other topics and users do not change its instructions.
-Follow-ups still waiting to be consumed are merged in order and sent together.
-Control commands such as `/status` and `/cancel` keep their usual behavior.
+Full behavior — history clearing, busy rules, steering, schedules, memory —
+lives in [talking to the bot](docs/operations.md#3-talking-to-the-bot).
+In short: `/provider` / `/model` switches start fresh topic history next task;
+failed tasks save bounded context you can continue with a follow-up;
+`/status` shows live RSS; new text in the same chat/topic steers the running
+task at the next safe boundary.
 
 ## A few things worth knowing
 
 - **It runs where you host it.** By default, tools use your Linux service
   account's permissions. Chat folders organize files; they are not security
-  boundaries. An optional [Debian sandbox](docs/operations.md#sandbox-opt-in)
+  boundaries. An optional [Debian sandbox](docs/operations.md#2-how-tools-run-host-vs-sandbox)
   adds filesystem isolation.
 - **Schedules are minute-level, not instant.** Busy tasks may wait. Short
   outages have a five-minute catch-up window; interrupted agent work isn't

@@ -211,8 +211,8 @@ func TestHostShellCleanup(t *testing.T) {
 func TestHostToolSchemas(t *testing.T) {
 	runner := &Runner{Options: localtools.Options{WorkingDir: "/host/chat"}}
 	hostTools, sandboxTools := runner.Schemas(), localtools.Schemas()
-	if len(hostTools) != 8 {
-		t.Fatal("six local tools and two web tools required")
+	if len(hostTools) != 9 {
+		t.Fatal("six local tools, process sessions and two web tools required")
 	}
 	for i := range hostTools {
 		if hostTools[i].Name != sandboxTools[i].Name || strings.Contains(hostTools[i].Description, "sandbox") {

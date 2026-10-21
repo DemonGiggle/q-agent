@@ -261,6 +261,12 @@ func (s *Store) QueueNotice(route platform.Message, parts []string) error {
 	return s.queue(route, parts, nil, ":notice")
 }
 
+// QueueTaskNotice gives each interim process message its own durable ID, so
+// multiple prompts for one task cannot suppress each other or its final answer.
+func (s *Store) QueueTaskNotice(route platform.Message, taskID string, sequence int, parts []string) error {
+	return s.queue(route, parts, nil, fmt.Sprintf(":task:%s:%d", taskID, sequence))
+}
+
 func (s *Store) queue(route platform.Message, parts []string, keyboard *platform.InlineKeyboard, suffix string) error {
 	return s.queueWithPhotos(route, parts, nil, keyboard, suffix)
 }

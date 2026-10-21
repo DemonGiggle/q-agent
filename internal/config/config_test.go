@@ -31,7 +31,7 @@ allowed_groups = [-1001234567890]
 	if err != nil {
 		t.Fatal(err)
 	}
-	if c.Sandbox.Enabled || c.Provider.APIKeyEnv != "OPENCODE_GO_API_KEY" || c.StateDir != filepath.Join(dir, "state") || c.Limits.MaxSteps != 8 || c.TaskDuration() != 5*time.Minute || c.ShellDuration() != 2*time.Minute {
+	if c.Sandbox.Enabled || c.Provider.APIKeyEnv != "OPENCODE_GO_API_KEY" || c.StateDir != filepath.Join(dir, "state") || c.Limits.MaxSteps != 8 || c.TaskDuration() != 5*time.Minute || c.InteractiveTaskDuration() != 15*time.Minute || c.ShellDuration() != 2*time.Minute {
 		t.Fatalf("%+v", c)
 	}
 	if !c.Memory.Enabled || c.Memory.DigestAt != "00:00" || c.Memory.MaxBytes != 8192 || c.Memory.MaxContextBytes != 2000 || c.Memory.MaxPendingBytes != 4<<20 {
@@ -43,6 +43,8 @@ allowed_groups = [-1001234567890]
 	for _, tc := range []struct{ name, text string }{
 		{"concurrency", "[limits]\nmax_concurrent = 3"},
 		{"duration", "[limits]\ntask_timeout = '0s'"},
+		{"interactive duration", "[limits]\ninteractive_task_timeout = '0s'"},
+		{"interactive invalid duration", "[limits]\ninteractive_task_timeout = 'forever'"},
 		{"unknown field", "unexpected = true"},
 		{"unknown nested field", "[provider]\napi_key = 'not a configuration field'"},
 		{"unapproved administrator", "[telegram]\nallowed_users = [1]\nadmin_user_ids = [2]"},

@@ -26,9 +26,9 @@ func (r *Runtime) startLocked(ctx context.Context, m platform.Message, runID str
 			return nil
 		}
 	}
-	taskCtx, cancel := context.WithTimeout(ctx, r.Config.TaskDuration())
+	taskCtx, cancel := newTaskContext(ctx, r.Config.TaskDuration())
 	key := m.WorkspaceKey()
-	r.active[key] = task{topic: m.TopicID, user: m.UserID, ctx: taskCtx, cancel: cancel}
+	r.active[key] = task{topic: m.TopicID, user: m.UserID, ctx: taskCtx, cancel: cancel, wake: make(chan struct{}, 1), interactive: func() { taskCtx.openInteractive(r.Config.InteractiveTaskDuration()) }}
 	r.wg.Add(1)
 	go func() {
 		defer r.wg.Done()

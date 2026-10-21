@@ -1,5 +1,61 @@
 # Validation and initial performance baseline
 
+## Interactive application support (#16, 2026-10-21)
+
+Implemented task-scoped pipe and PTY sessions in host and sandbox execution,
+with terminal screen/history reads, input and named keys, resizing, terminal
+query responses, interim messages and waits interrupted by owner follow-ups.
+The first managed launch switches the total task budget to the configured
+interactive timeout without shortening a longer ordinary timeout.
+
+Validated on Linux amd64 with Go 1.22.10:
+
+- Full uncached unit suites and `go test -race -count=1 -timeout 5m ./...`.
+- `go vet ./...`, formatting, whitespace checks and the static native build.
+- Static Linux amd64/arm64 builds and a CGO-disabled Darwin amd64 build.
+- Real bubblewrap/Debian isolation, package installation and session integration,
+  plus mocked Telegram/provider service integrations using real host/sandbox tools.
+- Installed Python REPL input/output/EOF and Vim screen editing/saving/exiting.
+  Installed `gh auth login --web` reached its terminal prompt and was cancelled;
+  `gh auth status` confirmed the isolated temporary home remained unauthenticated.
+  This installed-app smoke check passed three consecutive runs.
+
+Deterministic tests cover non-newline prompts, menus, arrows, Escape, Enter,
+Ctrl-C/D, UTF-8 split across writes, carriage-return redraws, alternate screens,
+selection styles, terminal/device queries, resize followed by cancellation,
+bounded malformed control sequences, 256 KiB history retention and encoded
+8 KiB pagination. A local device-authorization fixture completes browser approval,
+saves synthetic credentials and verifies the saved authentication state.
+
+Runtime tests cover owner/topic isolation during waits, ordinary steering,
+multiple durable interims, scheduled human-input rejection, task-ID isolation,
+unchanged process operations, duplicate launches, longer deadlines, distinct
+cancellation/deadline outcomes, step exhaustion, shutdown and server cleanup.
+Host cleanup also covers separate job process groups in the owned session;
+deliberately setsid-detached host descendants retain the documented limitation.
+Sandbox checks exercise controlling-terminal access, private devpts/device
+isolation, cross-call input, mapping-helper failure before launch, framed-looking
+application output, and cleanup of detached descendants inside the PID namespace.
+
+Credential tests inspect direct mocked-provider requests, history and screen
+observations, console output, Telegram replies and persisted transcripts. They
+include ANSI decoration, wrapping, partial reads and input echoed between pieces
+of a configured credential. Terminal-specific fragment masking is conservative
+and may also hide short matching pieces of ordinary output.
+
+No real GitHub browser authorization was completed, and no live Telegram or
+model requests were sent. Installed gh used an isolated temporary home and
+configuration directory.
+Reproduce the installed-app and sandbox-session checks with:
+
+```sh
+Q_AGENT_PROCESS_LIVE_TEST=1 go test -v ./internal/process -run '^TestLiveInteractiveApps$' -count=1
+make build
+Q_AGENT_INTEGRATION=1 Q_AGENT_WORKER="$PWD/bin/q-agent" \
+  Q_AGENT_IMAGE="$HOME/.local/share/q-agent/images/debian-trixie.tar" \
+  go test -v ./internal/sandbox -run '^TestIntegrationProcessSessions$' -count=1 -timeout 2m
+```
+
 ## Systemd Telegram maintenance (2026-10-18)
 
 Added private-administrator `/update` and `/restart` commands, dispatched by the

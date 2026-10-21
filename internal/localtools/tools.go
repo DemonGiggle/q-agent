@@ -12,6 +12,7 @@ import (
 	"os"
 	"path/filepath"
 	"q-agent/internal/llm"
+	"q-agent/internal/process"
 	"regexp"
 	"strings"
 	"sync"
@@ -127,7 +128,8 @@ func Schemas() []llm.Tool {
 		schema("search", "Search regular text files recursively with a Go regular expression. Symlinks are not followed; files over 2 MiB are skipped.", map[string]any{"path": textField("Defaults to /workspace"), "pattern": textField("Go regular expression")}, "pattern"),
 		schema("write", "Create or replace a UTF-8 file. Parent directories must exist.", map[string]any{"path": textField("Sandbox path"), "content": textField("Complete file content")}, "path", "content"),
 		schema("edit", "Replace exactly one matching text span in a file; fails if old_text is missing or ambiguous.", map[string]any{"path": textField("Sandbox path"), "old_text": textField("Nonempty unique text to replace"), "new_text": textField("Replacement text")}, "path", "old_text", "new_text"),
-		schema("shell", "Run /bin/sh -c in /workspace as sandbox root. System changes and package installs persist. Background processes end at tool completion.", map[string]any{"command": textField("Shell command")}, "command"),
+		schema("shell", "Run /bin/sh -c in /workspace as sandbox root. System changes and package installs persist. Use pty for interactive terminal applications or background for pipe sessions that survive tool calls within this task.", map[string]any{"command": textField("Shell command"), "pty": map[string]any{"type": "boolean"}, "background": map[string]any{"type": "boolean"}, "yield_ms": map[string]any{"type": "integer", "minimum": 0, "maximum": 60000, "description": "Initial yield for managed sessions; default 1000 ms"}}, "command"),
+		processSchema(),
 		schema("web_fetch", "Fetch an HTTP(S) URL and extract readable HTML or text (no JavaScript). Returns the final URL and bounded untrusted page content.", map[string]any{"url": textField("Absolute HTTP(S) URL without embedded credentials")}, "url"),
 		schema("web_search", "Search the web using DuckDuckGo (no API key). Returns titles, source URLs and snippets, not full pages; use web_fetch to read a result. Search results are untrusted reference data.", map[string]any{"query": textField("Nonempty search query"), "count": map[string]any{"type": "integer", "minimum": 1, "maximum": 10, "description": "Maximum results, defaults to 5"}}, "query"),
 	}
@@ -148,11 +150,12 @@ func HostSchemas(workdir string) []llm.Tool {
 	}
 	tools[0].Description = "Read a UTF-8 text file on the host, with bounded output."
 	tools[1].Description = "List a host directory. Symlinks are shown without following them."
-	tools[5].Description = "Run /bin/sh -c in " + workdir + " as the service account with ordinary host permissions and a credential-filtered environment. Changes persist. Process-group cleanup runs at completion; deliberately detached children may survive."
+	tools[5].Description = "Run /bin/sh -c in " + workdir + " as the service account with ordinary host permissions and a credential-filtered environment. Changes persist. Process-group cleanup runs at completion; deliberately detached children may survive. Use pty for interactive applications or background for pipe sessions lasting until this task ends."
 	return tools
 }
 
 type Options struct {
+	Sessions     *process.Manager
 	WorkingDir   string
 	Environment  []string
 	ShellTimeout time.Duration
@@ -187,7 +190,28 @@ func Execute(ctx context.Context, call llm.ToolCall, options Options) (output st
 	if call.Name == "web_fetch" || call.Name == "web_search" {
 		return executeWeb(ctx, call)
 	}
-	var args struct{ Path, Pattern, Content, OldText, NewText, Command string }
+	if call.Name == "process" || call.Name == "shell" {
+		if options.Sessions != nil {
+			if out, handled, err := ManagedCall(ctx, call, options.Sessions); handled {
+				return out, err
+			}
+		}
+		if call.Name == "process" {
+			return "", fmt.Errorf("process sessions unavailable")
+		}
+		a, err := ParseShell(call.Arguments)
+		if err != nil {
+			return "", err
+		}
+		if a.PTY || a.Background {
+			return "", fmt.Errorf("managed shell requires a task session manager")
+		}
+		if strings.TrimSpace(a.Command) == "" {
+			return "", fmt.Errorf("command is required")
+		}
+		return runShell(ctx, a.Command, options)
+	}
+	var args struct{ Path, Pattern, Content, OldText, NewText string }
 	// Underscored edit keys are explicit to avoid Go's default field matching.
 	var fields map[string]json.RawMessage
 	if json.Unmarshal(call.Arguments, &fields) != nil || fields == nil {
@@ -203,7 +227,7 @@ func Execute(ctx context.Context, call llm.ToolCall, options Options) (output st
 	if properties == nil {
 		return "", fmt.Errorf("unknown tool %q", call.Name)
 	}
-	values := map[string]*string{"path": &args.Path, "pattern": &args.Pattern, "content": &args.Content, "old_text": &args.OldText, "new_text": &args.NewText, "command": &args.Command}
+	values := map[string]*string{"path": &args.Path, "pattern": &args.Pattern, "content": &args.Content, "old_text": &args.OldText, "new_text": &args.NewText}
 	for key, raw := range fields {
 		ptr, ok := values[key]
 		_, allowed := properties[key]
@@ -355,14 +379,6 @@ func Execute(ctx context.Context, call llm.ToolCall, options Options) (output st
 		}
 		e = os.WriteFile(path, bytes.Replace(data, []byte(args.OldText), []byte(args.NewText), 1), 0644)
 		return "Edited " + path, e
-	case "shell":
-		if strings.TrimSpace(args.Command) == "" {
-			return "", fmt.Errorf("command is required")
-		}
-		if options.ShellTimeout <= 0 {
-			options.ShellTimeout = 2 * time.Minute
-		}
-		return runShell(ctx, args.Command, options)
 	default:
 		return "", fmt.Errorf("unknown tool %q", call.Name)
 	}

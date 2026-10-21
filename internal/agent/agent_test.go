@@ -142,3 +142,40 @@ func TestFatalToolErrorStopsRun(t *testing.T) {
 		t.Fatalf("fatal error did not stop execution: %v", err)
 	}
 }
+
+func TestRepeatedProcessOperationsRespectStepBudget(t *testing.T) {
+	for _, action := range []string{"read", "keys", "wait"} {
+		t.Run(action, func(t *testing.T) {
+			p := &mockProvider{fn: func(context.Context, llm.Request) (llm.Response, error) {
+				return llm.Response{Message: llm.Message{ToolCalls: []llm.ToolCall{{Name: "process", Arguments: json.RawMessage(`{"action":"` + action + `","session_id":"current","keys":["Down"]}`)}}}}, nil
+			}}
+			tools := &mockTools{}
+			result, err := Run(context.Background(), p, tools, nil, "interact", Options{MaxSteps: 5})
+			if err == nil || !strings.Contains(err.Error(), "maximum of 5") || result.ToolCalls != 5 {
+				t.Fatalf("stateful operations rejected: %+v %v", result, err)
+			}
+		})
+	}
+}
+func TestToolOutputRedactedBeforeDirectProvider(t *testing.T) {
+	secret := "unique-live-tool-secret"
+	policy, _ := redaction.New(redaction.Config{}, []string{secret})
+	p := &mockProvider{}
+	p.fn = func(context.Context, llm.Request) (llm.Response, error) {
+		if len(p.requests) == 1 {
+			return llm.Response{Message: llm.Message{ToolCalls: []llm.ToolCall{{Name: "read", Arguments: json.RawMessage(`{"path":"/config"}`)}}}}, nil
+		}
+		return llm.Response{Message: llm.Message{Content: "done"}}, nil
+	}
+	tools := &mockTools{fn: func(context.Context, llm.ToolCall) (string, error) {
+		return secret, fmt.Errorf("application returned %s", secret)
+	}}
+	_, err := Run(context.Background(), p, tools, nil, "inspect", Options{Redaction: policy})
+	if err != nil {
+		t.Fatal(err)
+	}
+	b, _ := json.Marshal(p.requests)
+	if strings.Contains(string(b), secret) {
+		t.Fatal("raw tool observation reached provider")
+	}
+}

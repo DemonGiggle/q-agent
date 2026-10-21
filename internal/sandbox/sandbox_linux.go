@@ -87,9 +87,14 @@ func baseArgs() []string {
 
 // run follows bubblewrap's userns-block-fd handshake. Never release the block
 // unless both mapping helpers succeeded and the installed maps match exactly.
-func run(ctx context.Context, o Options, mounts []string, input any) ([]byte, error) {
+func startWorker(ctx context.Context, o Options, mounts []string, input io.Reader, output io.Writer) (*workerProcess, error) {
 	ctx, cancel := context.WithCancel(ctx)
-	defer cancel()
+	ok := false
+	defer func() {
+		if !ok {
+			cancel()
+		}
+	}()
 	blockRead, blockWrite, err := os.Pipe()
 	if err != nil {
 		return nil, err
@@ -102,19 +107,14 @@ func run(ctx context.Context, o Options, mounts []string, input any) ([]byte, er
 	}
 	defer infoRead.Close()
 	defer infoWrite.Close()
-	payload, err := json.Marshal(input)
-	if err != nil {
-		return nil, err
-	}
 	args := append(baseArgs(), mounts...)
 	cmd := exec.CommandContext(ctx, o.Bubblewrap, args...)
 	cmd.ExtraFiles = []*os.File{blockRead, infoWrite}
-	cmd.Stdin = strings.NewReader(string(payload))
+	cmd.Stdin = input
 	cmd.Env = []string{"PATH=/usr/bin:/bin", "LANG=C.UTF-8"}
 	cmd.SysProcAttr = &syscall.SysProcAttr{Setpgid: true}
-	stdout := localtools.Buffer{Max: 128 << 10}
 	var stderr localtools.Buffer
-	cmd.Stdout = &stdout
+	cmd.Stdout = output
 	cmd.Stderr = &stderr
 	cmd.WaitDelay = time.Second
 	cmd.Cancel = func() error {
@@ -131,7 +131,7 @@ func run(ctx context.Context, o Options, mounts []string, input any) ([]byte, er
 	infoWrite.Close()
 	done := make(chan error, 1)
 	go func() { done <- cmd.Wait() }()
-	abort := func(e error) ([]byte, error) {
+	abort := func(e error) (*workerProcess, error) {
 		cancel()
 		_ = cmd.Process.Kill()
 		<-done
@@ -190,17 +190,50 @@ func run(ctx context.Context, o Options, mounts []string, input any) ([]byte, er
 		return abort(err)
 	}
 	blockWrite.Close()
-	err = <-done
-	if ctx.Err() != nil {
-		return nil, ctx.Err()
+	ok = true
+	return &workerProcess{cmd: cmd, cancel: cancel, done: done, stderr: &stderr, ctx: ctx}, nil
+}
+
+type workerProcess struct {
+	cmd    *exec.Cmd
+	cancel context.CancelFunc
+	done   chan error
+	stderr *localtools.Buffer
+	ctx    context.Context
+}
+
+func (w *workerProcess) stop() { w.cancel() }
+func (w *workerProcess) wait() error {
+	err := <-w.done
+	if w.ctx.Err() != nil {
+		return w.ctx.Err()
 	}
 	if err != nil {
-		return nil, fmt.Errorf("sandbox failed: %w: %s", err, stderr.String())
+		return fmt.Errorf("sandbox failed: %w: %s", err, w.stderr.String())
+	}
+	return nil
+}
+func run(ctx context.Context, o Options, mounts []string, input any) ([]byte, error) {
+	payload, err := json.Marshal(input)
+	if err != nil {
+		return nil, err
+	}
+	stdout := localtools.Buffer{Max: 128 << 10}
+	worker, err := startWorker(ctx, o, mounts, strings.NewReader(string(payload)), &stdout)
+	if err != nil {
+		return nil, err
+	}
+	defer worker.stop()
+	if err = worker.wait(); err != nil {
+		return nil, err
 	}
 	return []byte(stdout.String()), nil
 }
+func toolMounts(o Options, rootfs, mode string) []string {
+	return []string{"--bind", rootfs, "/", "--proc", "/proc", "--dev", "/dev", "--tmpfs", "/tmp", "--chmod", "1777", "/tmp", "--tmpfs", "/run", "--ro-bind", o.Worker, workerPath, "--chdir", "/workspace", workerPath, "worker", mode}
+}
 func execute(ctx context.Context, o Options, rootfs string, call llm.ToolCall) (string, error) {
-	mounts := []string{"--bind", rootfs, "/", "--proc", "/proc", "--dev", "/dev", "--tmpfs", "/tmp", "--chmod", "1777", "/tmp", "--tmpfs", "/run", "--ro-bind", o.Worker, workerPath, "--chdir", "/workspace", workerPath, "worker", "tool"}
+	mounts := toolMounts(o, rootfs, "tool")
 	data, err := run(ctx, o, mounts, localtools.Request{Call: call, ShellTimeout: o.ShellTimeout})
 	if err != nil {
 		return "", FatalError{err}

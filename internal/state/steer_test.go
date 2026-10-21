@@ -62,3 +62,28 @@ func TestNoticeDoesNotSuppressFinalAnswer(t *testing.T) {
 		t.Fatalf("final: %+v", second)
 	}
 }
+
+func TestTaskNoticesPreserveMultipleInterimsAndFinal(t *testing.T) {
+	store, err := Open(t.TempDir(), nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	route := platform.Message{Platform: "telegram", UpdateID: 2, Text: "request"}
+	for i, text := range []string{"first authorization", "second authorization"} {
+		if err = store.QueueTaskNotice(route, "", i, []string{text}); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if err = store.Queue(route, []string{"final"}); err != nil {
+		t.Fatal(err)
+	}
+	for _, text := range []string{"first authorization", "second authorization", "final"} {
+		r, ok := store.Pending()
+		if !ok || r.Parts[0] != text {
+			t.Fatalf("missing %s: %+v", text, r)
+		}
+		if err = store.Delivered(r.ID); err != nil {
+			t.Fatal(err)
+		}
+	}
+}

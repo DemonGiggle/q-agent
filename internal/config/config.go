@@ -55,10 +55,11 @@ type Sandbox struct {
 	MMdebstrap string `toml:"mmdebstrap"`
 }
 type Limits struct {
-	MaxSteps      int    `toml:"max_steps"`
-	MaxConcurrent int    `toml:"max_concurrent"`
-	TaskTimeout   string `toml:"task_timeout"`
-	ShellTimeout  string `toml:"shell_timeout"`
+	MaxSteps               int    `toml:"max_steps"`
+	MaxConcurrent          int    `toml:"max_concurrent"`
+	TaskTimeout            string `toml:"task_timeout"`
+	InteractiveTaskTimeout string `toml:"interactive_task_timeout"`
+	ShellTimeout           string `toml:"shell_timeout"`
 	// How long to wait for an extend/kill reply after a shell timeout prompt.
 	// Empty defaults to 90s. Must parse as a positive duration when set.
 	ShellPromptTimeout string `toml:"shell_prompt_timeout"`
@@ -83,7 +84,7 @@ type Memory struct {
 }
 
 func Defaults() Config {
-	return Config{StateDir: "~/.local/share/q-agent", Provider: Provider{Name: "ollama", Model: "qwen3"}, Telegram: Telegram{TokenEnv: "TELEGRAM_BOT_TOKEN"}, Sandbox: Sandbox{Bubblewrap: "bwrap", NewUIDMap: "newuidmap", NewGIDMap: "newgidmap", MMdebstrap: "mmdebstrap"}, Limits: Limits{MaxSteps: 8, MaxConcurrent: 2, TaskTimeout: "5m", ShellTimeout: "2m", ShellPromptTimeout: "90s", ShellMaxExtends: 2}, Memory: Memory{Enabled: true, DigestAt: "00:00", MaxBytes: 8192, MaxContextBytes: 2000, MaxPendingBytes: 4 << 20}}
+	return Config{StateDir: "~/.local/share/q-agent", Provider: Provider{Name: "ollama", Model: "qwen3"}, Telegram: Telegram{TokenEnv: "TELEGRAM_BOT_TOKEN"}, Sandbox: Sandbox{Bubblewrap: "bwrap", NewUIDMap: "newuidmap", NewGIDMap: "newgidmap", MMdebstrap: "mmdebstrap"}, Limits: Limits{MaxSteps: 8, MaxConcurrent: 2, TaskTimeout: "5m", InteractiveTaskTimeout: "15m", ShellTimeout: "2m", ShellPromptTimeout: "90s", ShellMaxExtends: 2}, Memory: Memory{Enabled: true, DigestAt: "00:00", MaxBytes: 8192, MaxContextBytes: 2000, MaxPendingBytes: 4 << 20}}
 }
 func Load(path string) (Config, error) {
 	c := Defaults()
@@ -199,6 +200,11 @@ func Load(path string) (Config, error) {
 	for _, s := range []string{c.Limits.TaskTimeout, c.Limits.ShellTimeout} {
 		if d, e := time.ParseDuration(s); e != nil || d <= 0 {
 			return c, fmt.Errorf("invalid positive duration %q", s)
+		}
+	}
+	if c.Limits.InteractiveTaskTimeout != "" {
+		if d, e := time.ParseDuration(c.Limits.InteractiveTaskTimeout); e != nil || d <= 0 {
+			return c, fmt.Errorf("invalid limits.interactive_task_timeout")
 		}
 	}
 	if c.Limits.ShellPromptTimeout != "" {
@@ -453,4 +459,13 @@ func normalizeProvider(p *Provider, dir string) error {
 		}
 	}
 	return nil
+}
+
+// InteractiveTaskDuration is the total budget from task start once a managed
+// process is opened. The runtime preserves a longer ordinary task budget.
+func (c Config) InteractiveTaskDuration() time.Duration {
+	if d, err := time.ParseDuration(c.Limits.InteractiveTaskTimeout); err == nil && d > 0 {
+		return d
+	}
+	return 15 * time.Minute
 }

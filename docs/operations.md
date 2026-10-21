@@ -10,7 +10,7 @@ qcode's MIT notice is retained in
 [LICENSE](../LICENSE) and [NOTICE](../NOTICE).
 
 The host process owns provider connections, credentials, polling, conversation
-history, and completed replies. The six local tools and two web tools use the
+history, and completed replies. The local, process and web tools use the
 selected execution mode. V1 supports `openai`, `ollama`, and `opencode-go`, including
 the pinned qcode protocol routing and reasoning replay behavior.
 
@@ -344,7 +344,7 @@ explains rootless operation and subordinate IDs.
   Changes already made to its filesystem persist.
 
 The model can call `read`, `list`, `search`, `write`, `edit`, `shell`,
-`web_fetch`, and `web_search`, plus
+`process`, `web_fetch`, and `web_search`, plus
 the host-managed `schedule_create`, `schedule_list`, and `schedule_delete` tools. In host
 mode, relative paths resolve under the chat's persistent folder and absolute
 paths refer to the host filesystem. In sandbox mode, absolute paths refer to the
@@ -352,8 +352,8 @@ sandbox root and relative paths resolve under `/workspace`. The system prompt
 and tool descriptions identify the active mode and working directory.
 `edit` requires one unique matching span. `search` uses Go regular expressions,
 walks regular files without following symlinks, and skips files over 2 MiB.
-File edits are limited to 8 MiB. Tool output is capped at 8 KiB, including an
-explicit `[output truncated]` marker. Shell commands use `/bin/sh -c` with an
+File edits are limited to 8 MiB. Tool output is capped at 8 KiB. Ordinary results use an explicit
+`[output truncated]` marker; process results use JSON pagination metadata. Shell commands use `/bin/sh -c` with an
 explicit per-command working directory and environment. In sandbox mode,
 ordinary `apt-get update && apt-get install -y ...` installations persist.
 
@@ -466,7 +466,7 @@ Host folders and their permanent `(platform, chat ID)` ownership records are
 published together through a private staging directory and an atomic rename.
 Failed or interrupted provisioning does not start agent work. Each shell retains
 bounded output, timeouts, cancellation, and process-group cleanup. Ordinary
-background children are killed on completion; host mode cannot guarantee the
+ordinary shell background children are killed on completion; host mode cannot guarantee the
 termination of children that deliberately detach from the command's process group.
 
 In sandbox mode, provisioning extracts an independent rootfs into a private
@@ -489,7 +489,7 @@ sandbox mounts only its rootfs, a read-only worker binary, fresh `/proc` and
 `HOME=/home/agent`, `LANG=C.UTF-8`, and noninteractive package installation.
 It retains only CHOWN, DAC_OVERRIDE, FOWNER, FSETID, SETUID, SETGID, and SYS_CHROOT
 inside the user namespace. Namespace or mapping failure stops execution.
-PID isolation ends background processes when the tool finishes, including on
+For ordinary shell calls, PID isolation ends background processes when the tool finishes, including on
 cancellation. Networking deliberately uses the host network namespace, so local
 network services are reachable. It is filesystem isolation, with networking
 available to allowed users/groups. Tool-result envelopes mark observations as untrusted
@@ -693,7 +693,7 @@ persistence after reopening it. A sandbox service test uses mocked Telegram and
 Ollama endpoints with a real sandbox; it checks polling, authorization, tool
 continuation, topic replies, and host state. These tests send no live Telegram
 messages. Test-created rootfs directories are removed through the mapped worker.
-See [VALIDATION.md](../VALIDATION.md) for measured results and limitations.
+See [VALIDATION.md](VALIDATION.md) for measured results and limitations.
 
 ## Upgrading
 
@@ -782,3 +782,59 @@ it requires a Debian image, namespace support, and UID/GID mapping helpers.
 The workflow only validates code; it does not publish binaries or deploy.
 Required-check branch protection must be configured separately in GitHub if
 merges should be blocked by failing CI.
+
+### Interactive process sessions
+
+Use ordinary Telegram messages to ask the agent to operate an interactive app.
+The agent can start a terminal with
+`shell {"command":"gh auth login","pty":true}` or a pipe session with
+`shell {"command":"python3 -m http.server 8080","background":true}`.
+Either option returns a task-scoped `session_id` and initial output after
+`yield_ms` (default 1000 ms, range 0–60000). Ordinary shell calls retain their
+existing synchronous timeout behavior.
+
+The `process` tool supports these actions:
+
+- `list`: list the current task's sessions and exit status.
+- `read`: read history from `cursor` (default 0), continuing at `next_cursor`.
+  `history_start` identifies dropped older bytes; `truncated` also indicates
+  another page is available. Cursors refer to redacted UTF-8 history bytes.
+- `read` with `view:"screen"`: read the current PTY screen, its dimensions,
+  cursor, alternate-screen state, and text emphasis/colors. Positions are
+  zero-based. Large screens continue at `screen.next_offset` using `offset`.
+- `write`: send exact `data` to stdin. Include a newline for pipe input.
+- `keys`: send named keys such as `Enter`, `Up`, `Down`, `Escape`, `Ctrl-C`,
+  or `Ctrl-D`. Ctrl-D provides terminal EOF; it does not close a pipe.
+- `resize`: set `rows` (1–120) and `columns` (2–240) on a PTY.
+- `wait`: wait for output, exit, or an ordinary follow-up from the task owner.
+  `timeout_ms` defaults to 30000, at most 60000. Supply the last `next_cursor`
+  to wait for new output. An optional `message` posts an interim reply before
+  waiting; `human_input:true` marks a request for a human response.
+- `terminate`: stop and reap the session and its owned process group.
+
+Terminals default to 80×24 and answer cursor/device queries used by terminal
+applications. A task can keep two sessions at once; completed records are
+replaced when necessary to retain at most two. Duplicate commands already
+running in that task are rejected. Each session retains 256 KiB of history;
+each encoded process result is at most 8 KiB. Redaction runs before pagination,
+strips terminal decoration for history detection, and covers wrapped and
+fragmented known credentials. Raw screen/history data stays in bounded memory.
+
+Sessions survive tool calls while the task is active. A final answer, failure,
+step limit, cancellation, deadline or shutdown closes them. Later tasks cannot
+reuse their IDs. On the first managed launch,
+`limits.interactive_task_timeout` (default `15m`) becomes the total task budget
+measured from task start; a longer `limits.task_timeout` is preserved. Further
+launches do not renew the budget. Sandbox sessions keep one validated worker
+alive per session and allocate PTYs in bubblewrap's private `/dev` and `devpts`.
+Host cleanup retains the documented limitation for deliberately detached
+processes. Servers intended to run beyond the task need an explicitly requested
+persistent service, rather than a process session.
+
+Browser/device authorization URLs and short authorization codes may be sent in
+an interim message. Reply in the same Telegram topic to steer the active agent;
+it decides what input to send to the app. Do not send passwords or long-lived
+tokens in chat: use preconfigured credentials or browser authorization.
+`/status` and `/cancel` continue to work during waits. Scheduled tasks may drive
+applications automatically, but `human_input:true` returns an immediate,
+recoverable `human input unavailable` observation.

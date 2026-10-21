@@ -11,6 +11,7 @@ import (
 	"q-agent/internal/config"
 	"q-agent/internal/llm"
 	"q-agent/internal/platform"
+	"q-agent/internal/process"
 	"q-agent/internal/redaction"
 	"q-agent/internal/state"
 	"q-agent/internal/telegram"
@@ -38,6 +39,8 @@ type task struct {
 	stopping      bool
 	finishing     bool
 	pending       []platform.Message
+	wake          chan struct{}
+	interactive   func()
 }
 type Runtime struct {
 	Config            config.Config
@@ -339,6 +342,20 @@ func (r *Runtime) run(ctx context.Context, m platform.Message, runID string) boo
 					}
 					options.OnToolEnd = func(name string, toolErr error) { live.ToolEnd(name, toolCount, toolErr) }
 					baseTools := r.Tools(root)
+					if setter, ok := baseTools.(interface{ SetProcessHooks(process.Hooks) }); ok {
+						interimSequence := 0
+						r.mu.Lock()
+						active := r.active[m.WorkspaceKey()]
+						r.mu.Unlock()
+						setter.SetProcessHooks(process.Hooks{
+							OnStart: active.interactive, Wake: active.wake, HumanAvailable: runID == "",
+							HasInput: func() bool { r.mu.Lock(); defer r.mu.Unlock(); return len(r.active[m.WorkspaceKey()].pending) > 0 },
+							Interim: func(text string) error {
+								interimSequence++
+								return r.Store.QueueTaskNotice(m, runID, interimSequence, telegram.FormatAndSplit(r.Options.Redaction.Text(redaction.Remote, text)))
+							},
+						})
+					}
 					if setter, ok := baseTools.(shellHookSetter); ok {
 						hookOwner := m
 						hookRunID := runID

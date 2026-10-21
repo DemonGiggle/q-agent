@@ -46,6 +46,9 @@ base_image = "~/.local/share/q-agent/images/debian-trixie.tar"
 max_steps = 8
 max_concurrent = 2
 task_timeout = "5m"
+# Total task budget from task start after opening a managed process session.
+# Never shortens a longer task_timeout.
+interactive_task_timeout = "15m"
 shell_timeout = "2m"
 # Interactive shell-timeout prompt: when a host shell with output hits
 # shell_timeout, the bot sends the last 3 lines and waits this long for

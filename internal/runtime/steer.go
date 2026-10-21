@@ -40,6 +40,12 @@ func (r *Runtime) steerLocked(m platform.Message, active task) error {
 		return err
 	}
 	active.pending = append(active.pending, m)
+	if active.wake != nil {
+		select {
+		case active.wake <- struct{}{}:
+		default:
+		}
+	}
 	r.active[m.WorkspaceKey()] = active
 	r.logf("[RUN] Follow-up accepted | update=%d pending_inputs=%d finishing=%t", m.UpdateID, len(active.pending), active.finishing)
 	return nil
@@ -59,6 +65,12 @@ func (r *Runtime) takeSteer(key string, final bool) []string {
 		inputs = []string{mergeFollowups(active.pending)}
 	}
 	active.pending = nil
+	if active.wake != nil {
+		select {
+		case <-active.wake:
+		default:
+		}
+	}
 	if final && len(inputs) == 0 {
 		active.finishing = true
 	}

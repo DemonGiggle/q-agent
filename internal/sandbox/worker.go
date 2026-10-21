@@ -19,6 +19,8 @@ func Worker(mode string, in io.Reader, out io.Writer) error {
 		return err
 	}
 	switch mode {
+	case "session":
+		return streamWorker(in, out)
 	case "tool":
 		var request localtools.Request
 		d := json.NewDecoder(io.LimitReader(in, 1<<20))

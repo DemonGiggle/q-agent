@@ -232,12 +232,17 @@ Control commands such as `/status` and `/cancel` keep their usual behavior.
 - **The experience is text-first.** Attachments and streaming Telegram replies
   aren't supported yet. Provider charges, if any, depend on your chosen service.
 
+Interactive terminal apps, REPLs and temporary servers can use task-scoped
+[process sessions](docs/operations.md#interactive-process-sessions). Browser
+login instructions can arrive as interim Telegram messages; reply in the same
+topic while the task remains active. Sessions end with the task.
+
 ## Go deeper
 
 - [Configuration & operations](docs/operations.md) — providers, credentials,
   sandbox setup, scheduling behavior, and backups.
 - [Example configuration](config.example.toml) — available settings in one place.
-- [Validation notes](VALIDATION.md) — testing coverage and measured limitations.
+- [Validation notes](docs/VALIDATION.md) — testing coverage and measured limitations.
 - [GitHub Actions](https://github.com/DemonGiggle/q-agent/actions/workflows/ci.yml)
   — automated tests, race checks, formatting, vet, and builds.
 

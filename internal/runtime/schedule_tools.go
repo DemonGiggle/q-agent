@@ -11,6 +11,7 @@ import (
 	"q-agent/internal/agent"
 	"q-agent/internal/llm"
 	"q-agent/internal/platform"
+	"q-agent/internal/redaction"
 	"q-agent/internal/state"
 )
 
@@ -153,4 +154,24 @@ func schedulePreview(text string) string {
 		return string(chars[:40]) + "…"
 	}
 	return text
+}
+
+func (t *scheduleTools) StartTask(ctx context.Context, p *redaction.Policy) {
+	if scoped, ok := t.base.(interface {
+		StartTask(context.Context, *redaction.Policy)
+	}); ok {
+		scoped.StartTask(ctx, p)
+	}
+}
+func (t *scheduleTools) CloseTask() {
+	if scoped, ok := t.base.(interface{ CloseTask() }); ok {
+		scoped.CloseTask()
+	}
+}
+
+func (t *scheduleTools) TaskError() error {
+	if scoped, ok := t.base.(interface{ TaskError() error }); ok {
+		return scoped.TaskError()
+	}
+	return nil
 }

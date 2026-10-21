@@ -28,7 +28,7 @@ func (r *Runtime) maintenanceCommand(ctx context.Context, m platform.Message, fi
 		return r.reply(m, "Tasks are still running. Wait for all tasks to finish, or cancel them before maintenance.")
 	}
 	if r.Maintenance == nil {
-		return r.reply(m, "Systemd service maintenance is not available in this runtime.")
+		return r.reply(m, "Maintenance is not available in this runtime.")
 	}
 	if err := r.Maintenance.Request(ctx, strings.TrimPrefix(fields[0], "/"), m); err != nil {
 		return r.reply(m, fmt.Sprintf("Maintenance was not started: %s", err))

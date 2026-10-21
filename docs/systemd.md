@@ -207,11 +207,15 @@ outside; networking deliberately remains available through the host network.
 ## Telegram administration
 
 `/restart` and `/update` are handled directly by the host, not the model or its
-shell tool, in both host and sandbox modes. They require the running process to
-be the actual `MainPID` of the same account's **user** `q-agent.service`.
-Foreground processes, system-wide units and differently named units are rejected.
-The account needs `systemctl`, `systemd-run`, a working user manager, and write
-access to the installed executable's directory for updates. No sudo is used.
+shell tool, in both host and sandbox modes. Under a systemd user service the
+running process must be the actual `MainPID` of the same account's **user**
+`q-agent.service`. Foreground `serve` processes use a detached helper instead:
+the bot spawns a `Setsid` helper (`service maintain --state-dir ... --id ...`)
+that SIGTERMs the old process, optionally updates the executable, and re-execs
+`serve` with the same arguments. System-wide units and differently named units
+are rejected. The systemd backend needs `systemctl`, `systemd-run`, a working
+user manager, and write access to the installed executable's directory for
+updates. No sudo is used.
 
 Administration is disabled by default. Add the operator to allowed users and admins:
 
@@ -238,15 +242,21 @@ for an administrator. Neither command invokes the model or provisions a workspac
 - If any interactive or scheduled agent task is active, the command is refused;
   wait for completion or cancel the tasks first. While maintenance is pending,
   new agent work is refused and scheduled work remains durably queued.
-- An independent transient `q-agent-maintenance-<id>.service` is launched with
-  `systemd-run --user`. It belongs to a separate cgroup, so stopping the bot
-  cannot kill its updater. The bot arms the request only after Telegram confirms
-  delivery of the pre-stop notice; notification failure cancels the operation.
-- `/restart` stops and starts the service, then waits up to 60 seconds for a
-  new MainPID and q-agent's readiness marker. Readiness means normal startup
+- An independent helper is launched before stopping: a transient
+  `q-agent-maintenance-<id>.service` via `systemd-run --user` (separate cgroup,
+  so stopping the bot cannot kill its updater), or a detached `Setsid` process
+  for foreground `serve` (separate session, so the old process exiting cannot
+  kill its updater; logs go to `state_dir/maintenance/helper-<id>.log` and the
+  new bot's output to `state_dir/maintenance/serve.log`). The bot arms the
+  request only after Telegram confirms delivery of the pre-stop notice;
+  notification failure cancels the operation.
+- `/restart` stops and starts the service (systemd) or SIGTERMs the foreground
+  process and re-execs `serve` (detached), then waits up to 60 seconds for a
+  new PID/MainPID and q-agent's readiness marker. Readiness means normal startup
   checks, Telegram identity lookup, store and scheduler initialization succeeded;
   it does not prove a model completion or sandbox tool execution.
-- `/update` preserves a same-directory executable backup, stops the service,
+- `/update` preserves a same-directory executable backup, stops the service or
+  foreground process,
   installs the latest **stable GitHub Release**, and starts it. It never builds
   or pulls `main`, accepts no architecture/URL override, and validates the native
   static ELF before replacement. Download or readiness failure restores the

@@ -1,5 +1,6 @@
 // Package maintenance runs administrator-requested lifecycle operations outside
-// the bot's systemd cgroup. It never exposes host administration as model tools.
+// the bot's own cgroup or foreground process. It never exposes host
+// administration as model tools.
 package maintenance
 
 import (
@@ -16,6 +17,7 @@ import (
 	"strconv"
 	"strings"
 	"sync"
+	"syscall"
 	"time"
 
 	"q-agent/internal/platform"
@@ -25,6 +27,14 @@ import (
 
 const serviceUnit = "q-agent.service"
 
+// Backends share request.json/boot.json. systemd uses a transient unit in a
+// separate cgroup; detached re-execs serve from a Setsid helper for foreground
+// processes without a user manager.
+const (
+	backendSystemd  = "systemd"
+	backendDetached = "detached"
+)
+
 type Controller struct {
 	StateDir, Executable, Version, Worker string
 	Notify                                func(context.Context, platform.Message, string) error
@@ -32,11 +42,23 @@ type Controller struct {
 	Command      func(context.Context, string, ...string) ([]byte, error)
 	Update       func(context.Context, update.Options) error
 	ReadyTimeout time.Duration
-	mu           sync.Mutex
+	// ServeArgv re-execs the foreground bot (e.g. ["serve" "--config" path]).
+	// Empty defaults to os.Args[1:] when it starts with serve.
+	ServeArgv []string
+	// SpawnDetached launches a Setsid helper or a new bot, redirecting
+	// stdout/stderr to logPath. Injectable for tests.
+	SpawnDetached func(ctx context.Context, executable string, argv []string, logPath string) (int, error)
+	// Signal sends sig to pid; Alive reports kill(pid, 0) success. Injectable.
+	Signal func(pid int, sig syscall.Signal) error
+	Alive  func(pid int) bool
+	mu     sync.Mutex
 }
 
 type request struct {
 	ID, Action, Executable, OldVersion, HelperUnit, Phase, Result, Backup string
+	Backend                                                               string
+	HelperPID                                                             int
+	ServeArgv                                                             []string
 	Route                                                                 platform.Message
 	OldPID                                                                int
 	Reported                                                              bool
@@ -77,9 +99,10 @@ func (c *Controller) Busy() bool {
 	return !os.IsNotExist(err) && (err != nil || r.Phase != "done")
 }
 
-// Request validates the actual MainPID, stages a durable request, dispatches a
-// separate transient service, then arms it only after Telegram acknowledged the
-// pre-stop notice. No shell, sudo, daemon-reload or unit edits are involved.
+// Request validates the caller, stages a durable request, dispatches an
+// independent helper (transient systemd unit or detached Setsid process),
+// then arms it only after Telegram acknowledged the pre-stop notice.
+// No shell, sudo, daemon-reload or unit edits are involved.
 func (c *Controller) Request(ctx context.Context, action string, route platform.Message) error {
 	c.mu.Lock()
 	defer c.mu.Unlock()
@@ -93,18 +116,15 @@ func (c *Controller) Request(ctx context.Context, action string, route platform.
 	} else if !os.IsNotExist(err) {
 		return err
 	}
-	out, err := c.control(ctx, "show", serviceUnit, "--property=MainPID", "--value")
-	if err != nil || strings.TrimSpace(string(out)) != strconv.Itoa(os.Getpid()) {
-		return errors.New("maintenance requires this process to be MainPID of the systemd user q-agent.service")
-	}
 	executable := c.Executable
 	if executable == "" {
+		var err error
 		executable, err = os.Executable()
 		if err != nil {
 			return err
 		}
 	}
-	executable, err = filepath.EvalSymlinks(executable)
+	executable, err := filepath.EvalSymlinks(executable)
 	if err != nil {
 		return err
 	}
@@ -121,10 +141,6 @@ func (c *Controller) Request(ctx context.Context, action string, route platform.
 	if c.Notify == nil {
 		return errors.New("maintenance notification transport unavailable")
 	}
-	controlPath, err := exec.LookPath("systemctl")
-	if err != nil {
-		return err
-	}
 	unlock, err := state.Lock(c.path("lock"))
 	if err != nil {
 		return err
@@ -137,7 +153,59 @@ func (c *Controller) Request(ctx context.Context, action string, route platform.
 	id := hex.EncodeToString(nonce)
 	route.Text, route.CallbackData = "", ""
 	r := request{ID: id, Action: action, Executable: executable, OldVersion: c.Version,
-		OldPID: os.Getpid(), HelperUnit: "q-agent-maintenance-" + id + ".service", Phase: "waiting", Route: route}
+		OldPID: os.Getpid(), Phase: "waiting", Route: route}
+	managed := c.isSystemdManaged(ctx)
+	if managed {
+		controlPath := "systemctl"
+		if c.Command == nil {
+			var err error
+			controlPath, err = exec.LookPath("systemctl")
+			if err != nil {
+				return err
+			}
+		}
+		r.Backend = backendSystemd
+		r.HelperUnit = "q-agent-maintenance-" + id + ".service"
+		if err := c.save(r); err != nil {
+			return err
+		}
+		fail := func(err error) error {
+			r.Phase, r.Reported = "done", true
+			if saveErr := c.save(r); saveErr != nil {
+				return errors.Join(err, saveErr)
+			}
+			return err
+		}
+		_, err = c.command(ctx, "systemd-run", "--user", "--quiet", "--collect", "--unit="+r.HelperUnit,
+			"--property=Type=exec", "--property=RuntimeMaxSec=10min", "--property=UMask=0077",
+			"--property=ExecStopPost="+strconv.Quote(controlPath)+" --user start "+serviceUnit,
+			"--", executable, "service", "maintain", "--state-dir", c.StateDir, "--id", id)
+		if err != nil {
+			return fail(fmt.Errorf("could not launch independent systemd maintenance service: %w", err))
+		}
+		notice := "Restart requested. The service will stop briefly; I will report the running version after startup."
+		if action == "update" {
+			notice = "Update requested: latest stable GitHub Release (not main). The service will stop briefly; I will report the result after startup."
+		}
+		noticeCtx, cancel := context.WithTimeout(ctx, 10*time.Second)
+		err = c.Notify(noticeCtx, route, notice)
+		cancel()
+		if err != nil {
+			return fail(errors.New("maintenance cancelled because the pre-stop notification could not be delivered"))
+		}
+		r.Phase = "armed"
+		if err := c.save(r); err != nil {
+			return fail(err)
+		}
+		return nil
+	}
+	// Detached backend for foreground serve without a user manager.
+	r.Backend = backendDetached
+	argv, err := c.serveArgv()
+	if err != nil {
+		return err
+	}
+	r.ServeArgv = argv
 	if err := c.save(r); err != nil {
 		return err
 	}
@@ -148,16 +216,18 @@ func (c *Controller) Request(ctx context.Context, action string, route platform.
 		}
 		return err
 	}
-	_, err = c.command(ctx, "systemd-run", "--user", "--quiet", "--collect", "--unit="+r.HelperUnit,
-		"--property=Type=exec", "--property=RuntimeMaxSec=10min", "--property=UMask=0077",
-		"--property=ExecStopPost="+strconv.Quote(controlPath)+" --user start "+serviceUnit,
-		"--", executable, "service", "maintain", "--state-dir", c.StateDir, "--id", id)
+	helperArgv := []string{"service", "maintain", "--state-dir", c.StateDir, "--id", id}
+	pid, err := c.spawn(ctx, executable, helperArgv, c.path("helper-"+id+".log"))
 	if err != nil {
-		return fail(fmt.Errorf("could not launch independent systemd maintenance service: %w", err))
+		return fail(fmt.Errorf("could not launch independent detached maintenance helper: %w", err))
 	}
-	notice := "Restart requested. The service will stop briefly; I will report the running version after startup."
+	r.HelperPID = pid
+	if err := c.save(r); err != nil {
+		return fail(err)
+	}
+	notice := "Restart requested. The process will stop briefly; I will report the running version after startup."
 	if action == "update" {
-		notice = "Update requested: latest stable GitHub Release (not main). The service will stop briefly; I will report the result after startup."
+		notice = "Update requested: latest stable GitHub Release (not main). The process will stop briefly; I will report the result after startup."
 	}
 	noticeCtx, cancel := context.WithTimeout(ctx, 10*time.Second)
 	err = c.Notify(noticeCtx, route, notice)
@@ -201,23 +271,40 @@ func (c *Controller) Report(ctx context.Context, store *state.Store) error {
 		return err
 	}
 	if r.Phase != "done" {
-		out, showErr := c.control(ctx, "show", r.HelperUnit, "--property=ActiveState", "--value")
-		if showErr != nil {
-			return nil
-		} // A bus outage is not proof the job failed.
-		status := strings.TrimSpace(string(out))
-		if status != "inactive" && status != "failed" {
-			return nil
-		}
-		// Re-read after observing exit so a helper's final commit wins the race.
-		r, err = c.load()
-		if err != nil {
-			return err
-		}
-		if r.Phase != "done" {
-			r.Phase, r.Result = "done", "Maintenance was interrupted before completion. Check the maintenance service journal before retrying."
-			if err := c.save(r); err != nil {
+		if r.Backend == backendDetached || (r.Backend == "" && r.HelperUnit == "" && r.HelperPID != 0) {
+			if c.isAlive(r.HelperPID) {
+				return nil
+			}
+			// Re-read after observing exit so a helper's final commit wins the race.
+			r, err = c.load()
+			if err != nil {
 				return err
+			}
+			if r.Phase != "done" {
+				r.Phase, r.Result = "done", "Maintenance was interrupted before completion. Check the maintenance helper log before retrying."
+				if err := c.save(r); err != nil {
+					return err
+				}
+			}
+		} else {
+			out, showErr := c.control(ctx, "show", r.HelperUnit, "--property=ActiveState", "--value")
+			if showErr != nil {
+				return nil
+			} // A bus outage is not proof the job failed.
+			status := strings.TrimSpace(string(out))
+			if status != "inactive" && status != "failed" {
+				return nil
+			}
+			// Re-read after observing exit so a helper's final commit wins the race.
+			r, err = c.load()
+			if err != nil {
+				return err
+			}
+			if r.Phase != "done" {
+				r.Phase, r.Result = "done", "Maintenance was interrupted before completion. Check the maintenance service journal before retrying."
+				if err := c.save(r); err != nil {
+					return err
+				}
 			}
 		}
 	}
@@ -276,124 +363,15 @@ func (c *Controller) Run(ctx context.Context, id string) error {
 	if r.Action != "update" && r.Action != "restart" {
 		return errors.New("invalid maintenance action")
 	}
-	out, err := c.control(ctx, "show", serviceUnit, "--property=MainPID", "--value")
-	if err != nil || strings.TrimSpace(string(out)) != strconv.Itoa(r.OldPID) {
-		return c.finish(r, "Maintenance cancelled: the running service changed before the operation began.")
+	if r.Backend == backendDetached || (r.Backend == "" && r.HelperUnit == "" && r.HelperPID != 0) {
+		return c.runDetached(ctx, r)
 	}
-	backup := ""
-	if r.Action == "update" {
-		backup, err = copyExecutable(r.Executable)
-		if err != nil {
-			return c.finish(r, "Update cancelled: could not preserve the installed executable.")
-		}
-		r.Backup = backup
-		if err := c.save(r); err != nil {
-			_ = os.Remove(backup)
-			return err
-		}
-	}
-	if _, err := c.control(ctx, "stop", serviceUnit); err != nil {
-		// A timed-out stop may still complete. Always request a start again.
-		return c.recover(ctx, r, "Maintenance failed while stopping the service.", backup)
-	}
-	updateMessage := ""
-	if r.Action == "update" {
-		var output strings.Builder
-		opts := update.Options{ExecutablePath: r.Executable, CurrentVersion: r.OldVersion,
-			Stdout: &output, ValidateExecutable: true}
-		runUpdate := c.Update
-		if runUpdate == nil {
-			runUpdate = func(ctx context.Context, o update.Options) error { return update.Run(ctx, nil, o) }
-		}
-		updateCtx, cancel := context.WithTimeout(ctx, 2*time.Minute)
-		err := runUpdate(updateCtx, opts)
-		cancel()
-		if err != nil {
-			fmt.Fprintln(os.Stderr, "maintenance update:", err)
-			return c.recover(ctx, r, "Update failed.", backup)
-		}
-		// Preserve only a fixed no-op classification, not arbitrary download text.
-		if strings.Contains(output.String(), "already up to date") {
-			updateMessage = "Already up to date. "
-		}
-		if strings.Contains(output.String(), "newer than the latest release") {
-			updateMessage = "Installed version is newer than the latest Release; no downgrade. "
-		}
-	}
-	started, err := c.start(ctx, &r, "starting")
-	if err != nil {
-		fmt.Fprintln(os.Stderr, "maintenance startup:", err)
-		return c.recover(ctx, r, "The service did not become ready after maintenance.", backup)
-	}
-	if backup != "" {
-		_ = os.Remove(backup)
-		r.Backup = ""
-	}
-	label := "Restart"
-	if r.Action == "update" {
-		label = "Update"
-	}
-	return c.finish(r, fmt.Sprintf("%s%s completed. Running q-agent %s (previously %s).", updateMessage, label, started.Version, r.OldVersion))
+	return c.runSystemd(ctx, r)
 }
 
 func (c *Controller) finish(r request, message string) error {
 	r.Phase, r.Result = "done", message
 	return c.save(r)
-}
-
-func (c *Controller) start(ctx context.Context, r *request, phase string) (boot, error) {
-	r.Phase = phase
-	if err := c.save(*r); err != nil {
-		return boot{}, err
-	}
-	// Remove an earlier attempt's readiness marker before permitting a new boot.
-	if err := os.Remove(c.path("boot.json")); err != nil && !os.IsNotExist(err) {
-		return boot{}, err
-	}
-	if out, err := c.control(ctx, "start", serviceUnit); err != nil {
-		return boot{}, fmt.Errorf("start service: %w: %s", err, strings.TrimSpace(string(out)))
-	}
-	timeout := c.ReadyTimeout
-	if timeout <= 0 {
-		timeout = 60 * time.Second
-	}
-	readyCtx, cancel := context.WithTimeout(ctx, timeout)
-	defer cancel()
-	for {
-		var b boot
-		data, err := os.ReadFile(c.path("boot.json"))
-		if err == nil && json.Unmarshal(data, &b) == nil && b.ID == r.ID && b.PID != r.OldPID && b.Version != "" {
-			pid, err := c.control(readyCtx, "show", serviceUnit, "--property=MainPID", "--value")
-			if err == nil && strings.TrimSpace(string(pid)) == strconv.Itoa(b.PID) {
-				return b, nil
-			}
-		}
-		if err := pause(readyCtx, 100*time.Millisecond); err != nil {
-			return boot{}, err
-		}
-	}
-}
-
-func (c *Controller) recover(ctx context.Context, r request, reason, backup string) error {
-	// Recovery has its own budget even when the requested operation timed out.
-	recoveryCtx, cancel := context.WithTimeout(context.WithoutCancel(ctx), 100*time.Second)
-	defer cancel()
-	if backup != "" {
-		if _, err := c.control(recoveryCtx, "stop", serviceUnit); err != nil {
-			return c.finish(r, reason+" Recovery could not stop the service; inspect the journal and installed executable.")
-		}
-		if err := os.Rename(backup, r.Executable); err != nil {
-			return c.finish(r, reason+" Could not restore the previous executable; manual recovery is required.")
-		}
-		_ = state.SyncDir(filepath.Dir(r.Executable))
-		r.Backup = ""
-		reason += " Previous executable restored."
-	}
-	b, err := c.start(recoveryCtx, &r, "recovering")
-	if err != nil {
-		return c.finish(r, reason+" Automatic startup recovery failed; inspect journalctl --user -u q-agent.service.")
-	}
-	return c.finish(r, reason+" Service recovered and is running q-agent "+b.Version+".")
 }
 
 func copyExecutable(path string) (result string, err error) {

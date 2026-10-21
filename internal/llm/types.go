@@ -155,6 +155,9 @@ type Config struct {
 	APIKey             string
 	HTTP               HTTPDoer
 	InsecureSkipVerify bool
+	// ChatGPTOAuthPath selects the OAuth token file for the chatgpt provider.
+	// Empty means the package default. API providers ignore it.
+	ChatGPTOAuthPath string
 	// ModelMeta supplies exact-model reasoning choices from Models.dev. Request
 	// and replay formats remain in qcode's provider adapters.
 	ModelMeta *ProviderModelMeta

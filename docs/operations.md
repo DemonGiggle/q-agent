@@ -116,6 +116,20 @@ apply to scheduled tasks. Switching provider or model starts fresh topic
 history on the next task; thinking-only changes keep history.
 Changes are rejected while that chat has an active task.
 
+Thinking semantics (`thinking` in config, `/think` in chat):
+`auto` (empty string) omits the effort field and lets the backend decide; it
+never claims equality with a concrete level. `/think default` clears the chat
+override and restores the configured default (which may itself be explicit).
+For the `chatgpt` provider the live Codex catalog carries per-model
+`default_reasoning_level` / `supported_reasoning_levels`; the Codex CLI sends
+its catalog default explicitly when unset while q-agent omits effort when
+`auto` — bare `/think` shows `Current`, `Chat override`, `Configured default`,
+and `Codex catalog default` on separate lines plus the catalog
+`source`/`stale` status. `ultra`/`persistent`/`custom` are client-only in v1
+and are rejected, never silently downgraded. Reasoning `summary` is omitted by
+default; effort and summary are independent. Models.dev is not used for
+`chatgpt` (see `model_meta.go`); the Codex `/models` catalog is authoritative.
+
 For guided edits or scripts, use the [console guide](console.md)
 (`q-agent models`, `q-agent config`). Edits never restart the service.
 

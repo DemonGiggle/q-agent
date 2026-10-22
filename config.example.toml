@@ -11,6 +11,18 @@ api_key_env = ""
 # api_key_env: clear api_key_env to use it. The file must be a regular
 # file owned by the service user with mode 0600 or 0400, without symlinks.
 # api_key_path = "~/.config/q-agent/provider.key"
+# Thinking level for the default provider.
+#   "" (auto) = omit the effort field; the backend decides. It never claims
+#     equality with a concrete level (low/medium/...).
+#   "high" etc = send that effort on every request unless a chat overrides it
+#     with /think.
+# Chat overrides: /think <level|auto> sets this chat only, /think default
+# clears the override and restores this configured value.
+# Codex (chatgpt provider): the live catalog's default_reasoning_level is what
+# the Codex CLI sends when unset; q-agent omits effort when auto, which is a
+# different behavior. Bare /think shows both. `ultra`/`persistent`/`custom`
+# are client-only in v1 and are rejected, never silently downgraded.
+# Summary is omitted by default; effort and summary are independent.
 thinking = ""
 
 # Optional additional providers available to /provider in each chat/group.

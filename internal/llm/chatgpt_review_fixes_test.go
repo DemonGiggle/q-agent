@@ -5,6 +5,7 @@ import (
 	"io"
 	"net/http"
 	"strings"
+	"sync/atomic"
 	"testing"
 	"time"
 
@@ -181,5 +182,47 @@ func TestSingleLevelExplicitWire(t *testing.T) {
 	gotNone := codexRequestBodyWithCapability(noneCap, Request{Model: "solo-none", Thinking: "none", Messages: []Message{{Role: "user", Content: "hi"}}})
 	if _, ok := gotNone["reasoning"]; !ok {
 		t.Fatalf("none-only explicit none must send reasoning")
+	}
+}
+
+// Review P2 (d5039b2): optional catalog warm-up must not exhaust the whole
+// completion deadline. /models hangs until its own context is done; with a
+// 200ms task deadline Complete must still POST /responses on the original
+// (still-valid) context. Before the fix warm-up reused the parent ctx and
+// consumed the full budget (usable POSTs=0).
+func TestOptionalCatalogMustNotConsumeCompletionDeadline(t *testing.T) {
+	clearCodexCatalogCache()
+	oauthPath := writeChatGPTOAuth(t, "a", "r", "acct-1", time.Now().Add(time.Hour))
+	var catalogCalls atomic.Int32
+	var responsesCalls atomic.Int32
+	client := doerFunc(func(r *http.Request) (*http.Response, error) {
+		if strings.Contains(r.URL.Path, "/models") {
+			catalogCalls.Add(1)
+			// Hang until warm-up budget gives up, mirroring a stalled
+			// /models. Must observe warmCtx cancellation, not parent.
+			<-r.Context().Done()
+			return nil, r.Context().Err()
+		}
+		responsesCalls.Add(1)
+		if err := r.Context().Err(); err != nil {
+			return nil, err
+		}
+		stream := `data: {"type":"response.completed","response":{"usage":{"input_tokens":1,"output_tokens":1},"output":[{"type":"message","content":[{"type":"output_text","text":"ok"}]}]}}` + "\n\n"
+		return &http.Response{StatusCode: 200, Status: "200 OK", Header: make(http.Header), Body: io.NopCloser(strings.NewReader(stream))}, nil
+	})
+	p, err := newChatGPT(Config{ChatGPTOAuthPath: oauthPath, HTTP: client})
+	if err != nil {
+		t.Fatal(err)
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), 200*time.Millisecond)
+	defer cancel()
+	if _, err := p.Complete(ctx, Request{Model: "m", Messages: []Message{{Role: "user", Content: "hi"}}}, nil); err != nil {
+		t.Fatalf("optional catalog exhausted completion budget: err=%v catalogCalls=%d usable POSTs=%d", err, catalogCalls.Load(), responsesCalls.Load())
+	}
+	if got := catalogCalls.Load(); got != 1 {
+		t.Fatalf("catalog calls = %d, want 1", got)
+	}
+	if got := responsesCalls.Load(); got != 1 {
+		t.Fatalf("usable POSTs = %d, want 1", got)
 	}
 }

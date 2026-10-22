@@ -197,22 +197,70 @@ func (p *chatGPTProvider) fetchCatalogWithCreds(ctx context.Context, creds chatg
 	return snap, nil
 }
 
+// codexCatalogWarmMaxWait caps optional catalog warm-up during Complete so a
+// hung /models cannot exhaust the whole completion deadline. Warm-up runs on
+// a derived context with a short independent budget; on timeout Complete
+// proceeds with stale/Unknown using the original context (still valid) for
+// /responses. This keeps "catalog errors never fail completion" true even
+// for hangs, not just immediate errors.
+const codexCatalogWarmMaxWait = 2 * time.Second
+
+// codexCatalogWarmReserve is kept for the actual completion POST when the
+// parent context carries a deadline.
+const codexCatalogWarmReserve = 50 * time.Millisecond
+
+// codexWarmContext derives a bounded context for optional warm-up (lock wait
+// + GET /models). It returns ok=false when there is too little budget left
+// to attempt warm-up; the caller should skip and proceed with stale/Unknown.
+func codexWarmContext(parent context.Context) (context.Context, context.CancelFunc, bool) {
+	if deadline, ok := parent.Deadline(); ok {
+		remaining := time.Until(deadline)
+		if remaining <= codexCatalogWarmReserve+10*time.Millisecond {
+			return nil, nil, false
+		}
+		warm := remaining / 10
+		if warm > codexCatalogWarmMaxWait {
+			warm = codexCatalogWarmMaxWait
+		}
+		if maxAllowed := remaining - codexCatalogWarmReserve; warm > maxAllowed {
+			warm = maxAllowed
+		}
+		if warm <= 0 {
+			return nil, nil, false
+		}
+		ctx, cancel := context.WithTimeout(parent, warm)
+		return ctx, cancel, true
+	}
+	ctx, cancel := context.WithTimeout(parent, codexCatalogWarmMaxWait)
+	return ctx, cancel, true
+}
+
 // ensureCatalogWithCreds warms the cache with already-held credentials.
 // Catalog errors never fail completion; callers proceed with cached/unknown.
+//
+// Warm-up (lock wait + GET /models) runs on a short independent budget
+// derived from the parent context so a hung /models cannot consume the whole
+// completion deadline. The actual /responses POST always uses the original
+// context. On warm-up timeout the caller proceeds with stale/Unknown.
 func (p *chatGPTProvider) ensureCatalogWithCreds(ctx context.Context, creds chatgptoauth.Tokens) {
 	cacheKey := codexCatalogCacheKey(p.baseURL, creds.AccountID, p.tokensPath, codexClientVersion)
 	if cached, ok := getCodexCatalogCache(cacheKey, time.Now()); ok && !cached.Stale {
 		return
 	}
+	warmCtx, cancel, ok := codexWarmContext(ctx)
+	if !ok {
+		return
+	}
+	defer cancel()
 	mu := codexRefreshLockFor(cacheKey)
-	if err := lockCodexRefreshContext(ctx, mu); err != nil {
+	if err := lockCodexRefreshContext(warmCtx, mu); err != nil {
 		return
 	}
 	defer mu.Unlock()
 	if fresh, ok := getCodexCatalogCache(cacheKey, time.Now()); ok && !fresh.Stale {
 		return
 	}
-	_, _ = p.fetchCatalogWithCreds(ctx, creds, cacheKey)
+	_, _ = p.fetchCatalogWithCreds(warmCtx, creds, cacheKey)
 }
 
 // CachedCatalog returns the last-known-good catalog snapshot for this

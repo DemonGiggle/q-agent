@@ -479,7 +479,6 @@ func TestModelsMenuManageExtras(t *testing.T) {
 	}
 }
 
-
 func TestConsoleAutoMigratesLegacyConfig(t *testing.T) {
 	path := filepath.Join(t.TempDir(), "config.toml")
 	if err := os.WriteFile(path, []byte("[provider]\nname = 'ollama'\nmodel = 'before'\n[telegram]\napproved_user_ids = [123456789]\napproved_chat_ids = [-1001234567890]\n[limits]\nmax_steps = 8\nmax_tool_calls = 5\n"), 0600); err != nil {

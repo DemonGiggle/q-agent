@@ -29,8 +29,8 @@ type Report struct {
 const maxToolCallsKey = "limits.max_tool_calls"
 
 var legacyAllowlistKeys = map[string]bool{
-	"telegram.approved_user_ids":  true,
-	"telegram.approved_chat_ids":  true,
+	"telegram.approved_user_ids": true,
+	"telegram.approved_chat_ids": true,
 }
 
 // occurrenceIDs decodes the value of one matched key/value expression as an

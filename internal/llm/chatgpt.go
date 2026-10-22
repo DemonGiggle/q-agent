@@ -57,17 +57,70 @@ const codexClientVersion = "1.0.0"
 // by endpoint + account + client_version + token file. Visibility filtering
 // happens at display time so decode never discards metadata. Auth failures
 // (401/403) never serve stale entries; retriable failures do.
+//
+// Refresh is serialized per scope with a context-aware lock so concurrent
+// callers share one flight and task cancellation stays effective.
 func (p *chatGPTProvider) Models(ctx context.Context) ([]string, error) {
-	creds, err := chatgptoauth.GetValidTokens(ctx, p.client, p.tokensPath)
+	snap, err := p.RefreshCatalog(ctx)
 	if err != nil {
 		return nil, err
 	}
+	return append([]string(nil), snap.DisplaySlugs...), nil
+}
+
+// RefreshCatalog ensures a fresh scoped snapshot, returning fresh or stale
+// last-known-good on retriable failures. It never returns an empty list on
+// retriable errors when stale exists; auth failures (401/403) always error.
+func (p *chatGPTProvider) RefreshCatalog(ctx context.Context) (CodexCatalogSnapshot, error) {
 	now := time.Now()
-	cacheKey := codexCatalogCacheKey(p.baseURL, creds.AccountID, p.tokensPath, codexClientVersion)
-	if cached, ok := getCodexCatalogCache(cacheKey, now); ok && !cached.Stale {
-		return append([]string(nil), cached.DisplaySlugs...), nil
+	if snap, ok := p.CachedCatalog(); ok && !snap.Stale {
+		return snap, nil
 	}
-	cached, hasCached := getCodexCatalogCache(cacheKey, now)
+	creds, err := chatgptoauth.GetValidTokens(ctx, p.client, p.tokensPath)
+	if err != nil {
+		return CodexCatalogSnapshot{}, err
+	}
+	cacheKey := codexCatalogCacheKey(p.baseURL, creds.AccountID, p.tokensPath, codexClientVersion)
+	if cached, ok := getCodexCatalogCache(cacheKey, time.Now()); ok && !cached.Stale {
+		_ = now
+		return cached, nil
+	}
+	cached, hasCached := getCodexCatalogCache(cacheKey, time.Now())
+	mu := codexRefreshLockFor(cacheKey)
+	if err := lockCodexRefreshContext(ctx, mu); err != nil {
+		if hasCached {
+			return cached, err
+		}
+		return CodexCatalogSnapshot{}, err
+	}
+	defer mu.Unlock()
+	// Re-check after acquiring: a concurrent refresher may have won.
+	if fresh, ok := getCodexCatalogCache(cacheKey, time.Now()); ok && !fresh.Stale {
+		return fresh, nil
+	}
+	cached, hasCached = getCodexCatalogCache(cacheKey, time.Now())
+	snap, fetchErr := p.fetchCatalogWithCreds(ctx, creds, cacheKey)
+	if fetchErr != nil {
+		if authErr, ok := fetchErr.(*codexAuthError); ok && authErr != nil {
+			return CodexCatalogSnapshot{}, fetchErr
+		}
+		if hasCached {
+			return cached, nil
+		}
+		return CodexCatalogSnapshot{}, fetchErr
+	}
+	return snap, nil
+}
+
+// codexAuthError marks 401/403 so callers never hide it behind stale.
+type codexAuthError struct{ msg string }
+
+func (e *codexAuthError) Error() string { return e.msg }
+
+// fetchCatalogWithCreds performs one GET /models with the given credentials
+// and stores the result. Retriable failures return an error; auth failures
+// return *codexAuthError.
+func (p *chatGPTProvider) fetchCatalogWithCreds(ctx context.Context, creds chatgptoauth.Tokens, cacheKey string) (CodexCatalogSnapshot, error) {
 	catalogURL := p.baseURL + "/models"
 	if u, err := url.Parse(catalogURL); err == nil {
 		q := u.Query()
@@ -79,10 +132,7 @@ func (p *chatGPTProvider) Models(ctx context.Context) ([]string, error) {
 	}
 	req, err := http.NewRequestWithContext(ctx, http.MethodGet, catalogURL, nil)
 	if err != nil {
-		if hasCached {
-			return append([]string(nil), cached.DisplaySlugs...), nil
-		}
-		return nil, err
+		return CodexCatalogSnapshot{}, err
 	}
 	req.Header.Set("Authorization", "Bearer "+creds.AccessToken)
 	if creds.AccountID != "" {
@@ -90,44 +140,30 @@ func (p *chatGPTProvider) Models(ctx context.Context) ([]string, error) {
 	}
 	resp, err := p.client.Do(req)
 	if err != nil {
-		if hasCached {
-			return append([]string(nil), cached.DisplaySlugs...), nil
-		}
-		return nil, err
+		return CodexCatalogSnapshot{}, err
 	}
 	defer resp.Body.Close()
 	if resp.StatusCode < 200 || resp.StatusCode >= 300 {
 		data, _ := io.ReadAll(io.LimitReader(resp.Body, 1<<20))
-		// Auth failures must surface so callers re-login; never hide them
-		// behind a stale list and never let one account's list leak into
-		// another scope.
+		msg := fmt.Errorf("provider returned %s: %s", resp.Status, strings.TrimSpace(string(data)))
 		if resp.StatusCode == 401 || resp.StatusCode == 403 {
-			return nil, fmt.Errorf("provider returned %s: %s", resp.Status, strings.TrimSpace(string(data)))
+			return CodexCatalogSnapshot{}, &codexAuthError{msg: msg.Error()}
 		}
-		if hasCached {
-			return append([]string(nil), cached.DisplaySlugs...), nil
-		}
-		return nil, fmt.Errorf("provider returned %s: %s", resp.Status, strings.TrimSpace(string(data)))
+		return CodexCatalogSnapshot{}, msg
 	}
 	data, err := io.ReadAll(io.LimitReader(resp.Body, 1<<20))
 	if err != nil {
-		if hasCached {
-			return append([]string(nil), cached.DisplaySlugs...), nil
-		}
-		return nil, err
+		return CodexCatalogSnapshot{}, err
 	}
 	entries, legacyIDs, err := decodeCodexCatalog(data)
 	if err != nil {
-		if hasCached {
-			return append([]string(nil), cached.DisplaySlugs...), nil
-		}
-		return nil, fmt.Errorf("decode models: %w", err)
+		return CodexCatalogSnapshot{}, fmt.Errorf("decode models: %w", err)
 	}
 	endpoint := strings.TrimRight(strings.TrimSpace(p.baseURL), "/")
 	fetchedAt := time.Now()
 	if len(entries) > 0 {
 		display := codexDisplaySlugs(entries)
-		putCodexCatalogCache(cacheKey, CodexCatalogSnapshot{
+		snap := CodexCatalogSnapshot{
 			Entries:       append([]CodexModelEntry(nil), entries...),
 			DisplaySlugs:  append([]string(nil), display...),
 			FetchedAt:     fetchedAt,
@@ -136,16 +172,18 @@ func (p *chatGPTProvider) Models(ctx context.Context) ([]string, error) {
 			Endpoint:      endpoint,
 			ClientVersion: codexClientVersion,
 			Count:         len(entries),
-		})
-		return display, nil
+		}
+		putCodexCatalogCache(cacheKey, snap)
+		return snap, nil
 	}
 	// Legacy fallback: synthesize minimal entries so cache shape stays uniform.
+	// These carry no reasoning metadata and resolve to Unknown, not unsupported.
 	synth := make([]CodexModelEntry, 0, len(legacyIDs))
 	for _, id := range legacyIDs {
 		synth = append(synth, CodexModelEntry{Slug: id, Visibility: "list"})
 	}
 	display := append([]string(nil), legacyIDs...)
-	putCodexCatalogCache(cacheKey, CodexCatalogSnapshot{
+	snap := CodexCatalogSnapshot{
 		Entries:       synth,
 		DisplaySlugs:  append([]string(nil), display...),
 		FetchedAt:     fetchedAt,
@@ -154,8 +192,27 @@ func (p *chatGPTProvider) Models(ctx context.Context) ([]string, error) {
 		Endpoint:      endpoint,
 		ClientVersion: codexClientVersion,
 		Count:         len(synth),
-	})
-	return display, nil
+	}
+	putCodexCatalogCache(cacheKey, snap)
+	return snap, nil
+}
+
+// ensureCatalogWithCreds warms the cache with already-held credentials.
+// Catalog errors never fail completion; callers proceed with cached/unknown.
+func (p *chatGPTProvider) ensureCatalogWithCreds(ctx context.Context, creds chatgptoauth.Tokens) {
+	cacheKey := codexCatalogCacheKey(p.baseURL, creds.AccountID, p.tokensPath, codexClientVersion)
+	if cached, ok := getCodexCatalogCache(cacheKey, time.Now()); ok && !cached.Stale {
+		return
+	}
+	mu := codexRefreshLockFor(cacheKey)
+	if err := lockCodexRefreshContext(ctx, mu); err != nil {
+		return
+	}
+	defer mu.Unlock()
+	if fresh, ok := getCodexCatalogCache(cacheKey, time.Now()); ok && !fresh.Stale {
+		return
+	}
+	_, _ = p.fetchCatalogWithCreds(ctx, creds, cacheKey)
 }
 
 // CachedCatalog returns the last-known-good catalog snapshot for this
@@ -277,11 +334,16 @@ func (p *chatGPTProvider) doCodex(ctx context.Context, input Request, creds chat
 // refreshing once on 401 before giving up. The 401 retry reuses the
 // serialized RefreshAndSaveWithStale path so a concurrent refresh is not
 // spent twice on the same rotating refresh token.
+//
+// It best-effort warms the catalog with the same credentials so request-time
+// ThinkingCapability is not Unknown when another instance recently listed
+// models. Catalog errors never fail completion.
 func (p *chatGPTProvider) Complete(ctx context.Context, input Request, onText StreamCallback) (Response, error) {
 	creds, err := chatgptoauth.GetValidTokens(ctx, p.client, p.tokensPath)
 	if err != nil {
 		return Response{}, err
 	}
+	p.ensureCatalogWithCreds(ctx, creds)
 	resp, err := p.doCodex(ctx, input, creds, onText)
 	if err == nil {
 		return resp, nil
@@ -305,16 +367,32 @@ func isUnauthorized(err error) bool {
 }
 
 // ThinkingCapability resolves per-model levels from the scoped
-// last-known-good catalog cache without network access. Unknown models (or
-// no cache yet) report unsupported, preserving pre-#23 behavior; unknown vs
-// unsupported display and refresh lifecycle are #24/#25.
+// last-known-good catalog cache without network access.
+//
+// It never blocks on I/O so /think can call it while holding the runtime
+// lock. No cache (or model absent) returns Unknown, not unsupported; legacy
+// fallback entries without reasoning metadata also return Unknown. Callers
+// must not report "does not support thinking" for Unknown.
 func (p *chatGPTProvider) ThinkingCapability(model string) ThinkingCapability {
+	// Empty provider (zero value, only used to simulate the pre-#23 bug)
+	// stays unsupported so the regression test keeps its meaning. Real
+	// providers from newChatGPT always have baseURL set.
+	if strings.TrimSpace(p.baseURL) == "" {
+		return ThinkingCapability{Supported: false, Unknown: false}
+	}
 	if snap, ok := p.CachedCatalog(); ok {
 		if entry := findCodexEntry(snap, model); entry != nil {
-			return codexCapabilityForEntry(*entry)
+			cap := codexCapabilityForEntry(*entry)
+			cap.Source = snap.Source
+			cap.Stale = snap.Stale
+			return cap
 		}
+		cap := unknownCodexCapability()
+		cap.Source = snap.Source
+		cap.Stale = snap.Stale
+		return cap
 	}
-	return ThinkingCapability{Supported: false}
+	return unknownCodexCapability()
 }
 
 // ValidateModel accepts any non-empty model; the Codex catalog moves fast.

@@ -1,6 +1,9 @@
 package llm
 
-import "strings"
+import (
+	"fmt"
+	"strings"
+)
 
 const (
 	ThinkingRequestNone            = "none"
@@ -211,12 +214,74 @@ func validThinkingLevel(capability ThinkingCapability, level string) bool {
 	return false
 }
 
+// KnownThinkingLevels is the shared fallback set for Unknown capabilities and
+// for providers without per-model metadata. Runtime /think and config
+// validation must use ValidateThinkingLevel (which delegates to the Codex
+// per-model validator when applicable) instead of maintaining a separate
+// hardcoded list.
+var KnownThinkingLevels = []string{"off", "on", "none", "minimal", "low", "medium", "high", "xhigh", "max"}
+
+// ValidateThinkingLevel checks an explicit level against any capability.
+// Empty (auto) is always allowed. Codex capabilities use the per-model
+// validator (Unknown allows plausible efforts optimistically); other
+// providers validate strictly against Levels.
+func ValidateThinkingLevel(cap ThinkingCapability, level string) error {
+	norm := strings.ToLower(strings.TrimSpace(level))
+	if norm == "" {
+		return nil
+	}
+	if cap.RequestFormat == ThinkingRequestCodexReasoning {
+		return ValidateCodexThinkingLevel(cap, level)
+	}
+	if cap.Unknown {
+		for _, lv := range KnownThinkingLevels {
+			if norm == lv {
+				return nil
+			}
+		}
+		return fmt.Errorf("unknown thinking level %q", level)
+	}
+	if !cap.Supported {
+		return fmt.Errorf("model does not support thinking levels")
+	}
+	if cap.AlwaysOn {
+		if len(cap.Levels) == 1 && norm == strings.ToLower(cap.Levels[0]) {
+			return nil
+		}
+		if cap.Default != "" && norm == strings.ToLower(cap.Default) {
+			return nil
+		}
+		return fmt.Errorf("thinking is always on for this model")
+	}
+	if !cap.Adjustable || len(cap.Levels) == 0 {
+		return fmt.Errorf("thinking is not adjustable for this model")
+	}
+	for _, lv := range cap.Levels {
+		if norm == strings.ToLower(lv) {
+			return nil
+		}
+	}
+	return fmt.Errorf("unsupported thinking level %q", level)
+}
+
 // thinkingFields resolves the single optional request encoding. Off is a
 // thinking-object setting even for models that use reasoning_effort for their
 // enabled tiers; this prevents sending mutually exclusive fields together.
 func thinkingFields(capability ThinkingCapability, level string) map[string]any {
 	level = strings.ToLower(strings.TrimSpace(level))
-	if level == "" || !capability.Adjustable || !validThinkingLevel(capability, level) {
+	if level == "" {
+		return nil
+	}
+	// Unknown Codex catalog: send plausible efforts optimistically so an
+	// explicit level set before the first models list is not silently dropped.
+	// Known validation still rejects typos and client-only efforts.
+	if capability.Unknown && capability.RequestFormat == ThinkingRequestCodexReasoning {
+		if isCodexClientOnlyEffort(level) || !isCodexPlausibleLevel(level) {
+			return nil
+		}
+		return map[string]any{"reasoning": map[string]any{"effort": level}}
+	}
+	if !capability.Adjustable || !validThinkingLevel(capability, level) {
 		return nil
 	}
 	if capability.RequestFormat == ThinkingRequestOllamaThink {

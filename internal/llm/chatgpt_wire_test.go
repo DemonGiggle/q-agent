@@ -123,10 +123,20 @@ func TestCodexCapabilityFiltersClientOnly(t *testing.T) {
 	if cap2.Default == "ultra" {
 		t.Fatalf("client-only default must be dropped, got %+v", cap2)
 	}
-	// No levels => unsupported (pre-#23 behavior preserved).
+	// No levels => Unknown, not unsupported (#24: must not claim "cannot think"
+	// when we simply have no metadata; legacy fallback has no reasoning info).
 	empty := codexCapabilityForEntry(CodexModelEntry{Slug: "legacy"})
-	if empty.Supported {
-		t.Fatalf("empty entry must stay unsupported")
+	if empty.Supported || !empty.Unknown {
+		t.Fatalf("empty entry must be Unknown, got %+v", empty)
+	}
+	// Entry that only advertises client-only efforts filters to zero usable
+	// tiers => truly unsupported (not Unknown).
+	onlyUltra := codexCapabilityForEntry(CodexModelEntry{
+		Slug:               "ultra-only",
+		SupportedReasoning: []CodexReasoningLevelOption{{Effort: "ultra"}},
+	})
+	if onlyUltra.Supported || onlyUltra.Unknown {
+		t.Fatalf("ultra-only must be unsupported, got %+v", onlyUltra)
 	}
 }
 
@@ -146,9 +156,9 @@ func TestCodexEmptyObjectBugFixed(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	// Before Models(): no cache => unsupported (old behavior preserved).
-	if got := p.(ThinkingProvider).ThinkingCapability("gpt-6.1-sol"); got.Supported {
-		t.Fatalf("pre-cache should stay unsupported, got %+v", got)
+	// Before Models(): no cache => Unknown, not unsupported (#24).
+	if got := p.(ThinkingProvider).ThinkingCapability("gpt-6.1-sol"); got.Supported || !got.Unknown {
+		t.Fatalf("pre-cache should be Unknown, got %+v", got)
 	}
 	// Old buggy path always unsupported even with cache available.
 	buggy := (&chatGPTProvider{}).ThinkingCapability("gpt-6.1-sol")
@@ -179,14 +189,14 @@ func TestCodexEmptyObjectBugFixed(t *testing.T) {
 	if _, has := m["summary"]; has {
 		t.Fatalf("summary must be omitted, got %v", m)
 	}
-	// Buggy empty-provider body drops it.
+	// Buggy empty-provider body drops it (empty provider stays unsupported).
 	buggyBody := codexRequestBodyWithCapability(buggy, Request{Model: "gpt-6.1-sol", Thinking: "high", Messages: []Message{{Role: "user", Content: "hi"}}})
 	if _, ok := buggyBody["reasoning"]; ok {
 		t.Fatalf("empty capability must not send reasoning")
 	}
-	// Unknown model stays unsupported (unknown vs unsupported split is #24).
-	if got := p.(ThinkingProvider).ThinkingCapability("nope-xyz"); got.Supported {
-		t.Fatalf("unknown must stay unsupported in #23, got %+v", got)
+	// Unknown model => Unknown, not unsupported (#24).
+	if got := p.(ThinkingProvider).ThinkingCapability("nope-xyz"); got.Supported || !got.Unknown {
+		t.Fatalf("unknown must be Unknown in #24, got %+v", got)
 	}
 }
 

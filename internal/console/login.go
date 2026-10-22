@@ -21,7 +21,7 @@ func (c *console) login(args []string) error {
 	if len(args) != 1 || args[0] != "chatgpt" {
 		return fmt.Errorf("usage: q-agent login chatgpt [--config FILE]")
 	}
-	cfg, err := load(c.path)
+	cfg, err := c.load()
 	if err != nil {
 		return err
 	}
@@ -70,6 +70,6 @@ func (c *console) login(args []string) error {
 	fmt.Fprintf(c.out, "Saved %s (0600).\n", resolved)
 	fmt.Fprintln(c.out, "Next: set provider.name = \"chatgpt\" and provider.model to a Codex model,")
 	fmt.Fprintln(c.out, "then restart the service. Example:")
-	fmt.Fprintln(c.out, "  q-agent models set --provider chatgpt --model gpt-5.6-codex")
+	fmt.Fprintln(c.out, "  q-agent models set-default --provider chatgpt --model gpt-5.6-codex")
 	return nil
 }

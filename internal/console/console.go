@@ -29,10 +29,20 @@ Human menus (require a terminal):
   q-agent login chatgpt [--config FILE]
 
 Automation (never prompts; --json for machine-readable output):
-  q-agent models show|list|providers [--config FILE] [--json]
-  q-agent models set --model NAME [--provider NAME] [--base-url URL]
-                     [--thinking LEVEL] [--api-key-env NAME | --api-key-path FILE]
-                     [--config FILE] [--json]
+  q-agent models show [--provider NAME | --all] [--config FILE] [--json]
+  q-agent models list [--provider NAME] [--config FILE] [--json]
+  q-agent models providers [--config FILE] [--json]
+  q-agent models set-default --model NAME [--provider NAME] [--base-url URL]
+                             [--thinking LEVEL] [--api-key-env NAME | --api-key-path FILE]
+                             [--config FILE] [--json]
+  q-agent models add --provider NAME --model NAME [--base-url URL]
+                    [--thinking LEVEL] [--api-key-env NAME | --api-key-path FILE]
+                    [--config FILE] [--json]
+  q-agent models update --provider NAME [--model NAME] [--base-url URL]
+                       [--thinking LEVEL] [--api-key-env NAME | --api-key-path FILE]
+                       [--config FILE] [--json]
+  q-agent models remove --provider NAME [--config FILE] [--json]
+  q-agent models set ... (deprecated alias for set-default)
   q-agent config show|validate [--config FILE] [--json]
   q-agent config get KEY [--config FILE] [--json]
   q-agent config set KEY VALUE [--config FILE] [--json]
@@ -182,8 +192,11 @@ func (c *console) output(value any) error {
 	}
 	return nil
 }
-func load(path string) (config.Config, error) {
-	cfg, err := config.Load(path)
+func (c *console) load() (config.Config, error) {
+	cfg, rep, err := config.LoadMigrated(c.path)
+	if rep.Migrated {
+		fmt.Fprintf(c.errOut, "migrated config (%s); backup: %s\n", strings.Join(rep.Changes, "; "), rep.Backup)
+	}
 	// TOML parser errors may quote input. Never print malformed config contents.
 	if err != nil {
 		return cfg, fmt.Errorf("cannot load configuration; check the file path, TOML syntax and values")
@@ -191,8 +204,30 @@ func load(path string) (config.Config, error) {
 	return cfg, nil
 }
 func (c *console) action(group, action string, args []string) error {
-	if group == "models" && action == "set" {
-		return c.setModels(args)
+	if group == "models" {
+		switch action {
+		case "set":
+			return c.setModelsDeprecated(args)
+		case "set-default":
+			return c.setDefaultModels(args)
+		case "add":
+			return c.addProvider(args)
+		case "update":
+			return c.updateProvider(args)
+		case "remove":
+			return c.removeProvider(args)
+		case "show":
+			return c.showModels(args)
+		case "list":
+			return c.listModelsDispatch(args)
+		case "providers":
+			if len(args) != 0 {
+				return fmt.Errorf("models providers expects no arguments; use --help")
+			}
+			return c.output(llm.Names())
+		default:
+			return fmt.Errorf("unknown models action %q; use --help", action)
+		}
 	}
 	if group == "config" && action == "set" {
 		if len(args) != 2 {
@@ -219,10 +254,7 @@ func (c *console) action(group, action string, args []string) error {
 	if len(args) != count {
 		return fmt.Errorf("%s %s expects %d arguments; use --help", group, action, count)
 	}
-	if action == "providers" {
-		return c.output(llm.Names())
-	}
-	cfg, err := load(c.path)
+	cfg, err := c.load()
 	if err != nil {
 		return err
 	}
@@ -239,23 +271,103 @@ func (c *console) action(group, action string, args []string) error {
 			return c.output(value)
 		}
 		return c.output(map[string]any{args[0]: value})
-	case "list":
-		return c.listModels(cfg)
 	default:
 		values := safeValues(config.Values(cfg))
-		if group == "models" {
-			for key := range values {
-				if !strings.HasPrefix(key, "provider.") {
-					delete(values, key)
-				}
-			}
-		}
 		return c.output(values)
 	}
 }
+
+func (c *console) showModels(args []string) error {
+	fs := flag.NewFlagSet("models show", flag.ContinueOnError)
+	fs.SetOutput(io.Discard)
+	provider := fs.String("provider", "", "provider")
+	all := fs.Bool("all", false, "all")
+	if err := fs.Parse(args); err != nil {
+		return fmt.Errorf("invalid models show options; use --help")
+	}
+	if fs.NArg() != 0 {
+		return fmt.Errorf("models show takes flags, not positional arguments")
+	}
+	if *provider != "" && *all {
+		return fmt.Errorf("models show accepts either --provider NAME or --all, not both")
+	}
+	cfg, err := c.load()
+	if err != nil {
+		return err
+	}
+	values := safeValues(config.Values(cfg))
+	if *all {
+		filtered := map[string]any{}
+		for k, v := range values {
+			if strings.HasPrefix(k, "provider.") || strings.HasPrefix(k, "providers.") {
+				filtered[k] = v
+			}
+		}
+		return c.output(filtered)
+	}
+	if *provider != "" {
+		if *provider == cfg.Provider.Name {
+			return c.output(filterDefault(values))
+		}
+		if _, ok := cfg.Providers[*provider]; !ok {
+			return fmt.Errorf("provider %q is not configured; use `models show --all` to list configured providers", *provider)
+		}
+		prefix := "providers." + *provider + "."
+		filtered := map[string]any{}
+		for k, v := range values {
+			if strings.HasPrefix(k, prefix) {
+				filtered[k] = v
+			}
+		}
+		return c.output(filtered)
+	}
+	return c.output(filterDefault(values))
+}
+
+func filterDefault(values map[string]any) map[string]any {
+	filtered := map[string]any{}
+	for k, v := range values {
+		if strings.HasPrefix(k, "provider.") {
+			filtered[k] = v
+		}
+	}
+	return filtered
+}
+
+func (c *console) listModelsDispatch(args []string) error {
+	fs := flag.NewFlagSet("models list", flag.ContinueOnError)
+	fs.SetOutput(io.Discard)
+	providerName := fs.String("provider", "", "provider")
+	if err := fs.Parse(args); err != nil {
+		return fmt.Errorf("invalid models list options; use --help")
+	}
+	if fs.NArg() != 0 {
+		return fmt.Errorf("models list takes flags, not positional arguments")
+	}
+	cfg, err := c.load()
+	if err != nil {
+		return err
+	}
+	var selected config.Provider
+	if *providerName == "" {
+		selected = cfg.Provider
+	} else {
+		p, ok := cfg.ProviderByName(*providerName)
+		if !ok {
+			return fmt.Errorf("provider %q is not configured; use `models show --all` to list configured providers", *providerName)
+		}
+		selected = p
+	}
+	return c.listProviderModels(cfg, selected)
+}
+
 func (c *console) listModels(cfg config.Config) error {
-	if cfg.Provider.Name == "chatgpt" {
-		p, err := llm.New(cfg.Provider.Name, llm.Config{BaseURL: cfg.Provider.BaseURL, ChatGPTOAuthPath: cfg.ChatGPT.OAuthPath, HTTP: &http.Client{Timeout: 15 * time.Second}})
+	return c.listProviderModels(cfg, cfg.Provider)
+}
+
+func (c *console) listProviderModels(cfg config.Config, provider config.Provider) error {
+	if provider.Name == "chatgpt" {
+		p, err := llm.New(provider.Name, llm.Config{BaseURL: provider.BaseURL, ChatGPTOAuthPath: cfg.ChatGPT.OAuthPath, HTTP: &http.Client{Timeout: 15 * time.Second}})
 		if err != nil {
 			return fmt.Errorf("cannot initialize provider")
 		}
@@ -275,14 +387,14 @@ func (c *console) listModels(cfg config.Config) error {
 		}
 		return c.output(models)
 	}
-	key, err := cfg.Provider.APIKey()
+	key, err := provider.APIKey()
 	if err != nil {
 		return fmt.Errorf("cannot read provider credential; check its reference and permissions")
 	}
-	if cfg.Provider.Name != "ollama" && key == "" {
+	if provider.Name != "ollama" && key == "" {
 		return fmt.Errorf("provider credential is not available")
 	}
-	p, err := llm.New(cfg.Provider.Name, llm.Config{BaseURL: cfg.Provider.BaseURL, APIKey: key, HTTP: &http.Client{Timeout: 15 * time.Second}})
+	p, err := llm.New(provider.Name, llm.Config{BaseURL: provider.BaseURL, APIKey: key, HTTP: &http.Client{Timeout: 15 * time.Second}})
 	if err != nil {
 		return fmt.Errorf("cannot initialize provider")
 	}
@@ -302,26 +414,219 @@ func (c *console) listModels(cfg config.Config) error {
 	}
 	return c.output(models)
 }
-func (c *console) setModels(args []string) error {
-	fs := flag.NewFlagSet("models set", flag.ContinueOnError)
+
+func parseModelFlags(action string, args []string) (map[string]*string, *flag.FlagSet, error) {
+	fs := flag.NewFlagSet("models "+action, flag.ContinueOnError)
 	fs.SetOutput(io.Discard)
 	fields := map[string]*string{}
 	for _, name := range []string{"provider", "model", "base-url", "thinking", "api-key-env", "api-key-path"} {
 		fields[name] = fs.String(name, "", name)
 	}
 	if err := fs.Parse(args); err != nil {
-		return fmt.Errorf("invalid models set options; use --help")
+		return nil, nil, fmt.Errorf("invalid models %s options; use --help", action)
 	}
 	if fs.NArg() != 0 {
-		return fmt.Errorf("models set takes flags, not positional arguments")
+		return nil, nil, fmt.Errorf("models %s takes flags, not positional arguments", action)
 	}
+	return fields, fs, nil
+}
+
+func modelFlagChanges(fields map[string]*string, fs *flag.FlagSet, prefix string) map[string]any {
 	changes := map[string]any{}
 	names := map[string]string{"provider": "name", "model": "model", "base-url": "base_url", "thinking": "thinking", "api-key-env": "api_key_env", "api-key-path": "api_key_path"}
-	fs.Visit(func(f *flag.Flag) { changes["provider."+names[f.Name]] = *fields[f.Name] })
+	fs.Visit(func(f *flag.Flag) {
+		if f.Name == "provider" && prefix != "provider." {
+			// Provider flag selects the table for add/update/remove; not a field.
+			return
+		}
+		changes[prefix+names[f.Name]] = *fields[f.Name]
+	})
+	return changes
+}
+
+func clearOtherCredential(changes map[string]any, prefix string) {
+	if _, ok := changes[prefix+"api_key_env"]; ok {
+		if _, both := changes[prefix+"api_key_path"]; !both {
+			changes[prefix+"api_key_path"] = ""
+		}
+	}
+	if _, ok := changes[prefix+"api_key_path"]; ok {
+		if _, both := changes[prefix+"api_key_env"]; !both {
+			changes[prefix+"api_key_env"] = ""
+		}
+	}
+}
+
+func (c *console) setDefaultModels(args []string) error {
+	fields, fs, err := parseModelFlags("set-default", args)
+	if err != nil {
+		return err
+	}
+	_ = fields
+	changes := modelFlagChanges(fields, fs, "provider.")
+	if len(changes) == 0 {
+		return fmt.Errorf("models set-default requires at least one setting; use --model NAME")
+	}
+	cfg, err := c.load()
+	if err != nil {
+		return err
+	}
+	if name, ok := changes["provider.name"]; ok && name != cfg.Provider.Name {
+		if !config.ValidProviderAdapter(name.(string)) {
+			return fmt.Errorf("unknown provider %q", name)
+		}
+		if _, dup := cfg.Providers[name.(string)]; dup {
+			return fmt.Errorf("providers.%s already exists as an extra; remove it first or choose another default", name)
+		}
+		if model, ok := changes["provider.model"]; !ok || model == "" {
+			return fmt.Errorf("changing provider also requires --model NAME")
+		}
+		// Do not carry another provider's endpoint or credential across providers.
+		for _, key := range []string{"base_url", "api_key_env", "api_key_path", "thinking"} {
+			full := "provider." + key
+			if _, ok := changes[full]; !ok {
+				changes[full] = ""
+			}
+		}
+	}
+	clearOtherCredential(changes, "provider.")
+	return c.save(changes)
+}
+
+func (c *console) addProvider(args []string) error {
+	fields, fs, err := parseModelFlags("add", args)
+	if err != nil {
+		return err
+	}
+	visited := map[string]bool{}
+	fs.Visit(func(f *flag.Flag) { visited[f.Name] = true })
+	name := *fields["provider"]
+	if !visited["provider"] || name == "" {
+		return fmt.Errorf("models add requires --provider NAME and --model NAME")
+	}
+	if !config.ValidProviderAdapter(name) {
+		return fmt.Errorf("unknown provider %q", name)
+	}
+	model := ""
+	if visited["model"] {
+		model = *fields["model"]
+	}
+	if !visited["model"] || model == "" {
+		return fmt.Errorf("models add requires --provider NAME and --model NAME")
+	}
+	cfg, err := c.load()
+	if err != nil {
+		return err
+	}
+	if name == cfg.Provider.Name {
+		return fmt.Errorf("providers.%s duplicates the default provider; use models set-default to change the default", name)
+	}
+	if _, exists := cfg.Providers[name]; exists {
+		return fmt.Errorf("provider %q already exists; use models update to edit it", name)
+	}
+	if visited["api-key-env"] && visited["api-key-path"] && *fields["api-key-env"] != "" && *fields["api-key-path"] != "" {
+		return fmt.Errorf("provider.api_key_env and provider.api_key_path are mutually exclusive")
+	}
+	if name == "chatgpt" && ((visited["api-key-env"] && *fields["api-key-env"] != "") || (visited["api-key-path"] && *fields["api-key-path"] != "")) {
+		return fmt.Errorf("provider chatgpt uses ChatGPT OAuth (q-agent login chatgpt); clear api_key_env and api_key_path")
+	}
+	changes := map[string]any{}
+	prefix := "providers." + name + "."
+	if visited["model"] {
+		changes[prefix+"model"] = *fields["model"]
+	}
+	for _, flagName := range []string{"base-url", "thinking", "api-key-env", "api-key-path"} {
+		if visited[flagName] {
+			suffix := map[string]string{"base-url": "base_url", "thinking": "thinking", "api-key-env": "api_key_env", "api-key-path": "api_key_path"}[flagName]
+			// Skip empty clears on add to keep the new table minimal; empty means default.
+			if *fields[flagName] == "" {
+				continue
+			}
+			changes[prefix+suffix] = *fields[flagName]
+		}
+	}
+	if len(changes) == 0 {
+		return fmt.Errorf("models add requires --provider NAME and --model NAME")
+	}
+	return c.save(changes)
+}
+
+func (c *console) updateProvider(args []string) error {
+	fields, fs, err := parseModelFlags("update", args)
+	if err != nil {
+		return err
+	}
+	visited := map[string]bool{}
+	fs.Visit(func(f *flag.Flag) { visited[f.Name] = true })
+	name := *fields["provider"]
+	if !visited["provider"] || name == "" {
+		return fmt.Errorf("models update requires --provider NAME and at least one setting")
+	}
+	cfg, err := c.load()
+	if err != nil {
+		return err
+	}
+	if name == cfg.Provider.Name && !func() bool { _, ok := cfg.Providers[name]; return ok }() {
+		return fmt.Errorf("provider %q is the default provider; use models set-default to change it", name)
+	}
+	if _, ok := cfg.Providers[name]; !ok {
+		return fmt.Errorf("provider %q is not configured as an extra; use models add to create it", name)
+	}
+	prefix := "providers." + name + "."
+	changes := map[string]any{}
+	for _, flagName := range []string{"model", "base-url", "thinking", "api-key-env", "api-key-path"} {
+		if visited[flagName] {
+			suffix := map[string]string{"model": "model", "base-url": "base_url", "thinking": "thinking", "api-key-env": "api_key_env", "api-key-path": "api_key_path"}[flagName]
+			val := *fields[flagName]
+			if flagName == "model" && val == "" {
+				return fmt.Errorf("provider.model is required")
+			}
+			changes[prefix+suffix] = val
+		}
+	}
+	if len(changes) == 0 {
+		return fmt.Errorf("models update requires --provider NAME and at least one setting")
+	}
+	clearOtherCredential(changes, prefix)
+	return c.save(changes)
+}
+
+func (c *console) removeProvider(args []string) error {
+	fs := flag.NewFlagSet("models remove", flag.ContinueOnError)
+	fs.SetOutput(io.Discard)
+	name := fs.String("provider", "", "provider")
+	if err := fs.Parse(args); err != nil {
+		return fmt.Errorf("invalid models remove options; use --help")
+	}
+	if fs.NArg() != 0 {
+		return fmt.Errorf("models remove takes flags, not positional arguments")
+	}
+	visited := false
+	fs.Visit(func(f *flag.Flag) {
+		if f.Name == "provider" {
+			visited = true
+		}
+	})
+	if !visited || *name == "" {
+		return fmt.Errorf("models remove requires --provider NAME")
+	}
+	if err := config.RemoveProvider(c.path, *name); err != nil {
+		return err
+	}
+	return c.output(map[string]any{"saved": true, "restart_required": true})
+}
+
+func (c *console) setModelsDeprecated(args []string) error {
+	fields, fs, err := parseModelFlags("set", args)
+	if err != nil {
+		return err
+	}
+	_ = fields
+	changes := modelFlagChanges(fields, fs, "provider.")
 	if len(changes) == 0 {
 		return fmt.Errorf("models set requires at least one setting; use --model NAME")
 	}
-	cfg, err := load(c.path)
+	cfg, err := c.load()
 	if err != nil {
 		return err
 	}
@@ -339,16 +644,8 @@ func (c *console) setModels(args []string) error {
 	}
 	// Selecting one credential source clears the other unless both were explicitly
 	// supplied, in which case ordinary configuration validation rejects it.
-	if _, ok := changes["provider.api_key_env"]; ok {
-		if _, both := changes["provider.api_key_path"]; !both {
-			changes["provider.api_key_path"] = ""
-		}
-	}
-	if _, ok := changes["provider.api_key_path"]; ok {
-		if _, both := changes["provider.api_key_env"]; !both {
-			changes["provider.api_key_env"] = ""
-		}
-	}
+	clearOtherCredential(changes, "provider.")
+	fmt.Fprintln(c.errOut, "warning: `models set` is deprecated; use `models set-default` to change the default or `models add`/`models update` for extra providers")
 	return c.save(changes)
 }
 func (c *console) save(changes map[string]any) error {
@@ -374,12 +671,16 @@ func (c *console) menu(group string) error {
 		if _, err := fmt.Fprintf(c.out, "\nq-agent %s — saved configuration (not live service status)\n", group); err != nil {
 			return err
 		}
-		if err := c.action(group, "show", nil); err != nil {
+		if group == "models" {
+			if err := c.action(group, "show", []string{"--all"}); err != nil {
+				return err
+			}
+		} else if err := c.action(group, "show", nil); err != nil {
 			return err
 		}
 		choices := "1) Edit a setting  2) Validate  0) Exit\n"
 		if group == "models" {
-			choices = "1) Change provider/model  2) List provider models  3) Supported providers  0) Exit\n"
+			choices = "1) Set default provider/model  2) Manage extra providers  3) List models for a provider  4) Supported providers  0) Exit\n"
 		}
 		fmt.Fprint(c.out, choices)
 		choice, err := c.prompt("> ")
@@ -390,21 +691,27 @@ func (c *console) menu(group string) error {
 			return err
 		}
 		switch choice {
-		case "0", "q", "quit", "":
+		case "0", "q", "quit", "\x1b":
 			return nil
 		case "1":
 			if group == "models" {
-				err = c.editModels()
+				err = c.editDefaultModels()
 			} else {
 				err = c.editConfig()
 			}
 		case "2":
-			action := "validate"
 			if group == "models" {
-				action = "list"
+				err = c.manageExtras()
+			} else {
+				err = c.action(group, "validate", nil)
 			}
-			err = c.action(group, action, nil)
 		case "3":
+			if group == "models" {
+				err = c.listModelsInteractive()
+			} else {
+				err = fmt.Errorf("choose 0, 1 or 2")
+			}
+		case "4":
 			if group == "models" {
 				err = c.action(group, "providers", nil)
 			} else {
@@ -444,7 +751,7 @@ func (c *console) editConfig() error {
 	if key == "" {
 		return nil
 	}
-	if _, ok := config.Values(config.Defaults())[key]; !ok {
+	if !config.IsValidKey(key) {
 		return fmt.Errorf("unknown configuration key %q", key)
 	}
 	text, err := c.prompt("New value (strings as text; other values as TOML): ")
@@ -458,7 +765,11 @@ func (c *console) editConfig() error {
 	return c.confirm(map[string]any{key: value})
 }
 func (c *console) editModels() error {
-	cfg, err := load(c.path)
+	return c.editDefaultModels()
+}
+
+func (c *console) editDefaultModels() error {
+	cfg, err := c.load()
 	if err != nil {
 		return err
 	}
@@ -501,4 +812,244 @@ func (c *console) editModels() error {
 		}
 	}
 	return c.confirm(changes)
+}
+
+func (c *console) manageExtras() error {
+	for {
+		cfg, err := c.load()
+		if err != nil {
+			return err
+		}
+		names := make([]string, 0, len(cfg.Providers))
+		for name := range cfg.Providers {
+			names = append(names, name)
+		}
+		sort.Strings(names)
+		summary := "(none)"
+		if len(names) > 0 {
+			summary = strings.Join(names, ", ")
+		}
+		fmt.Fprintf(c.out, "Default: %s (model %s)\nExtra providers: %s\n", cfg.Provider.Name, cfg.Provider.Model, summary)
+		fmt.Fprint(c.out, "1) Add extra provider  2) Edit extra provider  3) Remove extra provider  0) Back\n")
+		choice, err := c.prompt("> ")
+		if errors.Is(err, io.EOF) {
+			return nil
+		}
+		if err != nil {
+			return err
+		}
+		switch choice {
+		case "0", "q", "quit", "\x1b", "b", "back":
+			return nil
+		case "1":
+			if err := c.addExtraInteractive(); err != nil {
+				if errors.Is(err, io.EOF) {
+					return nil
+				}
+				fmt.Fprintln(c.errOut, err)
+			}
+		case "2":
+			if err := c.editExtraInteractive(); err != nil {
+				if errors.Is(err, io.EOF) {
+					return nil
+				}
+				fmt.Fprintln(c.errOut, err)
+			}
+		case "3":
+			if err := c.removeExtraInteractive(); err != nil {
+				if errors.Is(err, io.EOF) {
+					return nil
+				}
+				fmt.Fprintln(c.errOut, err)
+			}
+		default:
+			fmt.Fprintln(c.errOut, fmt.Errorf("choose one of the listed actions"))
+		}
+	}
+}
+
+func (c *console) addExtraInteractive() error {
+	cfg, err := c.load()
+	if err != nil {
+		return err
+	}
+	name, err := c.prompt("Extra provider name (ollama/openai/opencode-go/chatgpt; blank cancels): ")
+	if err != nil {
+		return err
+	}
+	if name == "" {
+		return nil
+	}
+	if !config.ValidProviderAdapter(name) {
+		return fmt.Errorf("unknown provider %q", name)
+	}
+	if name == cfg.Provider.Name {
+		return fmt.Errorf("providers.%s duplicates the default provider; use menu 1 to change the default", name)
+	}
+	if _, exists := cfg.Providers[name]; exists {
+		return fmt.Errorf("provider %q already exists; choose edit instead", name)
+	}
+	model, err := c.prompt("Model (required): ")
+	if err != nil {
+		return err
+	}
+	if model == "" {
+		return fmt.Errorf("model is required")
+	}
+	changes := map[string]any{"providers." + name + ".model": model}
+	for _, key := range []string{"base_url", "thinking"} {
+		value, err := c.prompt(key + " (Enter uses default; '-' leaves empty): ")
+		if err != nil {
+			return err
+		}
+		if value != "" && value != "-" {
+			changes["providers."+name+"."+key] = value
+		}
+	}
+	if name != "chatgpt" {
+		cred, err := c.prompt("Credential: api_key_env variable name, or path for api_key_path (Enter skips; '-' leaves empty): ")
+		if err != nil {
+			return err
+		}
+		if cred != "" && cred != "-" {
+			// Heuristic: values containing a slash or dot look like paths.
+			if strings.Contains(cred, "/") || strings.Contains(cred, ".") {
+				changes["providers."+name+".api_key_path"] = cred
+			} else {
+				changes["providers."+name+".api_key_env"] = cred
+			}
+		}
+	}
+	return c.confirm(changes)
+}
+
+func (c *console) editExtraInteractive() error {
+	cfg, err := c.load()
+	if err != nil {
+		return err
+	}
+	name, err := c.prompt("Extra provider to edit (blank cancels): ")
+	if err != nil {
+		return err
+	}
+	if name == "" {
+		return nil
+	}
+	current, ok := cfg.Providers[name]
+	if !ok {
+		if name == cfg.Provider.Name {
+			return fmt.Errorf("provider %q is the default provider; use menu 1 to change it", name)
+		}
+		return fmt.Errorf("provider %q is not configured as an extra", name)
+	}
+	// Ensure the adapter name is visible even when the table omits it.
+	current.Name = name
+	model, err := c.prompt(fmt.Sprintf("Model [%s]: ", current.Model))
+	if err != nil {
+		return err
+	}
+	changes := map[string]any{}
+	prefix := "providers." + name + "."
+	if model != "" {
+		changes[prefix+"model"] = model
+	}
+	for _, key := range []string{"base_url", "thinking"} {
+		currentVal := ""
+		if key == "base_url" {
+			currentVal = current.BaseURL
+		} else {
+			currentVal = current.Thinking
+		}
+		value, err := c.prompt(fmt.Sprintf("%s [%s] (Enter keeps; '-' clears): ", key, currentVal))
+		if err != nil {
+			return err
+		}
+		if value == "-" {
+			changes[prefix+key] = ""
+		} else if value != "" {
+			changes[prefix+key] = value
+		}
+	}
+	if name != "chatgpt" {
+		currentCred := current.APIKeyEnv
+		if current.APIKeyPath != "" {
+			currentCred = "path:" + current.APIKeyPath
+		}
+		cred, err := c.prompt(fmt.Sprintf("Credential [%s] (Enter keeps; '-' clears both; variable name for env, path for file): ", currentCred))
+		if err != nil {
+			return err
+		}
+		if cred == "-" {
+			changes[prefix+"api_key_env"] = ""
+			changes[prefix+"api_key_path"] = ""
+		} else if cred != "" {
+			if strings.Contains(cred, "/") || strings.Contains(cred, ".") {
+				changes[prefix+"api_key_path"] = cred
+				changes[prefix+"api_key_env"] = ""
+			} else {
+				changes[prefix+"api_key_env"] = cred
+				changes[prefix+"api_key_path"] = ""
+			}
+		}
+	}
+	if len(changes) == 0 {
+		return fmt.Errorf("no changes entered")
+	}
+	return c.confirm(changes)
+}
+
+func (c *console) removeExtraInteractive() error {
+	name, err := c.prompt("Extra provider to remove (blank cancels): ")
+	if err != nil {
+		return err
+	}
+	if name == "" {
+		return nil
+	}
+	cfg, err := c.load()
+	if err != nil {
+		return err
+	}
+	if _, ok := cfg.Providers[name]; !ok {
+		if name == cfg.Provider.Name {
+			return fmt.Errorf("provider %q is the default provider; it cannot be removed", name)
+		}
+		return fmt.Errorf("provider %q is not configured as an extra", name)
+	}
+	answer, err := c.prompt(fmt.Sprintf("Remove extra provider %q for the next service start? [y/N] ", name))
+	if err != nil {
+		return err
+	}
+	if !strings.EqualFold(answer, "y") && !strings.EqualFold(answer, "yes") {
+		_, err = fmt.Fprintln(c.out, "Cancelled; no changes saved.")
+		return err
+	}
+	if err := config.RemoveProvider(c.path, name); err != nil {
+		return err
+	}
+	return c.output(map[string]any{"saved": true, "restart_required": true})
+}
+
+func (c *console) listModelsInteractive() error {
+	cfg, err := c.load()
+	if err != nil {
+		return err
+	}
+	names := []string{cfg.Provider.Name}
+	for name := range cfg.Providers {
+		names = append(names, name)
+	}
+	sort.Strings(names)
+	name, err := c.prompt(fmt.Sprintf("Provider [%s] (blank uses default; available: %s): ", cfg.Provider.Name, strings.Join(names, ", ")))
+	if err != nil {
+		return err
+	}
+	if name == "" {
+		name = cfg.Provider.Name
+	}
+	selected, ok := cfg.ProviderByName(name)
+	if !ok {
+		return fmt.Errorf("provider %q is not configured", name)
+	}
+	return c.listProviderModels(cfg, selected)
 }

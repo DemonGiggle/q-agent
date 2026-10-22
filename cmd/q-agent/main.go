@@ -29,6 +29,7 @@ import (
 	"q-agent/internal/workspace"
 	"runtime"
 	"sort"
+	"strings"
 	"syscall"
 	"time"
 )
@@ -119,10 +120,14 @@ func mainRun() error {
 	if flags.NArg() != 0 {
 		return fmt.Errorf("unexpected positional arguments")
 	}
-	c, err := config.Load(*path)
+	cfg, rep, err := config.LoadMigrated(*path)
 	if err != nil {
 		return err
 	}
+	if rep.Migrated {
+		log.Printf("[SERVICE] Migrated config (%s); backup: %s", strings.Join(rep.Changes, "; "), rep.Backup)
+	}
+	c := cfg
 	values := redaction.EnvironmentValues()
 	values = append(values, os.Getenv(c.Telegram.TokenEnv))
 	for _, provider := range configuredProviders(c) {

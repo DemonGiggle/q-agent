@@ -69,15 +69,15 @@ func TestDefaultConfigPath(t *testing.T) {
 func TestExplicitCommandsNeverReadStdin(t *testing.T) {
 	path := consoleConfig(t)
 	for _, args := range [][]string{
-		{"models", "show", "--json"}, {"models", "providers", "--json"}, {"config", "get", "provider.model", "--json"},
+		{"models", "show", "--json"}, {"models", "show", "--all", "--json"}, {"models", "providers", "--json"}, {"config", "get", "provider.model", "--json"},
 		{"config", "show", "--json"}, {"config", "validate", "--json"},
-		{"models", "set", "--model", "new", "--json"}, {"config", "set", "limits.max_steps", "12", "--json"},
+		{"models", "set", "--model", "new", "--json"}, {"models", "set-default", "--model", "new", "--json"}, {"config", "set", "limits.max_steps", "12", "--json"},
 	} {
 		t.Run(strings.Join(args, " "), func(t *testing.T) {
-			var out bytes.Buffer
-			handled, err := run(append(args, "--config", path), noRead{t}, &out, &out, true)
+			var out, errBuf bytes.Buffer
+			handled, err := run(append(args, "--config", path), noRead{t}, &out, &errBuf, true)
 			if !handled || err != nil {
-				t.Fatalf("handled=%v err=%v out=%s", handled, err, &out)
+				t.Fatalf("handled=%v err=%v out=%s stderr=%s", handled, err, &out, &errBuf)
 			}
 			if !json.Valid(out.Bytes()) {
 				t.Fatalf("not a single JSON value: %s", &out)
@@ -315,5 +315,208 @@ func TestAdditionalProviderURLsAreSanitized(t *testing.T) {
 	}
 	if got := values["providers.openai.model"]; got != "remote" {
 		t.Fatalf("missing provider values: %v", got)
+	}
+}
+
+func TestModelsSetDefaultAddUpdateRemove(t *testing.T) {
+	path := consoleConfig(t)
+	// set-default changes only the default.
+	if _, _, err := execute(t, path, "", false, "models", "set-default", "--model", "after", "--json"); err != nil {
+		t.Fatal(err)
+	}
+	c, _ := config.Load(path)
+	if c.Provider.Model != "after" || c.Provider.Name != "ollama" {
+		t.Fatalf("set-default failed: %+v", c.Provider)
+	}
+	// add creates an extra without replacing the default.
+	if _, _, err := execute(t, path, "", false, "models", "add", "--provider", "openai", "--model", "remote", "--json"); err != nil {
+		t.Fatal(err)
+	}
+	c, _ = config.Load(path)
+	if c.Provider.Name != "ollama" || c.Provider.Model != "after" {
+		t.Fatalf("add replaced default: %+v", c.Provider)
+	}
+	if _, ok := c.Providers["openai"]; !ok {
+		t.Fatalf("add missing extra: %+v", c.Providers)
+	}
+	// show filters.
+	out, _, err := execute(t, path, "", false, "models", "show", "--json")
+	if err != nil || !strings.Contains(out, `"provider.model":"after"`) || strings.Contains(out, "providers.openai") {
+		t.Fatalf("show default leaked extras: %s %v", out, err)
+	}
+	out, _, err = execute(t, path, "", false, "models", "show", "--all", "--json")
+	if err != nil || !strings.Contains(out, "providers.openai") || !strings.Contains(out, "provider.model") {
+		t.Fatalf("show --all missing: %s %v", out, err)
+	}
+	out, _, err = execute(t, path, "", false, "models", "show", "--provider", "openai", "--json")
+	if err != nil || !strings.Contains(out, "providers.openai") || strings.Contains(out, `"provider.model"`) {
+		t.Fatalf("show --provider wrong: %s %v", out, err)
+	}
+	// update edits the extra.
+	if _, _, err := execute(t, path, "", false, "models", "update", "--provider", "openai", "--model", "new-remote", "--json"); err != nil {
+		t.Fatal(err)
+	}
+	c, _ = config.Load(path)
+	if c.Providers["openai"].Model != "new-remote" || c.Provider.Model != "after" {
+		t.Fatalf("update failed: %+v", c)
+	}
+	// set-default to an adapter that already exists as an extra must fail (duplicate).
+	if _, _, err := execute(t, path, "", false, "models", "set-default", "--provider", "openai", "--model", "m1", "--json"); err == nil {
+		t.Fatal("set-default duplicate extra accepted")
+	}
+	// set-default to openai must fail while [providers.openai] still exists (duplicate).
+	// Use a fresh file to test the success path without duplicates.
+	fresh := consoleConfig(t)
+	if _, _, err := execute(t, fresh, "", false, "models", "set-default", "--provider", "openai", "--model", "m1", "--json"); err != nil {
+		t.Fatal(err)
+	}
+	cf, _ := config.Load(fresh)
+	if cf.Provider.Name != "openai" || cf.Provider.BaseURL != "" || cf.Provider.Thinking != "" {
+		t.Fatalf("set-default switch did not clear: %+v", cf.Provider)
+	}
+	// remove deletes the extra.
+	if _, _, err := execute(t, path, "", false, "models", "remove", "--provider", "openai", "--json"); err != nil {
+		t.Fatal(err)
+	}
+	c, _ = config.Load(path)
+	if _, ok := c.Providers["openai"]; ok {
+		t.Fatalf("remove failed: %+v", c.Providers)
+	}
+	if c.Provider.Model != "after" {
+		t.Fatalf("remove touched default: %+v", c.Provider)
+	}
+}
+
+func TestModelsExtrasInvalidDoNotWrite(t *testing.T) {
+	path := consoleConfig(t)
+	if err := config.Update(path, map[string]any{"providers.openai.model": "remote"}); err != nil {
+		t.Fatal(err)
+	}
+	before, _ := os.ReadFile(path)
+	for _, args := range [][]string{
+		{"models", "add", "--provider", "openai", "--model", "dup"},
+		{"models", "add", "--provider", "ollama", "--model", "dup"},
+		{"models", "add", "--provider", "unknown", "--model", "x"},
+		{"models", "add", "--provider", "openai"},
+		{"models", "update", "--provider", "missing", "--model", "x"},
+		{"models", "update", "--provider", "openai"},
+		{"models", "update", "--provider", "openai", "--model", ""},
+		{"models", "remove", "--provider", "missing"},
+		{"models", "remove"},
+		{"models", "show", "--provider", "openai", "--all"},
+		{"models", "show", "--provider", "missing"},
+		{"models", "add", "--provider", "opencode-go", "--model", "x", "--api-key-env", "A", "--api-key-path", "B"},
+		{"models", "add", "--provider", "chatgpt", "--model", "m", "--api-key-env", "KEY"},
+	} {
+		var out, errBuf bytes.Buffer
+		_, err := run(append(args, "--config", path), noRead{t}, &out, &errBuf, true)
+		if err == nil {
+			t.Fatalf("accepted %v", args)
+		}
+		after, _ := os.ReadFile(path)
+		if !bytes.Equal(before, after) {
+			t.Fatalf("invalid command changed file: %v", args)
+		}
+	}
+}
+
+func TestModelsSetDeprecatedWarns(t *testing.T) {
+	path := consoleConfig(t)
+	var out, errBuf bytes.Buffer
+	handled, err := run([]string{"models", "set", "--model", "dep", "--json", "--config", path}, noRead{t}, &out, &errBuf, true)
+	if !handled || err != nil {
+		t.Fatalf("handled=%v err=%v", handled, err)
+	}
+	if !strings.Contains(errBuf.String(), "deprecated") {
+		t.Fatalf("missing deprecation warning: %q", errBuf.String())
+	}
+	if !json.Valid(out.Bytes()) {
+		t.Fatalf("stdout must stay single JSON value: %s", &out)
+	}
+	c, _ := config.Load(path)
+	if c.Provider.Model != "dep" {
+		t.Fatalf("deprecated set did not save: %+v", c.Provider)
+	}
+}
+
+func TestModelsListExtraProvider(t *testing.T) {
+	calls := 0
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		calls++
+		if r.URL.Path != "/models" || r.Header.Get("Authorization") != "Bearer test-list-key" {
+			t.Errorf("unexpected request %s", r.URL.Path)
+		}
+		fmt.Fprint(w, `{"data":[{"id":"z"},{"id":"a"}]}`)
+	}))
+	defer server.Close()
+	path := consoleConfig(t)
+	t.Setenv("LIST_KEY", "test-list-key")
+	if err := config.Update(path, map[string]any{"providers.openai.model": "remote", "providers.openai.base_url": server.URL, "providers.openai.api_key_env": "LIST_KEY"}); err != nil {
+		t.Fatal(err)
+	}
+	out, _, err := execute(t, path, "", false, "models", "list", "--provider", "openai", "--json")
+	if err != nil || strings.TrimSpace(out) != `["a","z"]` || calls != 1 {
+		t.Fatalf("out=%s err=%v calls=%d", out, err, calls)
+	}
+	if _, _, err := execute(t, path, "", false, "models", "list", "--provider", "missing", "--json"); err == nil {
+		t.Fatal("unconfigured provider accepted for list")
+	}
+}
+
+func TestModelsMenuManageExtras(t *testing.T) {
+	path := consoleConfig(t)
+	// Top menu 2 -> manage extras -> 1 add openai/remote -> defaults -> y -> back -> exit.
+	input := "2\n1\nopenai\nremote-model\n\n\n\ny\n0\n0\n"
+	if _, _, err := execute(t, path, input, true, "models"); err != nil {
+		t.Fatal(err)
+	}
+	c, _ := config.Load(path)
+	if c.Providers["openai"].Model != "remote-model" {
+		t.Fatalf("menu add failed: %+v", c.Providers)
+	}
+	if c.Provider.Model != "before" {
+		t.Fatalf("menu add touched default: %+v", c.Provider)
+	}
+}
+
+
+func TestConsoleAutoMigratesLegacyConfig(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "config.toml")
+	if err := os.WriteFile(path, []byte("[provider]\nname = 'ollama'\nmodel = 'before'\n[telegram]\napproved_user_ids = [123456789]\napproved_chat_ids = [-1001234567890]\n[limits]\nmax_steps = 8\nmax_tool_calls = 5\n"), 0600); err != nil {
+		t.Fatal(err)
+	}
+	out, stderr, err := execute(t, path, "", false, "models", "show", "--json")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(stderr, "migrated config") || !strings.Contains(stderr, "backup:") {
+		t.Fatalf("missing migration notice: %q", stderr)
+	}
+	if !strings.Contains(out, `"provider.model":"before"`) {
+		t.Fatalf("unexpected show output: %s", out)
+	}
+	// Stdout stays a single JSON value; the notice goes to stderr.
+	if !json.Valid([]byte(out)) {
+		t.Fatalf("stdout is not JSON: %s", out)
+	}
+	after, _ := os.ReadFile(path)
+	text := string(after)
+	if strings.Contains(text, "approved_") || strings.Contains(text, "max_tool_calls") {
+		t.Fatalf("legacy keys remain:\n%s", text)
+	}
+	c, err := config.Load(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(c.Telegram.AllowedUsers) != 1 || len(c.Telegram.AllowedGroups) != 1 {
+		t.Fatalf("migrated allowlist: %+v", c.Telegram)
+	}
+	// Second run is a no-op: no repeat notice.
+	_, stderr, err = execute(t, path, "", false, "models", "show", "--json")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if strings.Contains(stderr, "migrated config") {
+		t.Fatalf("repeat migration notice: %q", stderr)
 	}
 }

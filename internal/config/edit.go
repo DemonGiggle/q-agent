@@ -51,6 +51,18 @@ func ParseValue(key, text string) (any, error) {
 	if legacyKeyHint(key) {
 		return nil, fmt.Errorf("%q was replaced by telegram.allowed_users and telegram.allowed_groups; old configs migrate automatically on load", key)
 	}
+	if provider, field, ok := ParseProvidersKey(key); ok {
+		if !ValidProviderAdapter(provider) {
+			return nil, fmt.Errorf("unknown provider %q", provider)
+		}
+		if field == "name" {
+			return nil, fmt.Errorf("providers.%s.name must match its table name; use the table name itself", provider)
+		}
+		if !validProviderField(field) {
+			return nil, fmt.Errorf("unknown configuration key %q", key)
+		}
+		return text, nil
+	}
 	exemplar, ok := Values(Defaults())[key]
 	if !ok {
 		return nil, fmt.Errorf("unknown configuration key %q", key)
@@ -90,6 +102,28 @@ func patch(data []byte, changes map[string]any) ([]byte, error) {
 	for key, value := range changes {
 		if legacyKeyHint(key) {
 			return nil, fmt.Errorf("%q was replaced by telegram.allowed_users and telegram.allowed_groups; old configs migrate automatically on load", key)
+		}
+		if provider, field, ok := ParseProvidersKey(key); ok {
+			if !ValidProviderAdapter(provider) {
+				return nil, fmt.Errorf("unknown provider %q", provider)
+			}
+			if field == "name" {
+				return nil, fmt.Errorf("providers.%s.name must match its table name; use the table name itself", provider)
+			}
+			if !validProviderField(field) {
+				return nil, fmt.Errorf("invalid configuration key/type %q", key)
+			}
+			s, ok := value.(string)
+			if !ok {
+				return nil, fmt.Errorf("invalid configuration key/type %q", key)
+			}
+			_ = s
+			encoded, err := toml.Marshal(map[string]any{"value": value})
+			if err != nil {
+				return nil, err
+			}
+			remaining[key] = strings.TrimSpace(strings.SplitN(string(encoded), "=", 2)[1])
+			continue
 		}
 		sample, ok := Values(Defaults())[key]
 		if !ok || reflect.TypeOf(value) != reflect.TypeOf(sample) {
@@ -201,8 +235,7 @@ func patch(data []byte, changes map[string]any) ([]byte, error) {
 // Update serializes CLI writers, validates the candidate in the original
 // directory (so relative paths keep their meaning), then atomically replaces it.
 // No credential files are read and no running service is touched.
-func Update(path string, changes map[string]any) error {
-	path, err := absolute(path, ".")
+func Update(path string, changes map[string]any) error {	path, err := absolute(path, ".")
 	if err != nil {
 		return err
 	}
@@ -281,4 +314,167 @@ func Update(path string, changes map[string]any) error {
 	}
 	defer dir.Close()
 	return dir.Sync()
+}
+
+// RemoveProvider deletes an entire [providers.NAME] section while preserving
+// unrelated text and comments. It fails when the provider is not configured
+// as an extra or when the file uses a layout the surgical editor cannot
+// represent (for example inline tables).
+func RemoveProvider(path, provider string) error {
+	if !ValidProviderAdapter(provider) {
+		return fmt.Errorf("unknown provider %q", provider)
+	}
+	path, err := absolute(path, ".")
+	if err != nil {
+		return err
+	}
+	lockFD, err := syscall.Open(path+".lock", syscall.O_CREAT|syscall.O_RDWR|syscall.O_NOFOLLOW|syscall.O_CLOEXEC, 0600)
+	if err != nil {
+		return fmt.Errorf("open config lock: %w", err)
+	}
+	lock := os.NewFile(uintptr(lockFD), path+".lock")
+	defer lock.Close()
+	if err = syscall.Flock(lockFD, syscall.LOCK_EX|syscall.LOCK_NB); err != nil {
+		return fmt.Errorf("configuration is being edited by another process")
+	}
+	defer syscall.Flock(lockFD, syscall.LOCK_UN)
+	info, err := os.Lstat(path)
+	if err != nil {
+		return err
+	}
+	if !info.Mode().IsRegular() {
+		return fmt.Errorf("configuration must be a regular file, not a symlink")
+	}
+	if info.Mode().Perm()&0200 == 0 {
+		return fmt.Errorf("configuration must be writable by its owner")
+	}
+	cfg, err := Load(path)
+	if err != nil {
+		return fmt.Errorf("existing configuration is invalid")
+	}
+	if _, ok := cfg.Providers[provider]; !ok {
+		if provider == cfg.Provider.Name {
+			return fmt.Errorf("providers.%s duplicates the default provider; use models set-default to change the default", provider)
+		}
+		return fmt.Errorf("provider %q is not configured as an extra", provider)
+	}
+	data, err := os.ReadFile(path)
+	if err != nil {
+		return err
+	}
+	candidate, err := removeProvidersTable(data, provider)
+	if err != nil {
+		return err
+	}
+	if bytes.Equal(data, candidate) {
+		return nil
+	}
+	tmp, err := os.CreateTemp(filepath.Dir(path), ".q-agent-config-*")
+	if err != nil {
+		return err
+	}
+	defer os.Remove(tmp.Name())
+	defer tmp.Close()
+	if _, err = tmp.Write(candidate); err != nil {
+		return err
+	}
+	if _, err = Load(tmp.Name()); err != nil {
+		return fmt.Errorf("updated configuration is invalid; no changes saved")
+	}
+	if err = tmp.Chmod(info.Mode().Perm()); err != nil {
+		return err
+	}
+	if err = tmp.Sync(); err != nil {
+		return err
+	}
+	if err = tmp.Close(); err != nil {
+		return err
+	}
+	current, err := os.ReadFile(path)
+	if err != nil {
+		return err
+	}
+	live, err := os.Lstat(path)
+	if err != nil {
+		return err
+	}
+	if !os.SameFile(info, live) || !bytes.Equal(current, data) {
+		return fmt.Errorf("configuration changed during edit; no changes saved")
+	}
+	if err = os.Rename(tmp.Name(), path); err != nil {
+		return err
+	}
+	dir, err := os.Open(filepath.Dir(path))
+	if err != nil {
+		return err
+	}
+	defer dir.Close()
+	return dir.Sync()
+}
+
+type tableSpan struct {
+	name  string
+	start int
+}
+
+func tableHeaderStart(data []byte, firstOff int) (int, error) {
+	for i := firstOff - 1; i >= 0; i-- {
+		if data[i] == '[' {
+			return i, nil
+		}
+		if data[i] == '\n' {
+			break
+		}
+	}
+	return 0, fmt.Errorf("cannot edit providers table")
+}
+
+func removeProvidersTable(data []byte, provider string) ([]byte, error) {
+	target := "providers." + provider
+	var spans []tableSpan
+	var parser unstable.Parser
+	parser.Reset(data)
+	for parser.NextExpression() {
+		n := parser.Expression()
+		if n.Kind != unstable.Table {
+			continue
+		}
+		name := nodeKey(n)
+		firstOff := -1
+		it := n.Key()
+		for it.Next() {
+			k := it.Node()
+			if firstOff < 0 {
+				firstOff = int(k.Raw.Offset)
+			}
+		}
+		if firstOff < 0 {
+			continue
+		}
+		start, err := tableHeaderStart(data, firstOff)
+		if err != nil {
+			return nil, err
+		}
+		spans = append(spans, tableSpan{name: name, start: start})
+	}
+	if err := parser.Error(); err != nil {
+		return nil, fmt.Errorf("cannot parse configuration")
+	}
+	sort.Slice(spans, func(i, j int) bool { return spans[i].start < spans[j].start })
+	idx := -1
+	for i, s := range spans {
+		if s.name == target {
+			idx = i
+			break
+		}
+	}
+	if idx < 0 {
+		return nil, fmt.Errorf("cannot remove providers.%s: unsupported layout", provider)
+	}
+	start := spans[idx].start
+	end := len(data)
+	if idx+1 < len(spans) {
+		end = spans[idx+1].start
+	}
+	return append(append([]byte(nil), data[:start]...), data[end:]...), nil
 }

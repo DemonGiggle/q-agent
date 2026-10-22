@@ -164,3 +164,56 @@ func TestParseEditValue(t *testing.T) {
 		})
 	}
 }
+
+func TestProvidersKeysAndRemove(t *testing.T) {
+	path := editFile(t, "[provider]\nname = 'ollama'\nmodel = 'local'\n")
+	if _, err := ParseValue("providers.openai.model", "remote"); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := ParseValue("providers.unknown.model", "x"); err == nil {
+		t.Fatal("unknown adapter accepted")
+	}
+	if _, err := ParseValue("providers.openai.name", "openai"); err == nil {
+		t.Fatal("providers name field accepted")
+	}
+	if _, err := ParseValue("providers.openai.unknown", "x"); err == nil {
+		t.Fatal("unknown providers field accepted")
+	}
+	if !IsValidKey("providers.openai.model") || !IsValidKey("provider.model") || IsValidKey("providers.openai.name") {
+		t.Fatal("IsValidKey wrong")
+	}
+	if err := Update(path, map[string]any{"providers.openai.model": "remote", "providers.openai.api_key_env": "OPENAI_API_KEY"}); err != nil {
+		t.Fatal(err)
+	}
+	c, err := Load(path)
+	if err != nil || c.Providers["openai"].Model != "remote" {
+		t.Fatalf("add via Update failed: %v %+v", err, c)
+	}
+	data := string(readEdit(t, path))
+	if !strings.Contains(data, "[providers.openai]") {
+		t.Fatalf("table not created:\n%s", data)
+	}
+	if err := Update(path, map[string]any{"providers.openai.model": "new"}); err != nil {
+		t.Fatal(err)
+	}
+	if err := RemoveProvider(path, "openai"); err != nil {
+		t.Fatal(err)
+	}
+	c, _ = Load(path)
+	if _, ok := c.Providers["openai"]; ok {
+		t.Fatalf("remove failed: %+v", c.Providers)
+	}
+	if c.Provider.Model != "local" {
+		t.Fatalf("remove touched default: %+v", c.Provider)
+	}
+	if err := RemoveProvider(path, "openai"); err == nil {
+		t.Fatal("second remove accepted")
+	}
+	before := readEdit(t, path)
+	if err := Update(path, map[string]any{"providers.ollama.model": "dup"}); err == nil {
+		t.Fatal("duplicate default accepted")
+	}
+	if !bytes.Equal(before, readEdit(t, path)) {
+		t.Fatal("failed update changed file")
+	}
+}

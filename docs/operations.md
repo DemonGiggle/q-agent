@@ -28,6 +28,18 @@ All commands use `~/.config/q-agent/config.toml` by default.
 Use `--config FILE` to select another file. The file uses TOML, rejects
 unknown fields, and resolves relative paths against its own directory.
 
+On load, `serve` and the `models`/`config`/`login` console commands
+automatically migrate deprecated keys and rewrite the file in place,
+preserving comments and permissions. Handled so far: `max_tool_calls`
+removal (no longer used) and the old `approved_user_ids` /
+`approved_chat_ids` allowlist (rewritten as `allowed_users` /
+`allowed_groups`). A timestamped backup (`config.toml.bak.YYYYMMDD-HHMMSS`)
+is kept next to the file, and the migration is reported on stderr
+(`[SERVICE] Migrated config ...` for `serve`). Files that mix old and new
+allowlist keys are left untouched with an error so you can resolve the
+conflict explicitly; read-only files keep working from the in-memory
+migration for the allowlist case.
+
 ### Allowlist: who can talk to the bot
 
 ```toml
@@ -81,9 +93,22 @@ model = "YOUR_OPENAI_MODEL"
 api_key_env = "OPENAI_API_KEY"
 ```
 
-Supported names: `ollama`, `openai`, `opencode-go`. Each needs a model and
+Supported names: `ollama`, `openai`, `opencode-go`, `chatgpt`. Each needs a model and
 can set its own `base_url`, credentials, and `thinking`. Only the operator
 configures these; Telegram users can never supply endpoints or keys.
+
+Manage them without hand-editing TOML:
+
+```sh
+q-agent models set-default --provider openai --model YOUR_MODEL_ID
+q-agent models add --provider openai --model YOUR_MODEL_ID --api-key-env OPENAI_API_KEY
+q-agent models update --provider openai --model NEW_MODEL
+q-agent models remove --provider openai
+q-agent models show --all --json
+```
+
+`set-default` edits only `[provider]`; `add` creates an extra without replacing
+the default. `models set` remains as a deprecated alias for `set-default`.
 
 Per-chat overrides (`/provider`, `/model`, `/think`, `/max_steps`) change
 only the current private chat or group, survive restarts and `/new`, and

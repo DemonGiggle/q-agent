@@ -448,8 +448,60 @@ func (c Config) ProviderByName(name string) (Provider, bool) {
 	return p, ok
 }
 
+// ValidProviderAdapter reports whether name selects a supported LLM adapter.
+func ValidProviderAdapter(name string) bool {
+	switch name {
+	case "ollama", "openai", "opencode-go", "chatgpt":
+		return true
+	}
+	return false
+}
+
+// validProviderField reports whether field is a settable providers.* field.
+// The table name selects the adapter, so providers.<name>.name is rejected;
+// use the table name itself.
+func validProviderField(field string) bool {
+	switch field {
+	case "model", "base_url", "api_key_env", "api_key_path", "thinking":
+		return true
+	}
+	return false
+}
+
+// ParseProvidersKey splits providers.<name>.<field> into its parts.
+// It returns ok=false for non-providers keys. Provider names never contain
+// dots, so the last dot separates the field.
+func ParseProvidersKey(key string) (provider, field string, ok bool) {
+	if !strings.HasPrefix(key, "providers.") {
+		return "", "", false
+	}
+	rest := strings.TrimPrefix(key, "providers.")
+	i := strings.LastIndex(rest, ".")
+	if i <= 0 || i == len(rest)-1 {
+		return "", "", false
+	}
+	provider, field = rest[:i], rest[i+1:]
+	if provider == "" || field == "" || strings.Contains(provider, ".") {
+		return "", "", false
+	}
+	return provider, field, true
+}
+
+// IsValidKey reports whether key can be read or written via the console.
+// Static keys come from Defaults(); dynamic providers.<name>.<field> keys are
+// accepted for any supported adapter so new extras can be added.
+func IsValidKey(key string) bool {
+	if _, ok := Values(Defaults())[key]; ok {
+		return true
+	}
+	if provider, field, ok := ParseProvidersKey(key); ok {
+		return ValidProviderAdapter(provider) && validProviderField(field)
+	}
+	return false
+}
+
 func normalizeProvider(p *Provider, dir string) error {
-	if p.Name != "openai" && p.Name != "ollama" && p.Name != "opencode-go" && p.Name != "chatgpt" {
+	if !ValidProviderAdapter(p.Name) {
 		return fmt.Errorf("unknown provider %q", p.Name)
 	}
 	if p.Model == "" {

@@ -98,6 +98,17 @@ models, guarantee access to every advertised model, or validate the model's
 thinking level. `models show` works offline; missing credentials do not prevent
 configuration inspection or edits.
 
+Thinking (`--thinking` / `thinking`): `""` (auto) omits the effort field and
+lets the backend decide; a concrete value (`high`, …) is sent unless a chat
+overrides it with Telegram `/think`. In chat, `/think <level|auto>` sets this
+chat only while `/think default` clears the override and restores the
+configured value. Bare `/think` shows `Current`, `Chat override`,
+`Configured default`, and — for the `chatgpt` provider — `Codex catalog
+default` plus catalog `source`/`stale` on separate lines. The Codex catalog
+(`default_reasoning_level` / `supported_reasoning_levels`) is authoritative
+for `chatgpt`; Models.dev is not used for it. `ultra`/`persistent`/`custom`
+are rejected in v1, never silently downgraded.
+
 ## Other settings
 
 `q-agent config` shows effective settings with defaults, lets you edit one

@@ -316,6 +316,12 @@ func validateProviderModelMeta(meta *ProviderModelMeta) error {
 }
 
 func supportedModelMetaProvider(provider string) bool {
+	// chatgpt is intentionally excluded (issue #25): the Codex catalog is the
+	// authority for Codex slugs (default_reasoning_level /
+	// supported_reasoning_levels). Models.dev `openai` effort sets do not
+	// match (e.g. gpt-6-sol `none` vs catalog), so reusing that provider
+	// would mislead. If a shared storage layer is introduced later, abstract
+	// the data source/schema first instead of masquerading as Models.dev.
 	return provider == "openai" || provider == "opencode-go"
 }
 

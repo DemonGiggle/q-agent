@@ -81,7 +81,8 @@ approved_chat_ids = [123456789, -1001234567890]
 	}
 	if _, _, err := LoadMigrated(path); err != nil {
 		t.Fatal(err)
-	}}
+	}
+}
 
 func TestMigrateMaxToolCalls(t *testing.T) {
 	dir := t.TempDir()

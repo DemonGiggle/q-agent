@@ -9,6 +9,7 @@ import (
 	"net/http"
 	"net/url"
 	"strings"
+	"time"
 
 	"q-agent/internal/chatgptoauth"
 )
@@ -50,11 +51,23 @@ const codexClientVersion = "1.0.0"
 // server ordering and only returns entries intended for display
 // (visibility == "list"). A legacy Platform shape (data[].id) is accepted as
 // a fallback for custom baseURLs.
+//
+// Catalog metadata (reasoning levels, defaults, summary support) is decoded
+// by decodeCodexCatalog and retained in a scoped last-known-good cache keyed
+// by endpoint + account + client_version + token file. Visibility filtering
+// happens at display time so decode never discards metadata. Auth failures
+// (401/403) never serve stale entries; retriable failures do.
 func (p *chatGPTProvider) Models(ctx context.Context) ([]string, error) {
 	creds, err := chatgptoauth.GetValidTokens(ctx, p.client, p.tokensPath)
 	if err != nil {
 		return nil, err
 	}
+	now := time.Now()
+	cacheKey := codexCatalogCacheKey(p.baseURL, creds.AccountID, p.tokensPath, codexClientVersion)
+	if cached, ok := getCodexCatalogCache(cacheKey, now); ok && !cached.Stale {
+		return append([]string(nil), cached.DisplaySlugs...), nil
+	}
+	cached, hasCached := getCodexCatalogCache(cacheKey, now)
 	catalogURL := p.baseURL + "/models"
 	if u, err := url.Parse(catalogURL); err == nil {
 		q := u.Query()
@@ -66,6 +79,9 @@ func (p *chatGPTProvider) Models(ctx context.Context) ([]string, error) {
 	}
 	req, err := http.NewRequestWithContext(ctx, http.MethodGet, catalogURL, nil)
 	if err != nil {
+		if hasCached {
+			return append([]string(nil), cached.DisplaySlugs...), nil
+		}
 		return nil, err
 	}
 	req.Header.Set("Authorization", "Bearer "+creds.AccessToken)
@@ -74,53 +90,103 @@ func (p *chatGPTProvider) Models(ctx context.Context) ([]string, error) {
 	}
 	resp, err := p.client.Do(req)
 	if err != nil {
+		if hasCached {
+			return append([]string(nil), cached.DisplaySlugs...), nil
+		}
 		return nil, err
 	}
 	defer resp.Body.Close()
 	if resp.StatusCode < 200 || resp.StatusCode >= 300 {
 		data, _ := io.ReadAll(io.LimitReader(resp.Body, 1<<20))
+		// Auth failures must surface so callers re-login; never hide them
+		// behind a stale list and never let one account's list leak into
+		// another scope.
+		if resp.StatusCode == 401 || resp.StatusCode == 403 {
+			return nil, fmt.Errorf("provider returned %s: %s", resp.Status, strings.TrimSpace(string(data)))
+		}
+		if hasCached {
+			return append([]string(nil), cached.DisplaySlugs...), nil
+		}
 		return nil, fmt.Errorf("provider returned %s: %s", resp.Status, strings.TrimSpace(string(data)))
-	}
-	var decoded struct {
-		Models []struct {
-			Slug        string `json:"slug"`
-			Visibility  string `json:"visibility"`
-			DisplayName string `json:"display_name"`
-		} `json:"models"`
-		Data []struct {
-			ID string `json:"id"`
-		} `json:"data"`
 	}
 	data, err := io.ReadAll(io.LimitReader(resp.Body, 1<<20))
 	if err != nil {
+		if hasCached {
+			return append([]string(nil), cached.DisplaySlugs...), nil
+		}
 		return nil, err
 	}
-	if err := json.Unmarshal(data, &decoded); err != nil {
+	entries, legacyIDs, err := decodeCodexCatalog(data)
+	if err != nil {
+		if hasCached {
+			return append([]string(nil), cached.DisplaySlugs...), nil
+		}
 		return nil, fmt.Errorf("decode models: %w", err)
 	}
-	if len(decoded.Models) > 0 {
-		models := make([]string, 0, len(decoded.Models))
-		for _, m := range decoded.Models {
-			if m.Slug == "" {
-				continue
-			}
-			// Only keep entries intended for display. Empty visibility is
-			// treated as listable for forward-compat with catalogs that
-			// omit it.
-			if m.Visibility != "" && m.Visibility != "list" {
-				continue
-			}
-			models = append(models, m.Slug)
-		}
-		return models, nil
+	endpoint := strings.TrimRight(strings.TrimSpace(p.baseURL), "/")
+	fetchedAt := time.Now()
+	if len(entries) > 0 {
+		display := codexDisplaySlugs(entries)
+		putCodexCatalogCache(cacheKey, CodexCatalogSnapshot{
+			Entries:       append([]CodexModelEntry(nil), entries...),
+			DisplaySlugs:  append([]string(nil), display...),
+			FetchedAt:     fetchedAt,
+			Source:        "live",
+			Stale:         false,
+			Endpoint:      endpoint,
+			ClientVersion: codexClientVersion,
+			Count:         len(entries),
+		})
+		return display, nil
 	}
-	models := make([]string, 0, len(decoded.Data))
-	for _, m := range decoded.Data {
-		if m.ID != "" {
-			models = append(models, m.ID)
-		}
+	// Legacy fallback: synthesize minimal entries so cache shape stays uniform.
+	synth := make([]CodexModelEntry, 0, len(legacyIDs))
+	for _, id := range legacyIDs {
+		synth = append(synth, CodexModelEntry{Slug: id, Visibility: "list"})
 	}
-	return models, nil
+	display := append([]string(nil), legacyIDs...)
+	putCodexCatalogCache(cacheKey, CodexCatalogSnapshot{
+		Entries:       synth,
+		DisplaySlugs:  append([]string(nil), display...),
+		FetchedAt:     fetchedAt,
+		Source:        "live-legacy",
+		Stale:         false,
+		Endpoint:      endpoint,
+		ClientVersion: codexClientVersion,
+		Count:         len(synth),
+	})
+	return display, nil
+}
+
+// CachedCatalog returns the last-known-good catalog snapshot for this
+// provider scope without network access. The snapshot carries no credential
+// material. The boolean reports cache presence; Stale reports TTL expiry.
+func (p *chatGPTProvider) CachedCatalog() (CodexCatalogSnapshot, bool) {
+	// Account identity is unknown without tokens; best-effort lookup scans
+	// this provider's token-file scope across cached accounts. Endpoint +
+	// client_version + token file still isolate custom baseURLs.
+	codexCatalogMu.RLock()
+	defer codexCatalogMu.RUnlock()
+	now := time.Now()
+	prefixEndpoint := strings.TrimRight(strings.TrimSpace(p.baseURL), "/") + "\x00"
+	for key, entry := range codexCatalogByKey {
+		if len(key) < len(prefixEndpoint) || key[:len(prefixEndpoint)] != prefixEndpoint {
+			continue
+		}
+		// key = endpoint + \x00 + account + \x00 + clientVersion + \x00 + tokensPath
+		rest := key[len(prefixEndpoint):]
+		parts := strings.Split(rest, "\x00")
+		if len(parts) != 3 {
+			continue
+		}
+		if parts[1] != codexClientVersion || parts[2] != p.tokensPath {
+			continue
+		}
+		snap := entry.snapshot
+		snap.Stale = now.After(entry.expiresAt)
+		return snap, true
+	}
+	return CodexCatalogSnapshot{}, false
 }
 
 // splitCodexMessages lifts system messages into top-level instructions. The

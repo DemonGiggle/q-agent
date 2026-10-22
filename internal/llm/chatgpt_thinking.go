@@ -1,6 +1,9 @@
 package llm
 
-import "strings"
+import (
+	"fmt"
+	"strings"
+)
 
 // isCodexClientOnlyEffort reports efforts q-agent does not send on the wire
 // in v1. Upstream resolve_reasoning_effort maps ultra (observed: gpt-6.1-sol
@@ -39,13 +42,64 @@ func codexFilteredLevels(levels []string) []string {
 	return out
 }
 
+// codexPlausibleLevels is the fallback set used while the catalog is unknown.
+// It comes from the official reasoning guide (none/minimal/low/medium/high/
+// xhigh/max are per-model) minus client-only ultra/persistent/custom. It is
+// NOT authoritative for a known model: known models validate strictly against
+// their catalog Levels.
+var codexPlausibleLevels = []string{"none", "minimal", "low", "medium", "high", "xhigh", "max"}
+
+// isCodexPlausibleLevel reports whether level is in the unknown-fallback set.
+func isCodexPlausibleLevel(level string) bool {
+	norm := strings.ToLower(strings.TrimSpace(level))
+	for _, lv := range codexPlausibleLevels {
+		if norm == lv {
+			return true
+		}
+	}
+	return false
+}
+
+// CodexPlausibleLevels returns the fallback set used while the catalog is
+// unknown. It is NOT authoritative for a known model.
+func CodexPlausibleLevels() []string {
+	return append([]string(nil), codexPlausibleLevels...)
+}
+
+// unknownCodexCapability marks "catalog not loaded / model absent" distinctly
+// from unsupported. Wire format is still codex_reasoning so an explicit
+// plausible level can be sent optimistically; UI must not claim the model
+// cannot think.
+func unknownCodexCapability() ThinkingCapability {
+	return ThinkingCapability{
+		Supported:     false,
+		Adjustable:    false,
+		AlwaysOn:      false,
+		Levels:        nil,
+		Default:       "",
+		RequestFormat: ThinkingRequestCodexReasoning,
+		ReplayFormat:  ThinkingReplayReasoningDetails,
+		Unknown:       true,
+	}
+}
+
 // codexCapabilityForEntry converts one decoded catalog entry into a
-// ThinkingCapability. v1 excludes ultra/persistent/custom (see above) and
-// never invents levels: no levels => unsupported, same as pre-#23.
+// ThinkingCapability. v1 excludes ultra/persistent/custom (see above).
+//
+// Empty raw SupportedReasoning (legacy fallback or server omits metadata)
+// returns Unknown, not unsupported: we must not claim "cannot think" when we
+// simply have not learned levels. Only an entry that advertises reasoning
+// metadata but filters to zero usable tiers reports unsupported.
 func codexCapabilityForEntry(entry CodexModelEntry) ThinkingCapability {
-	levels := codexFilteredLevels(entry.Levels())
+	raw := entry.Levels()
+	if len(raw) == 0 {
+		cap := unknownCodexCapability()
+		cap.Unknown = true
+		return cap
+	}
+	levels := codexFilteredLevels(raw)
 	if len(levels) == 0 {
-		return ThinkingCapability{Supported: false}
+		return ThinkingCapability{Supported: false, Unknown: false}
 	}
 	def := strings.ToLower(strings.TrimSpace(entry.DefaultReasoning))
 	defaultLevel := ""
@@ -65,6 +119,7 @@ func codexCapabilityForEntry(entry CodexModelEntry) ThinkingCapability {
 		Default:       defaultLevel,
 		RequestFormat: ThinkingRequestCodexReasoning,
 		ReplayFormat:  ThinkingReplayReasoningDetails,
+		Unknown:       false,
 	}
 	if cap.AlwaysOn && cap.Default == "" {
 		cap.Default = levels[0]
@@ -72,9 +127,52 @@ func codexCapabilityForEntry(entry CodexModelEntry) ThinkingCapability {
 	return cap
 }
 
+// ValidateCodexThinkingLevel checks an explicit level against a Codex
+// capability. Empty (auto) is always allowed and handled by the caller.
+// Unknown allows any plausible non-client-only effort optimistically; known
+// models require strict membership. Client-only ultra/persistent/custom are
+// always rejected in v1.
+func ValidateCodexThinkingLevel(cap ThinkingCapability, level string) error {
+	norm := strings.ToLower(strings.TrimSpace(level))
+	if norm == "" {
+		return nil
+	}
+	if isCodexClientOnlyEffort(norm) {
+		return fmt.Errorf("thinking level %q is not sendable in v1 (client-only)", level)
+	}
+	if cap.Unknown {
+		if isCodexPlausibleLevel(norm) {
+			return nil
+		}
+		return fmt.Errorf("unknown thinking level %q", level)
+	}
+	if !cap.Supported {
+		return fmt.Errorf("model does not support thinking levels")
+	}
+	if cap.AlwaysOn {
+		// Fixed tier: only the single advertised level is accepted.
+		if len(cap.Levels) == 1 && norm == strings.ToLower(cap.Levels[0]) {
+			return nil
+		}
+		if cap.Default != "" && norm == strings.ToLower(cap.Default) {
+			return nil
+		}
+		return fmt.Errorf("thinking is always on for this model")
+	}
+	if !cap.Adjustable || len(cap.Levels) == 0 {
+		return fmt.Errorf("thinking is not adjustable for this model")
+	}
+	for _, lv := range cap.Levels {
+		if norm == strings.ToLower(lv) {
+			return nil
+		}
+	}
+	return fmt.Errorf("unsupported thinking level %q", level)
+}
+
 // findCodexEntry matches a model against slug then aliases, exact first then
-// case-insensitive. Returns nil for unknown models so callers can keep the
-// pre-#23 unsupported behavior (unknown is handled in #24/#25).
+// case-insensitive. Returns nil for unknown models so callers can return an
+// explicit Unknown capability instead of unsupported.
 func findCodexEntry(snap CodexCatalogSnapshot, model string) *CodexModelEntry {
 	m := strings.TrimSpace(model)
 	if m == "" {

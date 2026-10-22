@@ -1,6 +1,7 @@
 package llm
 
 import (
+	"context"
 	"encoding/json"
 	"strings"
 	"sync"
@@ -194,7 +195,46 @@ type codexCatalogCacheEntry struct {
 var (
 	codexCatalogMu    sync.RWMutex
 	codexCatalogByKey = map[string]codexCatalogCacheEntry{}
+
+	codexRefreshMu    sync.Mutex
+	codexRefreshLocks = map[string]*sync.Mutex{}
 )
+
+// codexRefreshLockFor returns the per-cache-key mutex, creating it on demand.
+// It mirrors chatgptoauth.lockFor so concurrent catalog refreshes for the same
+// endpoint/account scope share one flight instead of stampeding the token
+// endpoint and the /models endpoint.
+func codexRefreshLockFor(key string) *sync.Mutex {
+	codexRefreshMu.Lock()
+	defer codexRefreshMu.Unlock()
+	if mu, ok := codexRefreshLocks[key]; ok {
+		return mu
+	}
+	mu := &sync.Mutex{}
+	codexRefreshLocks[key] = mu
+	return mu
+}
+
+// lockCodexRefreshContext acquires mu or returns ctx.Err(). Polling with
+// TryLock keeps /models timeouts and task cancellation working while another
+// goroutine holds the per-scope refresh lock.
+func lockCodexRefreshContext(ctx context.Context, mu *sync.Mutex) error {
+	if mu.TryLock() {
+		return nil
+	}
+	ticker := time.NewTicker(5 * time.Millisecond)
+	defer ticker.Stop()
+	for {
+		select {
+		case <-ctx.Done():
+			return ctx.Err()
+		case <-ticker.C:
+			if mu.TryLock() {
+				return nil
+			}
+		}
+	}
+}
 
 // codexCatalogCacheKey scopes entries by endpoint + auth identity + catalog
 // compatibility version + token file. Tokens path is included (superset of

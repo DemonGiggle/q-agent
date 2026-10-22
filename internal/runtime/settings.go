@@ -120,11 +120,7 @@ func (r *Runtime) chatSettings(m platform.Message, fields []string) error {
 		if value == "auto" {
 			value = ""
 		} else {
-			switch value {
-			case "off", "on", "none", "minimal", "low", "medium", "high", "xhigh", "max":
-			default:
-				return r.reply(m, "Unknown thinking level. Use off, on, none, minimal, low, medium, high, xhigh, max, auto, or default.")
-			}
+			value = strings.ToLower(strings.TrimSpace(value))
 			if beforeErr != nil {
 				return r.reply(m, "Provider is unavailable. Use /provider default or /settings reset.")
 			}
@@ -135,14 +131,25 @@ func (r *Runtime) chatSettings(m platform.Message, fields []string) error {
 			}
 			if tp, ok := provider.(llm.ThinkingProvider); ok {
 				cap := tp.ThinkingCapability(before.Model)
-				if len(cap.Levels) > 0 {
-					valid := false
-					for _, level := range cap.Levels {
-						valid = valid || level == value
+				if err := llm.ValidateThinkingLevel(cap, value); err != nil {
+					if cap.Unknown {
+						return r.reply(m, err.Error()+". Catalog not loaded yet; plausible levels ("+strings.Join(llm.CodexPlausibleLevels(), ", ")+") are accepted optimistically. Use auto for the provider default.")
 					}
-					if !valid {
+					if len(cap.Levels) > 0 && cap.Supported {
 						return r.reply(m, "Supported thinking levels for this model: "+strings.Join(cap.Levels, ", ")+". Use auto for the provider default.")
 					}
+					return r.reply(m, err.Error()+". Use auto for the provider default or /think default to restore the configured default.")
+				}
+			} else {
+				valid := false
+				for _, lv := range llm.KnownThinkingLevels {
+					if value == lv {
+						valid = true
+						break
+					}
+				}
+				if !valid {
+					return r.reply(m, "Unknown thinking level. Use "+strings.Join(llm.KnownThinkingLevels, ", ")+", auto, or default.")
 				}
 			}
 		}
@@ -209,6 +216,9 @@ func (r *Runtime) thinkLevelsLocked(m platform.Message) string {
 	}
 	cap := capability.ThinkingCapability(selected.Model)
 	head := "**Thinking**\n\nModel: `" + selected.Model + "` (" + selected.Provider + ")\nCurrent: " + currentLabel
+	if cap.Unknown {
+		return head + "\n\nThinking levels have not been loaded yet for this model. Plausible levels (" + strings.Join(llm.CodexPlausibleLevels(), ", ") + ") are accepted optimistically; run `/models` to refresh. Use `/think <level|auto|default>` to change it. `auto` uses the provider default."
+	}
 	if !cap.Supported {
 		return head + "\n\nThis model does not support thinking levels. `/think` has no effect for it."
 	}

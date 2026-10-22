@@ -208,10 +208,15 @@ func splitCodexMessages(messages []Message) (string, []Message) {
 	return strings.Join(systems, "\n\n"), rest
 }
 
-// codexRequestBody builds the Codex Responses payload. It mirrors
-// completeResponses for tools/thinking/streaming but keeps the Codex
-// contract separate so OpenCode Go behavior stays untouched.
-func codexRequestBody(input Request) map[string]any {
+// codexRequestBodyWithCapability builds the Codex Responses payload from an
+// already-resolved capability. It mirrors completeResponses for
+// tools/thinking/streaming but keeps the Codex contract separate so OpenCode
+// Go behavior stays untouched:
+//   - effort omitted means auto (server default), never a wire default
+//   - summary omitted by default; summary=none is an omission, not a value
+//   - ultra/persistent/custom never go on the wire (filtered from Levels and
+//     refused defensively by thinkingFields)
+func codexRequestBodyWithCapability(capability ThinkingCapability, input Request) map[string]any {
 	instructions, rest := splitCodexMessages(input.Messages)
 	body := map[string]any{
 		"model":  input.Model,
@@ -222,7 +227,7 @@ func codexRequestBody(input Request) map[string]any {
 	if strings.TrimSpace(instructions) != "" {
 		body["instructions"] = instructions
 	}
-	for field, value := range thinkingFields((&chatGPTProvider{}).ThinkingCapability(input.Model), input.Thinking) {
+	for field, value := range thinkingFields(capability, input.Thinking) {
 		body[field] = value
 	}
 	if len(input.Tools) > 0 {
@@ -235,8 +240,15 @@ func codexRequestBody(input Request) map[string]any {
 	return body
 }
 
+// codexRequestBody builds the payload using this instance's cached catalog
+// capability. It must not construct an empty provider: that always reports
+// unsupported and silently drops explicit levels.
+func (p *chatGPTProvider) codexRequestBody(input Request) map[string]any {
+	return codexRequestBodyWithCapability(p.ThinkingCapability(input.Model), input)
+}
+
 func (p *chatGPTProvider) doCodex(ctx context.Context, input Request, creds chatgptoauth.Tokens, onText StreamCallback) (Response, error) {
-	payload, err := json.Marshal(codexRequestBody(input))
+	payload, err := json.Marshal(p.codexRequestBody(input))
 	if err != nil {
 		return Response{}, err
 	}
@@ -292,8 +304,16 @@ func isUnauthorized(err error) bool {
 	return strings.Contains(msg, " 401") || strings.Contains(msg, "401 Unauthorized")
 }
 
-// ThinkingCapability reports no adjustable thinking for Codex models yet.
+// ThinkingCapability resolves per-model levels from the scoped
+// last-known-good catalog cache without network access. Unknown models (or
+// no cache yet) report unsupported, preserving pre-#23 behavior; unknown vs
+// unsupported display and refresh lifecycle are #24/#25.
 func (p *chatGPTProvider) ThinkingCapability(model string) ThinkingCapability {
+	if snap, ok := p.CachedCatalog(); ok {
+		if entry := findCodexEntry(snap, model); entry != nil {
+			return codexCapabilityForEntry(*entry)
+		}
+	}
 	return ThinkingCapability{Supported: false}
 }
 

@@ -16,6 +16,13 @@ const (
 // reasoning object: {"reasoning": {"effort": "<level>"}}.
 const ThinkingRequestResponsesReasoning = "responses_reasoning"
 
+// ThinkingRequestCodexReasoning encodes a Codex level as
+// {"reasoning": {"effort": "<level>"}} with no summary by default.
+// It reuses the Responses effort encoding but deliberately does not copy the
+// "effort != none => summary:auto" policy: summary omission means the server
+// default, and summary=none is an omission, not a wire value.
+const ThinkingRequestCodexReasoning = "codex_reasoning"
+
 // openCodeGoThinkingCatalog records qcode's exact-match OpenCode Go adapters
 // and conservative built-in choices. Official CLI runs can replace the choices
 // from Models.dev, while request and replay formats stay local.
@@ -228,6 +235,16 @@ func thinkingFields(capability ThinkingCapability, level string) map[string]any 
 			reasoning["summary"] = "auto"
 		}
 		return map[string]any{"reasoning": reasoning}
+	}
+	if capability.RequestFormat == ThinkingRequestCodexReasoning {
+		// Codex contract (#23): effort only, summary omitted by default.
+		// ultra/persistent/custom are client-only or upstream-mapped and must
+		// never go on the wire, even if a custom catalog advertises them.
+		switch level {
+		case "ultra", "persistent", "custom":
+			return nil
+		}
+		return map[string]any{"reasoning": map[string]any{"effort": level}}
 	}
 	if level == "off" {
 		return map[string]any{"thinking": map[string]any{"type": "disabled"}}

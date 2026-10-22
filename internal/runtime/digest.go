@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"strings"
 	"time"
+	"unicode"
 	"unicode/utf8"
 
 	"q-agent/internal/llm"
@@ -311,19 +312,89 @@ func (r *Runtime) digestChat(ctx context.Context, key string, rec state.ChatReco
 		}
 	}
 	result = r.Store.PrepareMemory(result, r.Config.Memory.MaxBytes)
-	preamble := fmt.Sprintf("Midnight digest done: distilled %d exchanges into long-term memory. Memory %d/%d bytes.", count, result.Bytes(), r.Config.Memory.MaxBytes)
-	if compacted {
-		preamble += " Older notes were compacted."
-	}
-	if result.Loss.DroppedNoteBytes > mem.Loss.DroppedNoteBytes {
-		preamble += " Some notes were removed or trimmed to fit the budget; see /memory."
-	}
-	// Show the retained new note, keeping delivery proportional to stored memory.
+	dropped := result.Loss.DroppedNoteBytes > mem.Loss.DroppedNoteBytes
+	// Store the full digest; only notify a two-line highlight to keep chat quiet.
 	notice := ""
 	if len(result.Entries) > 0 {
 		notice = result.Entries[len(result.Entries)-1].Text
 	}
-	return r.Store.CommitDigest(key, mem, result, count, route, telegram.FormatAndSplit(preamble+"\n\n"+notice), time.Now(), r.Config.Memory.MaxBytes)
+	notice = digestOneLineNotice(date, notice, compacted, dropped)
+	return r.Store.CommitDigest(key, mem, result, count, route, telegram.FormatAndSplit(notice), time.Now(), r.Config.Memory.MaxBytes)
+}
+
+// digestOneLineNotice keeps the full digest in storage (/memory) but notifies
+// only a two-line highlight, localized to the language the user uses most.
+// Line 1 is the digest notice, line 2 is the labeled highlight so users don't
+// mistake it for the only note stored that day.
+func digestOneLineNotice(date, note string, compacted, dropped bool) string {
+	highlight := digestHighlight(note)
+	chinese := digestIsChinese(note)
+	if highlight == "" {
+		if chinese {
+			return fmt.Sprintf("%s 記憶已整理，詳見 /memory。", date)
+		}
+		return fmt.Sprintf("%s memory digested, see /memory for full notes.", date)
+	}
+	if chinese {
+		head := fmt.Sprintf("%s 記憶已整理，詳見 /memory。", date)
+		if compacted {
+			head += "（舊筆記已壓縮）"
+		}
+		if dropped {
+			head += "（部分筆記已精簡）"
+		}
+		return head + "\n重點：" + highlight
+	}
+	head := fmt.Sprintf("%s memory digested, see /memory for full notes.", date)
+	if compacted {
+		head += " Older notes compacted."
+	}
+	if dropped {
+		head += " Some notes trimmed."
+	}
+	return head + "\nHighlight: " + highlight
+}
+
+// digestHighlight picks today's top highlight: the first bullet of the newest
+// stored note, collapsed to one line.
+func digestHighlight(note string) string {
+	for _, line := range strings.Split(note, "\n") {
+		t := strings.TrimSpace(line)
+		if t == "" {
+			continue
+		}
+		t = strings.TrimLeft(t, "-*•·> ")
+		// Strip ordered-list prefixes like "1. " or "1) ".
+		i := 0
+		for i < len(t) && t[i] >= '0' && t[i] <= '9' {
+			i++
+		}
+		if i > 0 && i < len(t) && (t[i] == '.' || t[i] == ')') {
+			t = strings.TrimSpace(t[i+1:])
+		}
+		t = strings.Join(strings.Fields(t), " ")
+		if t == "" {
+			continue
+		}
+		const maxHighlightRunes = 140
+		if r := []rune(t); len(r) > maxHighlightRunes {
+			t = string(r[:maxHighlightRunes]) + "…"
+		}
+		return t
+	}
+	return ""
+}
+
+// digestIsChinese reports whether text is predominantly in the user's Chinese,
+// used to pick the notice wrapper language. The highlight itself already
+// carries the user's wording via distill.
+func digestIsChinese(s string) bool {
+	for _, r := range s {
+		if unicode.Is(unicode.Han, r) {
+			return true
+		}
+	}
+	return false
 }
 
 // distill asks the provider for durable memory notes without tools.
@@ -334,7 +405,7 @@ func (r *Runtime) distill(ctx context.Context, provider llm.Provider, model, thi
 		Model:    model,
 		Thinking: thinking,
 		Messages: []llm.Message{
-			{Role: "system", Content: "You distill a day of chat history into durable long-term memory notes. Extract only lasting facts worth remembering: user preferences, decisions made, project context, names, and ongoing topics. Omit greetings, small talk, and routine tool output. Never repeat secrets, tokens, or credentials. Reply with 1-8 short bullet lines using - markers, plain text, no preamble."},
+			{Role: "system", Content: "You distill a day of chat history into durable long-term memory notes. Extract only lasting facts worth remembering: user preferences, decisions made, project context, names, and ongoing topics. Omit greetings, small talk, and routine tool output. Never repeat secrets, tokens, or credentials. Reply in the same language the user uses most in the transcript. Reply with 1-8 short bullet lines using - markers, plain text, no preamble, most important first."},
 			{Role: "user", Content: transcript},
 		},
 		Tools:       nil,

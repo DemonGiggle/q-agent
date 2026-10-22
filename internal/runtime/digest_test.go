@@ -49,8 +49,14 @@ func TestDigestSweepStoresMemoryAndNotifies(t *testing.T) {
 		t.Fatalf("wrong notify route: %+v", reply.Route)
 	}
 	text := strings.Join(reply.Parts, "\n")
-	if !strings.Contains(text, "Midnight digest") || !strings.Contains(text, "answer") {
-		t.Fatalf("notification missing preamble/summary: %q", text)
+	if !strings.Contains(text, "memory digested") || !strings.Contains(text, "Highlight:") || !strings.Contains(text, "answer") {
+		t.Fatalf("notification missing two-line highlight: %q", text)
+	}
+	if strings.Contains(text, "Midnight digest") || strings.Contains(text, "\n\n") {
+		t.Fatalf("notification should be two lines, full notes stay in /memory: %q", text)
+	}
+	if strings.TrimSpace(mem.Entries[0].Text) == "" {
+		t.Fatalf("full digest not stored: %+v", mem.Entries)
 	}
 }
 

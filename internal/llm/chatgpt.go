@@ -71,18 +71,18 @@ func (p *chatGPTProvider) Models(ctx context.Context) ([]string, error) {
 // RefreshCatalog ensures a fresh scoped snapshot, returning fresh or stale
 // last-known-good on retriable failures. It never returns an empty list on
 // retriable errors when stale exists; auth failures (401/403) always error.
+//
+// The lookup is account-scoped: credentials are resolved first and the exact
+// cache key (endpoint + account + version + token file) is used. A pre-creds
+// scan across accounts must not serve another account's fresh snapshot when
+// the same token file was re-saved for a different account.
 func (p *chatGPTProvider) RefreshCatalog(ctx context.Context) (CodexCatalogSnapshot, error) {
-	now := time.Now()
-	if snap, ok := p.CachedCatalog(); ok && !snap.Stale {
-		return snap, nil
-	}
 	creds, err := chatgptoauth.GetValidTokens(ctx, p.client, p.tokensPath)
 	if err != nil {
 		return CodexCatalogSnapshot{}, err
 	}
 	cacheKey := codexCatalogCacheKey(p.baseURL, creds.AccountID, p.tokensPath, codexClientVersion)
 	if cached, ok := getCodexCatalogCache(cacheKey, time.Now()); ok && !cached.Stale {
-		_ = now
 		return cached, nil
 	}
 	cached, hasCached := getCodexCatalogCache(cacheKey, time.Now())
@@ -218,10 +218,41 @@ func (p *chatGPTProvider) ensureCatalogWithCreds(ctx context.Context, creds chat
 // CachedCatalog returns the last-known-good catalog snapshot for this
 // provider scope without network access. The snapshot carries no credential
 // material. The boolean reports cache presence; Stale reports TTL expiry.
+//
+// The lookup is account-aware without network: the current account is read
+// via file-only Load (no refresh, no HTTP) and only the exact cache key
+// (endpoint + account + version + token file) is served. When the account is
+// known but has no cached snapshot, Unknown is returned instead of another
+// account's data (same token file re-saved for a different account). Only
+// when the account cannot be determined (missing/unreadable file) does it
+// fall back to the legacy endpoint-scoped scan.
 func (p *chatGPTProvider) CachedCatalog() (CodexCatalogSnapshot, bool) {
-	// Account identity is unknown without tokens; best-effort lookup scans
-	// this provider's token-file scope across cached accounts. Endpoint +
-	// client_version + token file still isolate custom baseURLs.
+	if toks, err := chatgptoauth.Load(p.tokensPath); err == nil {
+		if snap, ok := p.cachedCatalogExact(toks.AccountID); ok {
+			return snap, true
+		}
+		return CodexCatalogSnapshot{}, false
+	}
+	// Unreadable file: best-effort legacy scan so offline diagnostics
+	// can still show something; callers must treat it as best-effort.
+	return p.cachedCatalogScan()
+}
+
+// cachedCatalogExact serves only the exact account scope. No cross-account
+// fallback.
+func (p *chatGPTProvider) cachedCatalogExact(accountID string) (CodexCatalogSnapshot, bool) {
+	key := codexCatalogCacheKey(p.baseURL, accountID, p.tokensPath, codexClientVersion)
+	if snap, ok := getCodexCatalogCache(key, time.Now()); ok {
+		return snap, true
+	}
+	return CodexCatalogSnapshot{}, false
+}
+
+// cachedCatalogScan is the legacy endpoint + version + token-path scan used
+// only when the current account identity is unavailable. It must never be
+// used when the account is known: same-path account switches would otherwise
+// serve the previous account's snapshot.
+func (p *chatGPTProvider) cachedCatalogScan() (CodexCatalogSnapshot, bool) {
 	codexCatalogMu.RLock()
 	defer codexCatalogMu.RUnlock()
 	now := time.Now()
@@ -304,8 +335,36 @@ func (p *chatGPTProvider) codexRequestBody(input Request) map[string]any {
 	return codexRequestBodyWithCapability(p.ThinkingCapability(input.Model), input)
 }
 
-func (p *chatGPTProvider) doCodex(ctx context.Context, input Request, creds chatgptoauth.Tokens, onText StreamCallback) (Response, error) {
-	payload, err := json.Marshal(p.codexRequestBody(input))
+// capabilityForSnapshot resolves one model against an already-loaded
+// snapshot. Model absent returns Unknown with the snapshot's source/stale so
+// UI can distinguish "catalog loaded but model unknown" from "no catalog".
+func capabilityForSnapshot(snap CodexCatalogSnapshot, model string) ThinkingCapability {
+	if entry := findCodexEntry(snap, model); entry != nil {
+		cap := codexCapabilityForEntry(*entry)
+		cap.Source = snap.Source
+		cap.Stale = snap.Stale
+		return cap
+	}
+	cap := unknownCodexCapability()
+	cap.Source = snap.Source
+	cap.Stale = snap.Stale
+	return cap
+}
+
+// capabilityForCreds resolves one model against the exact account scope for
+// the given credentials. No cross-account fallback: same-path account
+// switches must not reuse the previous account's levels. No snapshot returns
+// Unknown without source.
+func (p *chatGPTProvider) capabilityForCreds(creds chatgptoauth.Tokens, model string) ThinkingCapability {
+	key := codexCatalogCacheKey(p.baseURL, creds.AccountID, p.tokensPath, codexClientVersion)
+	if snap, ok := getCodexCatalogCache(key, time.Now()); ok {
+		return capabilityForSnapshot(snap, model)
+	}
+	return unknownCodexCapability()
+}
+
+func (p *chatGPTProvider) doCodexWithCapability(ctx context.Context, input Request, creds chatgptoauth.Tokens, cap ThinkingCapability, onText StreamCallback) (Response, error) {
+	payload, err := json.Marshal(codexRequestBodyWithCapability(cap, input))
 	if err != nil {
 		return Response{}, err
 	}
@@ -330,21 +389,38 @@ func (p *chatGPTProvider) doCodex(ctx context.Context, input Request, creds chat
 	return parseResponsesStream(resp.Body, onText)
 }
 
+// doCodex keeps the old signature for callers without a resolved capability.
+// It resolves via the account-aware cache-only lookup, so explicit levels are
+// never silently built from another account's snapshot.
+func (p *chatGPTProvider) doCodex(ctx context.Context, input Request, creds chatgptoauth.Tokens, onText StreamCallback) (Response, error) {
+	return p.doCodexWithCapability(ctx, input, creds, p.ThinkingCapability(input.Model), onText)
+}
+
 // Complete sends a Codex Responses request with the OAuth access token,
 // refreshing once on 401 before giving up. The 401 retry reuses the
 // serialized RefreshAndSaveWithStale path so a concurrent refresh is not
 // spent twice on the same rotating refresh token.
 //
 // It best-effort warms the catalog with the same credentials so request-time
-// ThinkingCapability is not Unknown when another instance recently listed
-// models. Catalog errors never fail completion.
+// capability is not Unknown when another instance recently listed models.
+// Catalog errors never fail completion.
+//
+// Explicit thinking is validated against the exact account snapshot before
+// sending: known-unsupported levels return an error instead of being silently
+// omitted. Auto (empty) always omits effort.
 func (p *chatGPTProvider) Complete(ctx context.Context, input Request, onText StreamCallback) (Response, error) {
 	creds, err := chatgptoauth.GetValidTokens(ctx, p.client, p.tokensPath)
 	if err != nil {
 		return Response{}, err
 	}
 	p.ensureCatalogWithCreds(ctx, creds)
-	resp, err := p.doCodex(ctx, input, creds, onText)
+	cap := p.capabilityForCreds(creds, input.Model)
+	if strings.TrimSpace(input.Thinking) != "" {
+		if err := ValidateCodexThinkingLevel(cap, input.Thinking); err != nil {
+			return Response{}, err
+		}
+	}
+	resp, err := p.doCodexWithCapability(ctx, input, creds, cap, onText)
 	if err == nil {
 		return resp, nil
 	}
@@ -355,7 +431,13 @@ func (p *chatGPTProvider) Complete(ctx context.Context, input Request, onText St
 	if err != nil {
 		return Response{}, err
 	}
-	return p.doCodex(ctx, input, fresh, onText)
+	freshCap := p.capabilityForCreds(fresh, input.Model)
+	if strings.TrimSpace(input.Thinking) != "" {
+		if err := ValidateCodexThinkingLevel(freshCap, input.Thinking); err != nil {
+			return Response{}, err
+		}
+	}
+	return p.doCodexWithCapability(ctx, input, fresh, freshCap, onText)
 }
 
 func isUnauthorized(err error) bool {
@@ -369,8 +451,9 @@ func isUnauthorized(err error) bool {
 // ThinkingCapability resolves per-model levels from the scoped
 // last-known-good catalog cache without network access.
 //
-// It never blocks on I/O so /think can call it while holding the runtime
-// lock. No cache (or model absent) returns Unknown, not unsupported; legacy
+// It never does network I/O so /think can call it while holding the runtime
+// lock (only a file-only Load to discover the current account, no refresh).
+// No cache (or model absent) returns Unknown, not unsupported; legacy
 // fallback entries without reasoning metadata also return Unknown. Callers
 // must not report "does not support thinking" for Unknown.
 func (p *chatGPTProvider) ThinkingCapability(model string) ThinkingCapability {
@@ -381,16 +464,7 @@ func (p *chatGPTProvider) ThinkingCapability(model string) ThinkingCapability {
 		return ThinkingCapability{Supported: false, Unknown: false}
 	}
 	if snap, ok := p.CachedCatalog(); ok {
-		if entry := findCodexEntry(snap, model); entry != nil {
-			cap := codexCapabilityForEntry(*entry)
-			cap.Source = snap.Source
-			cap.Stale = snap.Stale
-			return cap
-		}
-		cap := unknownCodexCapability()
-		cap.Source = snap.Source
-		cap.Stale = snap.Stale
-		return cap
+		return capabilityForSnapshot(snap, model)
 	}
 	return unknownCodexCapability()
 }

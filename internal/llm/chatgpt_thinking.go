@@ -90,6 +90,12 @@ func unknownCodexCapability() ThinkingCapability {
 // returns Unknown, not unsupported: we must not claim "cannot think" when we
 // simply have not learned levels. Only an entry that advertises reasoning
 // metadata but filters to zero usable tiers reports unsupported.
+//
+// A single advertised level is NOT always-on: one selectable effort does not
+// prove the backend's behavior when effort is omitted (and ["none"] has the
+// opposite of always-on semantics), and the catalog default is never
+// synthesized. Selector adjustability, always-on state, advertised default,
+// and explicit effort wire encoding are handled separately.
 func codexCapabilityForEntry(entry CodexModelEntry) ThinkingCapability {
 	raw := entry.Levels()
 	if len(raw) == 0 {
@@ -111,27 +117,24 @@ func codexCapabilityForEntry(entry CodexModelEntry) ThinkingCapability {
 			}
 		}
 	}
-	cap := ThinkingCapability{
+	return ThinkingCapability{
 		Supported:     true,
 		Adjustable:    len(levels) > 1,
-		AlwaysOn:      len(levels) == 1,
+		AlwaysOn:      false,
 		Levels:        append([]string(nil), levels...),
 		Default:       defaultLevel,
 		RequestFormat: ThinkingRequestCodexReasoning,
 		ReplayFormat:  ThinkingReplayReasoningDetails,
 		Unknown:       false,
 	}
-	if cap.AlwaysOn && cap.Default == "" {
-		cap.Default = levels[0]
-	}
-	return cap
 }
 
 // ValidateCodexThinkingLevel checks an explicit level against a Codex
 // capability. Empty (auto) is always allowed and handled by the caller.
 // Unknown allows any plausible non-client-only effort optimistically; known
 // models require strict membership. Client-only ultra/persistent/custom are
-// always rejected in v1.
+// always rejected in v1. A single advertised level is validated by membership
+// like any known set; it never reports "always on".
 func ValidateCodexThinkingLevel(cap ThinkingCapability, level string) error {
 	norm := strings.ToLower(strings.TrimSpace(level))
 	if norm == "" {
@@ -149,23 +152,13 @@ func ValidateCodexThinkingLevel(cap ThinkingCapability, level string) error {
 	if !cap.Supported {
 		return fmt.Errorf("model does not support thinking levels")
 	}
-	if cap.AlwaysOn {
-		// Fixed tier: only the single advertised level is accepted.
-		if len(cap.Levels) == 1 && norm == strings.ToLower(cap.Levels[0]) {
-			return nil
-		}
-		if cap.Default != "" && norm == strings.ToLower(cap.Default) {
-			return nil
-		}
-		return fmt.Errorf("thinking is always on for this model")
-	}
-	if !cap.Adjustable || len(cap.Levels) == 0 {
-		return fmt.Errorf("thinking is not adjustable for this model")
-	}
 	for _, lv := range cap.Levels {
-		if norm == strings.ToLower(lv) {
+		if norm == strings.ToLower(strings.TrimSpace(lv)) {
 			return nil
 		}
+	}
+	if len(cap.Levels) == 0 {
+		return fmt.Errorf("thinking is not adjustable for this model")
 	}
 	return fmt.Errorf("unsupported thinking level %q", level)
 }

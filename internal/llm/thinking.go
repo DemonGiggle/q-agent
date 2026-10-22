@@ -281,6 +281,22 @@ func thinkingFields(capability ThinkingCapability, level string) map[string]any 
 		}
 		return map[string]any{"reasoning": map[string]any{"effort": level}}
 	}
+	// Known Codex catalog: explicit effort is validated by membership, not by
+	// selector adjustability. A single advertised level must still be sent
+	// when explicitly requested; auto (empty) omits. Client-only never goes
+	// on the wire. This keeps ["none"] (disable) and ["high"] (single tier)
+	// from being dropped by the generic Adjustable gate below.
+	if capability.RequestFormat == ThinkingRequestCodexReasoning && !capability.Unknown {
+		if isCodexClientOnlyEffort(level) {
+			return nil
+		}
+		for _, lv := range capability.Levels {
+			if level == strings.ToLower(strings.TrimSpace(lv)) {
+				return map[string]any{"reasoning": map[string]any{"effort": level}}
+			}
+		}
+		return nil
+	}
 	if !capability.Adjustable || !validThinkingLevel(capability, level) {
 		return nil
 	}

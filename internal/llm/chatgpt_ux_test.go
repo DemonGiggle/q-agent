@@ -41,7 +41,9 @@ func TestCodexUXWireMatchesUICapability(t *testing.T) {
 	if _, hasSummary := m["summary"]; hasSummary {
 		t.Fatalf("codex must not send summary, got %v", m)
 	}
-	// Single-level model: AlwaysOn UI still uses same cap; wire sends it.
+	// Single-level model: NOT always-on (one option does not prove backend
+	// behavior when effort is omitted); explicit single effort must still be
+	// sent, auto omits. Default is the advertised catalog default only.
 	single := CodexModelEntry{
 		Slug:             "solo",
 		DefaultReasoning: "max",
@@ -50,7 +52,40 @@ func TestCodexUXWireMatchesUICapability(t *testing.T) {
 		},
 	}
 	singleCap := codexCapabilityForEntry(single)
-	if !singleCap.AlwaysOn || singleCap.Default != "max" {
-		t.Fatalf("single = %+v, want always-on max", singleCap)
+	if singleCap.AlwaysOn || !singleCap.Supported || singleCap.Adjustable || singleCap.Default != "max" {
+		t.Fatalf("single = %+v, want supported non-adjustable non-always-on default max", singleCap)
+	}
+	if len(singleCap.Levels) != 1 || singleCap.Levels[0] != "max" {
+		t.Fatalf("single levels = %+v, want [max]", singleCap.Levels)
+	}
+	if err := ValidateCodexThinkingLevel(singleCap, "max"); err != nil {
+		t.Fatalf("single explicit max must validate: %v", err)
+	}
+	if out := codexRequestBodyWithCapability(singleCap, Request{Model: single.Slug, Thinking: "max"}); out["reasoning"] == nil {
+		t.Fatalf("single explicit max must send reasoning, got %+v", out)
+	}
+	// Single ["none"]: must not be reported as always-on; explicit none sends.
+	noneOnly := CodexModelEntry{
+		Slug:               "none-only",
+		SupportedReasoning: []CodexReasoningLevelOption{{Effort: "none"}},
+	}
+	noneCap := codexCapabilityForEntry(noneOnly)
+	if noneCap.AlwaysOn || !noneCap.Supported {
+		t.Fatalf("none-only = %+v, want supported non-always-on", noneCap)
+	}
+	if err := ValidateCodexThinkingLevel(noneCap, "none"); err != nil {
+		t.Fatalf("none-only explicit none must validate: %v", err)
+	}
+	if out := codexRequestBodyWithCapability(noneCap, Request{Model: noneOnly.Slug, Thinking: "none"}); out["reasoning"] == nil {
+		t.Fatalf("none-only explicit none must send reasoning")
+	}
+	// No synthesized default when the catalog advertises none.
+	noDef := CodexModelEntry{
+		Slug:               "solo-nodef",
+		SupportedReasoning: []CodexReasoningLevelOption{{Effort: "high"}},
+	}
+	noDefCap := codexCapabilityForEntry(noDef)
+	if noDefCap.AlwaysOn || noDefCap.Default != "" {
+		t.Fatalf("single without advertised default must not synthesize default, got %+v", noDefCap)
 	}
 }

@@ -7,7 +7,7 @@
 Ask questions, work with files, and schedule tasks — without leaving the chat.
 
 [![CI](https://github.com/DemonGiggle/q-agent/actions/workflows/ci.yml/badge.svg?branch=main)](https://github.com/DemonGiggle/q-agent/actions/workflows/ci.yml)
-[![Go](https://img.shields.io/badge/Go-1.22%2B-00ADD8?logo=go&logoColor=white)](https://go.dev/dl/)
+[![Go](https://img.shields.io/badge/Go-1.27%2B-00ADD8?logo=go&logoColor=white)](https://go.dev/dl/)
 [![Telegram](https://img.shields.io/badge/Telegram-bot-26A5E4?logo=telegram&logoColor=white)](https://core.telegram.org/bots)
 [![Linux](https://img.shields.io/badge/Runs_on-Linux-FCC624?logo=linux&logoColor=black)](#quick-start)
 [![License: MIT](https://img.shields.io/badge/License-MIT-green.svg)](LICENSE)
@@ -69,7 +69,7 @@ aren't supported; q-agent doesn't include an interactive browser or stock-price 
 
 ## Quick start
 
-You'll need **Linux**, **Go 1.22+**, **Git**, **Make**, a Telegram bot token from
+You'll need **Linux**, **Go 1.27+**, **Git**, **Make**, a Telegram bot token from
 [@BotFather](https://t.me/BotFather), and a model provider. The example configuration
 uses Ollama with `qwen3`; have Ollama running and that model available, or choose
 another provider in the [setup guide](docs/operations.md#1-setup).

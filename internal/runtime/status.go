@@ -76,5 +76,6 @@ func (r *Runtime) statusLocked(m platform.Message) string {
 		activity, len(r.active), limit, scheduler,
 		maxSteps,
 		line(r.Config.Limits.TaskTimeout), r.Config.InteractiveTaskDuration().String(), line(r.Config.Limits.ShellTimeout))
+	text += companionStatusLine(r, m)
 	return r.Options.Redaction.Text(redaction.Remote, text)
 }

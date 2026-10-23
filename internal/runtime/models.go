@@ -251,6 +251,8 @@ func (r *Runtime) handleCallback(ctx context.Context, m platform.Message) error 
 		return r.handleModelCallback(ctx, m, parts)
 	case "providers":
 		return r.handleProviderCallback(ctx, m, parts)
+	case "companion":
+		return r.handleCompanionCallback(ctx, m, parts)
 	default:
 		return nil
 	}

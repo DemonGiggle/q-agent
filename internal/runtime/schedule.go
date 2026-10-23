@@ -159,6 +159,15 @@ func (r *Runtime) StartScheduler(ctx context.Context) error {
 			r.digestLoop(digestCtx)
 		}()
 	}
+	if r.Config.Proactive.Enabled {
+		proactiveCtx, proactiveCancel := context.WithCancel(ctx)
+		r.proactiveCancel = proactiveCancel
+		r.proactiveDone = make(chan struct{})
+		go func() {
+			defer close(r.proactiveDone)
+			r.proactiveLoop(proactiveCtx)
+		}()
+	}
 	return nil
 }
 

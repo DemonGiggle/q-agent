@@ -25,6 +25,7 @@ type Config struct {
 	Sandbox   Sandbox             `toml:"sandbox"`
 	Limits    Limits              `toml:"limits"`
 	Memory    Memory              `toml:"memory"`
+	Proactive Proactive           `toml:"proactive"`
 	ChatGPT   ChatGPT             `toml:"chatgpt"`
 }
 type Provider struct {
@@ -91,8 +92,25 @@ type Memory struct {
 	Model           string `toml:"model"`
 }
 
+// Proactive configures the opt-out companion check-in sweep. Enabled by
+// default; Enabled=false is the single-flag kill switch (no goroutine, no
+// extra LLM/history reads, no queue writes). ActiveTime is the daily
+// wall-clock window (HH:MM-HH:MM) the companion may wake in; Timezone empty
+// means server-local time. Wake-ups inside the window are randomized.
+type Proactive struct {
+	Enabled            bool     `toml:"enabled"`
+	Timezone           string   `toml:"timezone"`
+	ActiveTime         string   `toml:"active_time"`
+	MaxPerDay          int      `toml:"max_per_day"`
+	Cooldown           string   `toml:"cooldown"`
+	SkipRecentActivity string   `toml:"skip_recent_activity"`
+	Model              string   `toml:"model"`
+	Kinds              []string `toml:"kinds"`
+	GroupPolicy        string   `toml:"group_policy"`
+}
+
 func Defaults() Config {
-	return Config{StateDir: "~/.local/share/q-agent", Provider: Provider{Name: "ollama", Model: "qwen3"}, Telegram: Telegram{TokenEnv: "TELEGRAM_BOT_TOKEN"}, Sandbox: Sandbox{Bubblewrap: "bwrap", NewUIDMap: "newuidmap", NewGIDMap: "newgidmap", MMdebstrap: "mmdebstrap"}, Limits: Limits{MaxSteps: 8, MaxConcurrent: 2, TaskTimeout: "5m", InteractiveTaskTimeout: "15m", ShellTimeout: "2m", ShellPromptTimeout: "90s", ShellMaxExtends: 2}, Memory: Memory{Enabled: true, DigestAt: "00:00", MaxBytes: 8192, MaxContextBytes: 2000, MaxPendingBytes: 4 << 20}}
+	return Config{StateDir: "~/.local/share/q-agent", Provider: Provider{Name: "ollama", Model: "qwen3"}, Telegram: Telegram{TokenEnv: "TELEGRAM_BOT_TOKEN"}, Sandbox: Sandbox{Bubblewrap: "bwrap", NewUIDMap: "newuidmap", NewGIDMap: "newgidmap", MMdebstrap: "mmdebstrap"}, Limits: Limits{MaxSteps: 8, MaxConcurrent: 2, TaskTimeout: "5m", InteractiveTaskTimeout: "15m", ShellTimeout: "2m", ShellPromptTimeout: "90s", ShellMaxExtends: 2}, Memory: Memory{Enabled: true, DigestAt: "00:00", MaxBytes: 8192, MaxContextBytes: 2000, MaxPendingBytes: 4 << 20}, Proactive: Proactive{Enabled: true, ActiveTime: "09:00-22:00", MaxPerDay: 1, Cooldown: "6h", SkipRecentActivity: "60m", Kinds: []string{"reminder", "warmth", "comfort", "suggestion"}, GroupPolicy: "conservative"}}
 }
 func Load(path string) (Config, error) {
 	c := Defaults()
@@ -252,6 +270,50 @@ func Load(path string) (Config, error) {
 	if c.Memory.MaxContextBytes > 200000 {
 		return c, fmt.Errorf("memory.max_context_bytes must not exceed 200000")
 	}
+	if c.Proactive.ActiveTime == "" {
+		c.Proactive.ActiveTime = Defaults().Proactive.ActiveTime
+	}
+	if _, _, err := parseActiveTime(c.Proactive.ActiveTime); err != nil {
+		return c, err
+	}
+	if c.Proactive.Timezone != "" {
+		if _, err := time.LoadLocation(c.Proactive.Timezone); err != nil {
+			return c, fmt.Errorf("invalid proactive timezone: %w", err)
+		}
+	}
+	if c.Proactive.Cooldown == "" {
+		c.Proactive.Cooldown = "6h"
+	}
+	if d, e := time.ParseDuration(c.Proactive.Cooldown); e != nil || d <= 0 {
+		return c, fmt.Errorf("invalid proactive.cooldown %q: want positive duration", c.Proactive.Cooldown)
+	}
+	if c.Proactive.SkipRecentActivity == "" {
+		c.Proactive.SkipRecentActivity = "60m"
+	}
+	if d, e := time.ParseDuration(c.Proactive.SkipRecentActivity); e != nil || d <= 0 {
+		return c, fmt.Errorf("invalid proactive.skip_recent_activity %q: want positive duration", c.Proactive.SkipRecentActivity)
+	}
+	if c.Proactive.MaxPerDay <= 0 {
+		return c, fmt.Errorf("proactive.max_per_day must be positive")
+	}
+	if len(c.Proactive.Kinds) == 0 {
+		c.Proactive.Kinds = Defaults().Proactive.Kinds
+	}
+	for _, k := range c.Proactive.Kinds {
+		switch k {
+		case "reminder", "warmth", "comfort", "suggestion":
+		default:
+			return c, fmt.Errorf("invalid proactive kind %q: want reminder|warmth|comfort|suggestion", k)
+		}
+	}
+	if c.Proactive.GroupPolicy == "" {
+		c.Proactive.GroupPolicy = "conservative"
+	}
+	switch c.Proactive.GroupPolicy {
+	case "conservative", "off", "same":
+	default:
+		return c, fmt.Errorf("invalid proactive.group_policy %q: want conservative|off|same", c.Proactive.GroupPolicy)
+	}
 	c.StateDir, err = absolute(c.StateDir, filepath.Dir(path))
 	if err != nil {
 		return c, err
@@ -291,6 +353,30 @@ func parseDigestAt(s string) (hour, min int, err error) {
 		return 0, 0, fmt.Errorf("invalid memory digest_at %q: want HH:MM", s)
 	}
 	return h, m, nil
+}
+
+// parseActiveTime parses a daily active window HH:MM-HH:MM for the proactive
+// companion. Start and end are minutes since midnight; equal values are
+// rejected as an empty window. Overnight windows (end <= start, e.g.
+// 22:00-02:00) are allowed and match evening plus after-midnight.
+func parseActiveTime(s string) (startMin, endMin int, err error) {
+	parts := strings.Split(s, "-")
+	if len(parts) != 2 {
+		return 0, 0, fmt.Errorf("invalid proactive active_time %q: want HH:MM-HH:MM", s)
+	}
+	sh, sm, err := parseDigestAt(strings.TrimSpace(parts[0]))
+	if err != nil {
+		return 0, 0, fmt.Errorf("invalid proactive active_time %q: want HH:MM-HH:MM", s)
+	}
+	eh, em, err := parseDigestAt(strings.TrimSpace(parts[1]))
+	if err != nil {
+		return 0, 0, fmt.Errorf("invalid proactive active_time %q: want HH:MM-HH:MM", s)
+	}
+	startMin, endMin = sh*60+sm, eh*60+em
+	if startMin == endMin {
+		return 0, 0, fmt.Errorf("invalid proactive active_time %q: empty window", s)
+	}
+	return startMin, endMin, nil
 }
 
 func absolute(path, base string) (string, error) {

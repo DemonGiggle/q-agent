@@ -60,6 +60,7 @@ type Runtime struct {
 	closed            bool
 	modelMenus        map[string]modelMenu
 	providerMenus     map[string]providerMenu
+	companionMenus    map[string]companionMenu
 	scheduleCancel    context.CancelFunc
 	scheduleDone      chan struct{}
 	scheduleWake      chan struct{}
@@ -69,6 +70,10 @@ type Runtime struct {
 	digestMu          sync.Mutex
 	digestRetries     map[string]digestRetry
 	digestGlobalRetry state.MemoryRetry
+	proactiveCancel   context.CancelFunc
+	proactiveDone     chan struct{}
+	proactiveMu       sync.Mutex
+	proactiveSent     map[string][]time.Time
 }
 
 func (r *Runtime) allowed(m platform.Message) bool {
@@ -171,6 +176,9 @@ func (r *Runtime) Handle(ctx context.Context, m platform.Message) error {
 	if fields := strings.Fields(m.Text); len(fields) > 0 && (fields[0] == "/provider" || fields[0] == "/model" || fields[0] == "/think" || fields[0] == "/max_steps" || fields[0] == "/settings") {
 		return r.chatSettings(m, fields)
 	}
+	if fields := strings.Fields(m.Text); len(fields) > 0 && fields[0] == "/companion" {
+		return r.companionCommand(m, fields)
+	}
 	if m.Text == "/models" {
 		return r.showModels(ctx, m)
 	}
@@ -238,6 +246,11 @@ func (r *Runtime) Handle(ctx context.Context, m platform.Message) error {
 			return r.reply(m, "Shell is waiting: reply `extend` to continue or `kill` to stop it.")
 		}
 		active, busy = r.active[key]
+	}
+	if m.Text == "/help" {
+		text := helpText()
+		r.mu.Unlock()
+		return r.reply(m, text)
 	}
 	switch m.Text {
 	case "/status":
@@ -510,17 +523,24 @@ func (r *Runtime) Close() {
 	if r.digestCancel != nil {
 		r.digestCancel()
 	}
+	if r.proactiveCancel != nil {
+		r.proactiveCancel()
+	}
 	for _, t := range r.active {
 		t.cancel()
 	}
 	done := r.scheduleDone
 	digestDone := r.digestDone
+	proactiveDone := r.proactiveDone
 	r.mu.Unlock()
 	if done != nil {
 		<-done
 	}
 	if digestDone != nil {
 		<-digestDone
+	}
+	if proactiveDone != nil {
+		<-proactiveDone
 	}
 	r.wg.Wait()
 }

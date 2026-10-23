@@ -233,6 +233,7 @@ address the bot (`/status@your_bot`, `/status @your_bot`, or reply with
 | `/think <level\|auto\|default>` | Thinking override for this chat. |
 | `/max_steps [n\|default]`, `/settings [reset]` | Step limit / show or clear all overrides. |
 | `/memory`, `/forget` | Show memory state / clear notes + pending sources for the whole chat. Files, history, schedules stay. |
+| `/companion` | Quiet check-ins for this chat: on by default, `/companion` shows buttons, `/companion on\|off\|default\|status` as text. Chat-wide. |
 | `/new` | Clear this topic's history. Files and schedules stay. |
 | `/cancel` | Stop this topic's task. Finished side effects stay. |
 | `/help` | Command list. |
@@ -281,6 +282,13 @@ chat's current provider, mode, files, and history.
   pending age, retries, and loss counts. `/forget` clears everything memory
   related. Corrupt memory files are quarantined aside so one bad chat
   cannot block startup.
+
+### Companion: quiet check-ins, on by default
+
+- `[proactive]` runs a decoupled sweep at random moments inside `active_time` (default 09:00-22:00 server-local), a few times per day. Each authorized chat is visited at most once per round. Silence is the common case.
+- Input is read-only: recent history plus memory notes. One cheap no-tools model call decides silent, reminder, warmth, comfort, or suggestion. At most 1 short text per chat per sweep, capped at max_per_day 1 and 6h cooldown, sent via the durable outbox with redaction. Sweep spacing inside the window is randomized at roughly half to most of cooldown, so longer cooldowns naturally sweep less often. No tool calls, shell, web, or cross-chat profiling in v1. Replies go to the workspace route (topic 0).
+- Safety: skips unauthorized chats, busy tasks, shell prompts, maintenance, recent activity (default 60m), and empty history. Groups default to conservative (reminders only); group_policy off skips groups.
+- Controls: global `[proactive] enabled=false` is the kill switch (no goroutine, no extra reads or LLM calls). Per-chat `/companion`, `/companion on|off|default|status` with buttons overrides globally (default follows global, on forces on, off forces off). Anyone in an allowed group may change that group. Upgrade note: installs without a `[proactive]` section auto-enable on next load.
 
 ## 4. Tools the model can call
 

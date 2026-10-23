@@ -23,6 +23,7 @@ func DefaultCommands() []BotCommand {
 		{Command: "think", Description: "Set this chat's thinking level"},
 		{Command: "max_steps", Description: "Show or set this chat's maximum model steps"},
 		{Command: "settings", Description: "Show settings or restore defaults"},
+		{Command: "companion", Description: "Enable or disable quiet check-ins for this chat"},
 		{Command: "memory", Description: "Show notes, pending sources, retries, and memory loss"},
 		{Command: "forget", Description: "Clear notes and pending memory sources across all topics"},
 		{Command: "help", Description: "Show command list"},

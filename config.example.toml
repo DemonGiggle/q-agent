@@ -104,3 +104,26 @@ max_context_bytes = 2000
 max_pending_bytes = 4194304
 # Optional digest model override; empty uses each chat's own model.
 model = ""
+
+[proactive]
+# Quiet companion check-ins. On by default; enabled=false is the kill switch
+# (no goroutine, no extra LLM/history reads, no queue writes). Existing
+# installs auto-enable on next load unless they set enabled=false.
+enabled = true
+# IANA timezone for the active window; empty means server-local time.
+timezone = ""
+# Active hours the companion may wake in (HH:MM-HH:MM, 24-hour).
+# Wake-ups inside the window are randomized, a few times per day.
+active_time = "09:00-22:00"
+# At most one proactive message per chat per sweep, capped per day.
+max_per_day = 1
+# Minimum gap between two proactive messages to the same chat.
+cooldown = "6h"
+# Skip chats with recent activity to avoid interrupting live conversation.
+skip_recent_activity = "60m"
+# Optional model override; empty uses each chat's own model.
+model = ""
+# Allowed kinds; unknown kinds are rejected. Silence is always allowed.
+kinds = ["reminder", "warmth", "comfort", "suggestion"]
+# Group policy: conservative (groups only get reminders), off (skip groups), same (as private).
+group_policy = "conservative"

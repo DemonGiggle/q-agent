@@ -417,7 +417,7 @@ independent helper, checks readiness, and rolls back on failure. See
 
 Maintainers publish with `make release VERSION=vX.Y.Z`, tag, and attach
 both raw binaries (or the `.tar.gz` packages newer updaters accept).
-CI (Go 1.26 + stable, fmt, tests, vet, static build, amd64 race) validates
+CI (Go 1.27 + stable, fmt, tests, vet, static build, amd64 race) validates
 code only — it never publishes or deploys. The opt-in rootless sandbox
 integration is not in CI.
 

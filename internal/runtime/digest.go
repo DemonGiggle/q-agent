@@ -456,7 +456,7 @@ func (r *Runtime) compactMemory(ctx context.Context, provider llm.Provider, mode
 }
 
 func (r *Runtime) memoryHistory(m platform.Message, conv state.Conversation) []llm.Message {
-	history := conv.Messages()
+	history := append(r.companionConversationContext(m), conv.Messages()...)
 	if !r.Config.Memory.Enabled {
 		return history
 	}

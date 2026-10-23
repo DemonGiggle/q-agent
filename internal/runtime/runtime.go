@@ -73,7 +73,6 @@ type Runtime struct {
 	proactiveCancel   context.CancelFunc
 	proactiveDone     chan struct{}
 	proactiveMu       sync.Mutex
-	proactiveSent     map[string][]time.Time
 }
 
 func (r *Runtime) allowed(m platform.Message) bool {

@@ -286,9 +286,34 @@ chat's current provider, mode, files, and history.
 ### Companion: quiet check-ins, on by default
 
 - `[proactive]` runs a decoupled sweep at random moments inside `active_time` (default 09:00-22:00 server-local), a few times per day. Each authorized chat is visited at most once per round. Silence is the common case.
-- Input is read-only: recent history plus memory notes. One cheap no-tools model call decides silent, reminder, warmth, comfort, or suggestion. At most 1 short text per chat per sweep, capped at max_per_day 1 and 6h cooldown, sent via the durable outbox with redaction. Sweep spacing inside the window is randomized at roughly half to most of cooldown, so longer cooldowns naturally sweep less often. No tool calls, shell, web, or cross-chat profiling in v1. Replies go to the workspace route (topic 0).
+- Input is read-only: recent history plus memory notes. One cheap no-tools model call decides silent, reminder, warmth, comfort, or suggestion. At most 1 short text per chat per sweep, capped at max_per_day 1 and 6h cooldown, sent via a dedicated durable companion outbox with redaction. Queueing, cooldown evidence, and the outgoing draft commit atomically, with unique IDs across chats; queued is not the same as delivered. The daily cap is a rolling 24-hour limit and survives restarts. Sweep spacing inside the window is randomized at roughly half to most of cooldown, so longer cooldowns naturally sweep less often. No tool calls, shell, web, or cross-chat profiling in v1. Replies go to the workspace route (topic 0). Delivered check-ins are included as bounded reference context for follow-up conversation in topic 0 (not other topics). The decider receives the current time and recent check-ins, and is told not to infer deadlines from undated messages. Unchanged conversation/memory and identical drafts do not generate another check-in, even after cooldown. This is lightweight companionship, not a reliable reminder or task-execution service.
 - Safety: skips unauthorized chats, busy tasks, shell prompts, maintenance, recent activity (default 60m), and empty history. Groups default to conservative (reminders only); group_policy off skips groups.
-- Controls: global `[proactive] enabled=false` is the kill switch (no goroutine, no extra reads or LLM calls). Per-chat `/companion`, `/companion on|off|default|status` with buttons overrides globally (default follows global, on forces on, off forces off). Anyone in an allowed group may change that group. Upgrade note: installs without a `[proactive]` section auto-enable on next load.
+- Controls: global `[proactive] enabled=false` is the kill switch (no goroutine, no background history reads or LLM calls). Per-chat `/companion`, `/companion on|off|default|status|history` has buttons and today’s diagnostics. Default follows global; off opts this chat out; on opts in only while the global kill switch is enabled. A saved on preference never bypasses the global kill switch. Anyone in an allowed group may change that group. Upgrade note: installs without a `[proactive]` section auto-enable on next load.
+
+### Companion diagnostics
+
+Opening `/companion` shows today’s actual per-chat sweep start times within
+`active_time`, using `[proactive] timezone` (server-local when omitted), alongside
+the on/off controls. `/companion history` and `/companion status` refresh the
+same view without a model call. For an overnight window, “today” means the
+current local calendar date, including starts after midnight.
+
+Results distinguish skipped (with a fixed reason), successful silence, model
+failure, queued (delivery unconfirmed), delivered, failed delivery awaiting
+retry, and a sweep interrupted by service restart. Model reasoning, drafts,
+raw provider errors, and other chats’ records are not shown in diagnostics.
+At most the latest 20 retained starts are displayed. No records does not mean
+failure: startup waits a randomized 50–90% of cooldown before an in-window
+sweep, and the global kill switch prevents sweeps entirely. Viewing the menu
+counts as recent chat activity, so the next sweep may be skipped for that reason.
+
+State lives in `companion_activity.json`. Ordinary diagnostic retention is
+bounded to 128 starts / seven days per chat; pending delivery, the latest
+check-in, and rolling 24-hour send evidence are protected from pruning.
+Existing installations have no historical records until their first new sweep.
+Defaults remain low frequency: one message per rolling 24 hours, six-hour
+cooldown, no tools, and silence preferred. No credentials or config migrations
+are required.
 
 ## 4. Tools the model can call
 

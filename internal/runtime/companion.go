@@ -30,10 +30,10 @@ func (r *Runtime) companionCommand(m platform.Message, fields []string) error {
 	if len(fields) == 1 {
 		return r.showCompanionLocked(m)
 	}
-	if len(fields) == 2 && fields[1] == "status" {
+	if len(fields) == 2 && (fields[1] == "status" || fields[1] == "history") {
 		pref := r.companionPrefLocked(m)
 		effective := state.CompanionEffective(r.Config.Proactive.Enabled, pref)
-		return r.reply(m, companionStatusText(r.Config.Proactive.Enabled, pref, effective))
+		return r.reply(m, companionStatusText(r.Config.Proactive.Enabled, pref, effective)+r.companionHistoryText(m))
 	}
 	if len(fields) == 2 {
 		arg := strings.ToLower(strings.TrimSpace(fields[1]))
@@ -46,7 +46,7 @@ func (r *Runtime) companionCommand(m platform.Message, fields []string) error {
 		case "default", "auto", "reset":
 			mode = "default"
 		default:
-			return r.reply(m, "Use `/companion`, `/companion status`, `/companion on|off|default`.")
+			return r.reply(m, "Use `/companion`, `/companion status|history`, `/companion on|off|default`.")
 		}
 		if _, busy := r.active[m.WorkspaceKey()]; busy {
 			return r.reply(m, "Chat is busy. Finish or cancel the active task first.")
@@ -59,7 +59,7 @@ func (r *Runtime) companionCommand(m platform.Message, fields []string) error {
 		effective := state.CompanionEffective(r.Config.Proactive.Enabled, pref)
 		return r.reply(m, "Companion settings saved for this entire chat (all topics).\n"+companionStatusText(r.Config.Proactive.Enabled, pref, effective))
 	}
-	return r.reply(m, "Use `/companion`, `/companion status`, `/companion on|off|default`.")
+	return r.reply(m, "Use `/companion`, `/companion status|history`, `/companion on|off|default`.")
 }
 
 func (r *Runtime) companionPrefLocked(m platform.Message) state.CompanionPref {
@@ -85,7 +85,10 @@ func companionStatusText(globalEnabled bool, pref state.CompanionPref, effective
 	}
 	source := "global setting"
 	if mode != "default" {
-		source = "this chat overrides global"
+		source = "this chat preference"
+	}
+	if !globalEnabled {
+		source = "global kill switch; chat preference saved"
 	}
 	globalLabel := "off"
 	if globalEnabled {
@@ -98,7 +101,7 @@ func (r *Runtime) showCompanionLocked(m platform.Message) error {
 	if _, ok := r.Sink.(modelSink); !ok {
 		pref := r.companionPrefLocked(m)
 		effective := state.CompanionEffective(r.Config.Proactive.Enabled, pref)
-		return r.reply(m, companionStatusText(r.Config.Proactive.Enabled, pref, effective)+"\nInteractive buttons are unavailable on this adapter. Use `/companion on|off|default`.")
+		return r.reply(m, companionStatusText(r.Config.Proactive.Enabled, pref, effective)+"\nInteractive buttons are unavailable on this adapter. Use `/companion on|off|default`."+r.companionHistoryText(m))
 	}
 	if r.closed {
 		return context.Canceled
@@ -124,6 +127,7 @@ func (r *Runtime) showCompanionLocked(m platform.Message) error {
 	pref := r.companionPrefLocked(m)
 	effective := state.CompanionEffective(r.Config.Proactive.Enabled, pref)
 	text, keyboard := companionPage(token, pref, r.Config.Proactive.Enabled, effective)
+	text += r.companionHistoryText(m)
 	return r.Store.QueueKeyboard(m, []string{text}, keyboard)
 }
 
@@ -141,11 +145,14 @@ func companionPage(token string, pref state.CompanionPref, globalEnabled, effect
 		globalLabel = "on"
 	}
 	raw := fmt.Sprintf("Companion check-ins\nCurrent: %s (global %s, this chat %s)\n\nQuiet by default: a few daily sweeps may send at most 1 short message. Silence is the common case. Applies to this entire chat (all topics). Menus expire after 15 minutes.", current, globalLabel, mode)
+	if !globalEnabled {
+		raw += "\nGlobal kill switch is off. Enable [proactive] in config first; chat On cannot override it."
+	}
 	text := raw
 	keyboard := &platform.InlineKeyboard{
 		Rows: [][]platform.InlineButton{
 			{
-				{Text: "Enable ✓", Data: fmt.Sprintf("companion:%s:s:%d", token, 0)},
+				{Text: "Enable", Data: fmt.Sprintf("companion:%s:s:%d", token, 0)},
 				{Text: "Disable", Data: fmt.Sprintf("companion:%s:s:%d", token, 1)},
 			},
 			{
@@ -247,7 +254,7 @@ func (r *Runtime) handleCompanionCallback(ctx context.Context, m platform.Messag
 	pref := state.CompanionPref{Mode: mode}
 	effective := state.CompanionEffective(r.Config.Proactive.Enabled, pref)
 	answer = "Companion updated."
-	text := "Companion settings saved for this entire chat (all topics).\n" + companionStatusText(r.Config.Proactive.Enabled, pref, effective)
+	text := "Companion settings saved for this entire chat (all topics).\n" + companionStatusText(r.Config.Proactive.Enabled, pref, effective) + r.companionHistoryText(m)
 	if err := r.reply(m, text); err != nil {
 		return err
 	}
@@ -256,5 +263,5 @@ func (r *Runtime) handleCompanionCallback(ctx context.Context, m platform.Messag
 }
 
 func helpText() string {
-	return "**q-agent commands**\n`/update` — Install the latest stable Release and restart (private admin only).\n`/restart` — Restart the systemd user service (private admin only).\n`/status` — Show current runtime, process RSS memory, and safe settings (no model call).\n`/models` — Choose a model for this chat.\n`/provider` — Show providers or choose this chat's provider.\n`/model` — Set this chat's model.\n`/think` — Set this chat's thinking.\n`/max_steps` — Show or set this chat's model-step limit.\n`/settings` — Show settings or restore defaults.\n`/companion` — Enable or disable quiet check-ins for this chat (`/companion on|off|default|status`).\n`/memory` — Show this chat's long-term memory.\n`/forget` — Clear notes and pending memory sources.\n`/help` — Show this help.\n`/new` — Clear this topic's conversation; keep workspace.\n`/cancel` — Cancel this topic's active task.\n\nSend a message to start a task. Send follow-up text in the same topic to steer your running task. `/cancel` stops the task and pending follow-ups.\n\nIn groups, address commands to @your_bot (e.g. `/status@your_bot`), mention the bot, or reply to it."
+	return "**q-agent commands**\n`/update` — Install the latest stable Release and restart (private admin only).\n`/restart` — Restart the systemd user service (private admin only).\n`/status` — Show current runtime, process RSS memory, and safe settings (no model call).\n`/models` — Choose a model for this chat.\n`/provider` — Show providers or choose this chat's provider.\n`/model` — Set this chat's model.\n`/think` — Set this chat's thinking.\n`/max_steps` — Show or set this chat's model-step limit.\n`/settings` — Show settings or restore defaults.\n`/companion` — Enable or disable quiet check-ins for this chat (`/companion on|off|default|status|history`).\n`/memory` — Show this chat's long-term memory.\n`/forget` — Clear notes and pending memory sources.\n`/help` — Show this help.\n`/new` — Clear this topic's conversation; keep workspace.\n`/cancel` — Cancel this topic's active task.\n\nSend a message to start a task. Send follow-up text in the same topic to steer your running task. `/cancel` stops the task and pending follow-ups.\n\nIn groups, address commands to @your_bot (e.g. `/status@your_bot`), mention the bot, or reply to it."
 }

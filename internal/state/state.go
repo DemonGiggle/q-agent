@@ -84,17 +84,19 @@ type Reply struct {
 func (r Reply) Total() int { return len(r.Photos) + len(r.Parts) }
 
 type Store struct {
-	mu              sync.Mutex
-	dir             string
-	cursor          int64
-	policy          *redaction.Policy
-	outbox          []Reply
-	schedules       scheduleState
-	preferSchedules bool
-	memories        map[string]ChatMemory
-	memoryLimits    MemoryLimits
-	memoryLastKey   string
-	atomic          func(string, any) error
+	mu               sync.Mutex
+	dir              string
+	cursor           int64
+	policy           *redaction.Policy
+	outbox           []Reply
+	schedules        scheduleState
+	preferSchedules  bool
+	memories         map[string]ChatMemory
+	memoryLimits     MemoryLimits
+	memoryLastKey    string
+	companionRuns    map[string][]CompanionRun
+	companionLastKey string
+	atomic           func(string, any) error
 }
 
 func Open(dir string, policy *redaction.Policy, limits ...MemoryLimits) (*Store, error) {
@@ -142,6 +144,9 @@ func Open(dir string, policy *redaction.Policy, limits ...MemoryLimits) (*Store,
 		return nil, fmt.Errorf("invalid schedules: %w", err)
 	}
 	if err := s.recoverMemory(); err != nil {
+		return nil, err
+	}
+	if err := s.recoverCompanion(); err != nil {
 		return nil, err
 	}
 	return s, nil
@@ -331,6 +336,9 @@ func (s *Store) Pending() (Reply, bool) {
 func (s *Store) Delivered(id string) error {
 	s.mu.Lock()
 	defer s.mu.Unlock()
+	if strings.HasPrefix(id, "companion:") {
+		return s.updateCompanionReply(id, true)
+	}
 	if strings.HasPrefix(id, "memory:") {
 		err := s.updateMemoryReply(id, true)
 		if err == nil {
@@ -364,6 +372,9 @@ func (s *Store) Delivered(id string) error {
 func (s *Store) DeferReply(id string) error {
 	s.mu.Lock()
 	defer s.mu.Unlock()
+	if strings.HasPrefix(id, "companion:") {
+		return s.updateCompanionReply(id, false)
+	}
 	if strings.HasPrefix(id, "memory:") {
 		err := s.updateMemoryReply(id, false)
 		if err == nil {
@@ -398,5 +409,8 @@ func (s *Store) pendingBackgroundReply() (Reply, bool) {
 	if reply, ok := s.pendingScheduleReply(); ok {
 		return reply, true
 	}
-	return s.pendingMemoryReply()
+	if reply, ok := s.pendingMemoryReply(); ok {
+		return reply, true
+	}
+	return s.pendingCompanionReply()
 }

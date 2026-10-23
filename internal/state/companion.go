@@ -42,10 +42,12 @@ func (s *Store) SetCompanion(key string, pref CompanionPref) error {
 	return Atomic(filepath.Join(s.dir, "companion", key+".json"), pref)
 }
 
-// CompanionEffective reports whether the companion sweep may visit a chat:
-// per-chat on forces on even when the global flag is off, per-chat off
-// forces off, otherwise the global [proactive] enabled flag decides.
+// CompanionEffective respects the global kill switch. Per-chat preferences
+// cannot start background work while the service-wide feature is disabled.
 func CompanionEffective(globalEnabled bool, pref CompanionPref) bool {
+	if !globalEnabled {
+		return false
+	}
 	switch pref.Mode {
 	case "on":
 		return true

@@ -94,7 +94,7 @@ type Memory struct {
 
 // Proactive configures the opt-out companion check-in sweep. Enabled by
 // default; Enabled=false is the single-flag kill switch (no goroutine, no
-// extra LLM/history reads, no queue writes). ActiveTime is the daily
+// background LLM/history reads, no queue writes). ActiveTime is the daily
 // wall-clock window (HH:MM-HH:MM) the companion may wake in; Timezone empty
 // means server-local time. Wake-ups inside the window are randomized.
 type Proactive struct {

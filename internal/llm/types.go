@@ -125,6 +125,11 @@ type ModelLister interface {
 
 // ThinkingCapability describes model-specific thinking behavior without
 // exposing provider wire details to the UI or agent loop.
+//
+// Unknown means no catalog snapshot has been loaded for this scope yet (or
+// the model is absent from the snapshot). It is distinct from unsupported:
+// callers must not report "does not support thinking" and must not silently
+// drop an explicit level. Source/Stale carry diagnostics without secrets.
 type ThinkingCapability struct {
 	Supported     bool
 	Adjustable    bool
@@ -133,6 +138,9 @@ type ThinkingCapability struct {
 	Default       string
 	RequestFormat string
 	ReplayFormat  string
+	Unknown       bool
+	Source        string
+	Stale         bool
 }
 
 // ThinkingProvider is optional. A provider that does not implement it has no

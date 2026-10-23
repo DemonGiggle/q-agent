@@ -34,10 +34,18 @@ func TestChatGPTCodexRequestContract(t *testing.T) {
 	var gotAccount, gotAuth string
 	var gotPath string
 	client := doerFunc(func(request *http.Request) (*http.Response, error) {
+		// #24: Complete best-effort warms the catalog before /responses.
+		if strings.Contains(request.URL.Path, "/models") {
+			body := `{"models":[{"slug":"gpt-5.6-codex","visibility":"list","default_reasoning_level":"medium","supported_reasoning_levels":[{"effort":"low"},{"effort":"medium"},{"effort":"high"}]}]}`
+			return &http.Response{StatusCode: 200, Status: "200 OK", Header: make(http.Header), Body: io.NopCloser(strings.NewReader(body))}, nil
+		}
 		gotPath = request.URL.Path
 		gotAuth = request.Header.Get("Authorization")
 		gotAccount = request.Header.Get("ChatGPT-Account-Id")
-		body, _ := io.ReadAll(request.Body)
+		var body []byte
+		if request.Body != nil {
+			body, _ = io.ReadAll(request.Body)
+		}
 		if err := json.Unmarshal(body, &gotBody); err != nil {
 			t.Fatalf("body not JSON: %v", err)
 		}
@@ -91,6 +99,11 @@ func TestChatGPT401RefreshesOnceWithStaleReuse(t *testing.T) {
 	oauthPath := writeChatGPTOAuth(t, "stale-access", "r1", "acct-1", time.Now().Add(time.Hour))
 	calls := 0
 	client := doerFunc(func(request *http.Request) (*http.Response, error) {
+		// #24: Complete warms /models before /responses.
+		if strings.Contains(request.URL.Path, "/models") {
+			body := `{"models":[{"slug":"gpt-5.6-codex","visibility":"list","supported_reasoning_levels":[{"effort":"low"},{"effort":"medium"}]}]}`
+			return &http.Response{StatusCode: 200, Status: "200 OK", Header: make(http.Header), Body: io.NopCloser(strings.NewReader(body))}, nil
+		}
 		// Token endpoint.
 		if strings.Contains(request.URL.String(), "auth.openai.com") {
 			calls++

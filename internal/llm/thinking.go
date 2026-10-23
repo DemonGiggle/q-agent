@@ -1,6 +1,9 @@
 package llm
 
-import "strings"
+import (
+	"fmt"
+	"strings"
+)
 
 const (
 	ThinkingRequestNone            = "none"
@@ -15,6 +18,13 @@ const (
 // ThinkingRequestResponsesReasoning encodes a level as the Responses API
 // reasoning object: {"reasoning": {"effort": "<level>"}}.
 const ThinkingRequestResponsesReasoning = "responses_reasoning"
+
+// ThinkingRequestCodexReasoning encodes a Codex level as
+// {"reasoning": {"effort": "<level>"}} with no summary by default.
+// It reuses the Responses effort encoding but deliberately does not copy the
+// "effort != none => summary:auto" policy: summary omission means the server
+// default, and summary=none is an omission, not a wire value.
+const ThinkingRequestCodexReasoning = "codex_reasoning"
 
 // openCodeGoThinkingCatalog records qcode's exact-match OpenCode Go adapters
 // and conservative built-in choices. Official CLI runs can replace the choices
@@ -204,12 +214,90 @@ func validThinkingLevel(capability ThinkingCapability, level string) bool {
 	return false
 }
 
+// KnownThinkingLevels is the shared fallback set for Unknown capabilities and
+// for providers without per-model metadata. Runtime /think and config
+// validation must use ValidateThinkingLevel (which delegates to the Codex
+// per-model validator when applicable) instead of maintaining a separate
+// hardcoded list.
+var KnownThinkingLevels = []string{"off", "on", "none", "minimal", "low", "medium", "high", "xhigh", "max"}
+
+// ValidateThinkingLevel checks an explicit level against any capability.
+// Empty (auto) is always allowed. Codex capabilities use the per-model
+// validator (Unknown allows plausible efforts optimistically); other
+// providers validate strictly against Levels.
+func ValidateThinkingLevel(cap ThinkingCapability, level string) error {
+	norm := strings.ToLower(strings.TrimSpace(level))
+	if norm == "" {
+		return nil
+	}
+	if cap.RequestFormat == ThinkingRequestCodexReasoning {
+		return ValidateCodexThinkingLevel(cap, level)
+	}
+	if cap.Unknown {
+		for _, lv := range KnownThinkingLevels {
+			if norm == lv {
+				return nil
+			}
+		}
+		return fmt.Errorf("unknown thinking level %q", level)
+	}
+	if !cap.Supported {
+		return fmt.Errorf("model does not support thinking levels")
+	}
+	if cap.AlwaysOn {
+		if len(cap.Levels) == 1 && norm == strings.ToLower(cap.Levels[0]) {
+			return nil
+		}
+		if cap.Default != "" && norm == strings.ToLower(cap.Default) {
+			return nil
+		}
+		return fmt.Errorf("thinking is always on for this model")
+	}
+	if !cap.Adjustable || len(cap.Levels) == 0 {
+		return fmt.Errorf("thinking is not adjustable for this model")
+	}
+	for _, lv := range cap.Levels {
+		if norm == strings.ToLower(lv) {
+			return nil
+		}
+	}
+	return fmt.Errorf("unsupported thinking level %q", level)
+}
+
 // thinkingFields resolves the single optional request encoding. Off is a
 // thinking-object setting even for models that use reasoning_effort for their
 // enabled tiers; this prevents sending mutually exclusive fields together.
 func thinkingFields(capability ThinkingCapability, level string) map[string]any {
 	level = strings.ToLower(strings.TrimSpace(level))
-	if level == "" || !capability.Adjustable || !validThinkingLevel(capability, level) {
+	if level == "" {
+		return nil
+	}
+	// Unknown Codex catalog: send plausible efforts optimistically so an
+	// explicit level set before the first models list is not silently dropped.
+	// Known validation still rejects typos and client-only efforts.
+	if capability.Unknown && capability.RequestFormat == ThinkingRequestCodexReasoning {
+		if isCodexClientOnlyEffort(level) || !isCodexPlausibleLevel(level) {
+			return nil
+		}
+		return map[string]any{"reasoning": map[string]any{"effort": level}}
+	}
+	// Known Codex catalog: explicit effort is validated by membership, not by
+	// selector adjustability. A single advertised level must still be sent
+	// when explicitly requested; auto (empty) omits. Client-only never goes
+	// on the wire. This keeps ["none"] (disable) and ["high"] (single tier)
+	// from being dropped by the generic Adjustable gate below.
+	if capability.RequestFormat == ThinkingRequestCodexReasoning && !capability.Unknown {
+		if isCodexClientOnlyEffort(level) {
+			return nil
+		}
+		for _, lv := range capability.Levels {
+			if level == strings.ToLower(strings.TrimSpace(lv)) {
+				return map[string]any{"reasoning": map[string]any{"effort": level}}
+			}
+		}
+		return nil
+	}
+	if !capability.Adjustable || !validThinkingLevel(capability, level) {
 		return nil
 	}
 	if capability.RequestFormat == ThinkingRequestOllamaThink {
@@ -228,6 +316,16 @@ func thinkingFields(capability ThinkingCapability, level string) map[string]any 
 			reasoning["summary"] = "auto"
 		}
 		return map[string]any{"reasoning": reasoning}
+	}
+	if capability.RequestFormat == ThinkingRequestCodexReasoning {
+		// Codex contract (#23): effort only, summary omitted by default.
+		// ultra/persistent/custom are client-only or upstream-mapped and must
+		// never go on the wire, even if a custom catalog advertises them.
+		switch level {
+		case "ultra", "persistent", "custom":
+			return nil
+		}
+		return map[string]any{"reasoning": map[string]any{"effort": level}}
 	}
 	if level == "off" {
 		return map[string]any{"thinking": map[string]any{"type": "disabled"}}

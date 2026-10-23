@@ -120,11 +120,7 @@ func (r *Runtime) chatSettings(m platform.Message, fields []string) error {
 		if value == "auto" {
 			value = ""
 		} else {
-			switch value {
-			case "off", "on", "none", "minimal", "low", "medium", "high", "xhigh", "max":
-			default:
-				return r.reply(m, "Unknown thinking level. Use off, on, none, minimal, low, medium, high, xhigh, max, auto, or default.")
-			}
+			value = strings.ToLower(strings.TrimSpace(value))
 			if beforeErr != nil {
 				return r.reply(m, "Provider is unavailable. Use /provider default or /settings reset.")
 			}
@@ -135,14 +131,25 @@ func (r *Runtime) chatSettings(m platform.Message, fields []string) error {
 			}
 			if tp, ok := provider.(llm.ThinkingProvider); ok {
 				cap := tp.ThinkingCapability(before.Model)
-				if len(cap.Levels) > 0 {
-					valid := false
-					for _, level := range cap.Levels {
-						valid = valid || level == value
+				if err := llm.ValidateThinkingLevel(cap, value); err != nil {
+					if cap.Unknown {
+						return r.reply(m, err.Error()+". Catalog not loaded yet; plausible levels ("+strings.Join(llm.CodexPlausibleLevels(), ", ")+") are accepted optimistically. Use auto for the provider default.")
 					}
-					if !valid {
+					if len(cap.Levels) > 0 && cap.Supported {
 						return r.reply(m, "Supported thinking levels for this model: "+strings.Join(cap.Levels, ", ")+". Use auto for the provider default.")
 					}
+					return r.reply(m, err.Error()+". Use auto for the provider default or /think default to restore the configured default.")
+				}
+			} else {
+				valid := false
+				for _, lv := range llm.KnownThinkingLevels {
+					if value == lv {
+						valid = true
+						break
+					}
+				}
+				if !valid {
+					return r.reply(m, "Unknown thinking level. Use "+strings.Join(llm.KnownThinkingLevels, ", ")+", auto, or default.")
 				}
 			}
 		}
@@ -185,6 +192,16 @@ func (r *Runtime) chatSettings(m platform.Message, fields []string) error {
 // providers use at request time (qcode's catalog plus Models.dev sync).
 // It powers bare `/think`, so users see the valid selector values for
 // their model instead of the full status dump.
+//
+// Semantics (issue #25):
+//   - `/think auto` (empty string) omits the effort field; the backend
+//     decides. It never claims equality with a concrete level.
+//   - `/think default` clears the chat override (raw nil) and restores the
+//     configured default, which may itself be explicit (e.g. high).
+//   - Codex `default_reasoning_level` is what the Codex CLI sends when unset;
+//     q-agent omits effort when auto, which is a different behavior. The UI
+//     shows both lines separately and never guesses the effective effort
+//     from style/latency/token counts.
 func (r *Runtime) thinkLevelsLocked(m platform.Message) string {
 	selected, err := r.chatModel(m)
 	if err != nil {
@@ -194,9 +211,36 @@ func (r *Runtime) thinkLevelsLocked(m platform.Message) string {
 	if selected.Thinking != nil {
 		current = *selected.Thinking
 	}
-	currentLabel := "`auto` (provider default)"
+	currentLabel := "`auto` (unspecified; backend decides)"
 	if current != "" {
 		currentLabel = "`" + current + "`"
+	}
+	// Chat override vs configured default. resolveChatModel fills Thinking
+	// from config when raw is nil, so read the raw record to tell
+	// "explicit auto" apart from "inherited default".
+	overrideLabel := "none (using configured default)"
+	if raw, rawErr := r.Store.ChatModel(m.WorkspaceKey()); rawErr == nil && raw.Thinking != nil {
+		if *raw.Thinking == "" {
+			overrideLabel = "`auto` (explicit, omits effort)"
+		} else {
+			overrideLabel = "`" + *raw.Thinking + "` (chat override)"
+		}
+	}
+	configuredDefault := r.Config.Provider.Thinking
+	if pCfg, ok := r.Config.ProviderByName(selected.Provider); ok {
+		// resolveChatModel fallback: default provider thinking unless the
+		// selected provider sets its own.
+		if selected.Provider == r.Config.Provider.Name {
+			configuredDefault = pCfg.Thinking
+		} else if pCfg.Thinking != "" {
+			configuredDefault = pCfg.Thinking
+		} else {
+			configuredDefault = r.Config.Provider.Thinking
+		}
+	}
+	configuredLabel := "`auto` (unspecified; backend decides)"
+	if configuredDefault != "" {
+		configuredLabel = "`" + configuredDefault + "`"
 	}
 	provider, err := r.Providers(state.Conversation{Provider: selected.Provider, Model: selected.Model})
 	if err != nil {
@@ -208,11 +252,32 @@ func (r *Runtime) thinkLevelsLocked(m platform.Message) string {
 		return "Thinking levels are not available from this provider.\nCurrent: " + currentLabel + "."
 	}
 	cap := capability.ThinkingCapability(selected.Model)
-	head := "**Thinking**\n\nModel: `" + selected.Model + "` (" + selected.Provider + ")\nCurrent: " + currentLabel
-	if !cap.Supported {
-		return head + "\n\nThis model does not support thinking levels. `/think` has no effect for it."
+	head := "**Thinking**\n\nModel: `" + selected.Model + "` (" + selected.Provider + ")\nCurrent: " + currentLabel + "\nChat override: " + overrideLabel + "\nConfigured default: " + configuredLabel
+	isCodex := cap.RequestFormat == llm.ThinkingRequestCodexReasoning
+	catalogStatus := "Catalog: not loaded yet"
+	if cap.Source != "" {
+		catalogStatus = "Catalog: " + cap.Source
+		if cap.Stale {
+			catalogStatus += " (stale, last-known-good)"
+		} else {
+			catalogStatus += " (fresh)"
+		}
 	}
-	if cap.AlwaysOn {
+	if cap.Unknown {
+		text := head + "\n" + catalogStatus
+		text += "\n\nThinking levels have not been loaded yet for this model. Plausible levels (" + strings.Join(llm.CodexPlausibleLevels(), ", ") + ") are accepted optimistically; run `/models` to refresh. Use `/think <level|auto|default>` to change it. `auto` (unspecified; backend decides, omits effort) uses the provider default. `/think default` clears the chat override and restores the configured default."
+		if isCodex {
+			text += "\nCodex catalog default: unknown (catalog not loaded yet; q-agent omits effort when auto, Codex CLI sends its default explicitly)."
+		}
+		return text
+	}
+	if !cap.Supported {
+		return head + "\n" + catalogStatus + "\n\nThis model does not support thinking levels. `/think` has no effect for it."
+	}
+	// Codex never reports AlwaysOn (a single advertised effort does not prove
+	// the backend's behavior when effort is omitted, and ["none"] has the
+	// opposite semantics). Keep the always-on branch for other providers.
+	if cap.AlwaysOn && !isCodex {
 		level := cap.Default
 		if level == "" && len(cap.Levels) > 0 {
 			level = cap.Levels[0]
@@ -220,13 +285,34 @@ func (r *Runtime) thinkLevelsLocked(m platform.Message) string {
 		if level == "" {
 			level = current
 		}
+		text := head + "\n" + catalogStatus
 		if level != "" {
-			return head + "\n\nThinking is always on for this model (`" + level + "`). `/think` is not adjustable."
+			text += "\n\nThinking is always on for this model (`" + level + "`). `/think` is not adjustable."
+		} else {
+			text += "\n\nThinking is always on for this model. `/think` is not adjustable."
 		}
-		return head + "\n\nThinking is always on for this model. `/think` is not adjustable."
+		return text
+	}
+	// Single-level Codex: not a selector, but an explicit choice is still sent
+	// (auto omits). Never report always-on.
+	if isCodex && len(cap.Levels) == 1 {
+		only := cap.Levels[0]
+		mark := ""
+		if only == current {
+			mark = " ✓"
+		}
+		text := head + "\nSupported level: `" + only + "`" + mark + " (only option; explicit selection is sent, auto omits effort)"
+		if cap.Default != "" {
+			text += "\nCodex catalog default: `" + cap.Default + "` (Codex CLI sends this explicitly when unset; q-agent omits effort when auto)"
+		} else {
+			text += "\nCodex catalog default: none advertised"
+		}
+		text += "\nSummary: omitted (server default; effort and summary are independent)"
+		text += "\n" + catalogStatus
+		return text + "\n\nUse `/think <level|auto|default>` to change it. `auto` (unspecified; backend decides, omits effort) uses the provider default. `/think default` clears the chat override and restores the configured default."
 	}
 	if len(cap.Levels) == 0 || !cap.Adjustable {
-		return head + "\n\nThinking is not adjustable for this model.\n\nUse `/think auto` for the provider default or `/think default` to restore the configured default."
+		return head + "\n" + catalogStatus + "\n\nThinking is not adjustable for this model.\n\nUse `/think auto` (unspecified; backend decides, omits effort) for the provider default or `/think default` to restore the configured default."
 	}
 	levels := make([]string, len(cap.Levels))
 	for i, level := range cap.Levels {
@@ -236,8 +322,16 @@ func (r *Runtime) thinkLevelsLocked(m platform.Message) string {
 		}
 	}
 	text := head + "\nSupported levels: " + strings.Join(levels, ", ")
-	if cap.Default != "" {
+	if isCodex {
+		if cap.Default != "" {
+			text += "\nCodex catalog default: `" + cap.Default + "` (Codex CLI sends this explicitly when unset; q-agent omits effort when auto)"
+		} else {
+			text += "\nCodex catalog default: none advertised"
+		}
+		text += "\nSummary: omitted (server default; effort and summary are independent)"
+		text += "\n" + catalogStatus
+	} else if cap.Default != "" {
 		text += "\nModel default: `" + cap.Default + "`"
 	}
-	return text + "\n\nUse `/think <level|auto|default>` to change it. `auto` uses the provider default."
+	return text + "\n\nUse `/think <level|auto|default>` to change it. `auto` (unspecified; backend decides, omits effort) uses the provider default. `/think default` clears the chat override and restores the configured default."
 }

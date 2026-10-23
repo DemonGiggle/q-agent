@@ -507,6 +507,9 @@ func normalizeProvider(p *Provider, dir string) error {
 	if p.Model == "" {
 		return fmt.Errorf("provider.model is required")
 	}
+	if err := normalizeThinking(p); err != nil {
+		return err
+	}
 	if p.APIKeyPath != "" {
 		if p.APIKeyEnv != "" {
 			return fmt.Errorf("provider.api_key_env and provider.api_key_path are mutually exclusive")
@@ -528,6 +531,33 @@ func normalizeProvider(p *Provider, dir string) error {
 		return fmt.Errorf("provider chatgpt uses ChatGPT OAuth (q-agent login chatgpt); clear api_key_env and api_key_path")
 	}
 	return nil
+}
+
+// normalizeThinking validates the shared thinking selector without per-model
+// catalog metadata. Empty (auto) omits effort; "auto"/"default" are normalized
+// to empty for backward compatibility. Client-only ultra/persistent/custom are
+// rejected in v1, and any other value must be in the known cross-provider set.
+// Per-model strict validation (known catalog) happens at /think time and at
+// request time in Complete, where the exact account snapshot is available.
+func normalizeThinking(p *Provider) error {
+	raw := strings.TrimSpace(p.Thinking)
+	if raw == "" {
+		p.Thinking = ""
+		return nil
+	}
+	norm := strings.ToLower(raw)
+	if norm == "auto" || norm == "default" {
+		p.Thinking = ""
+		return nil
+	}
+	switch norm {
+	case "ultra", "persistent", "custom":
+		return fmt.Errorf("provider.thinking %q is not sendable in v1 (client-only)", p.Thinking)
+	case "off", "on", "none", "minimal", "low", "medium", "high", "xhigh", "max":
+		p.Thinking = norm
+		return nil
+	}
+	return fmt.Errorf("unknown thinking level %q", p.Thinking)
 }
 
 // InteractiveTaskDuration is the total budget from task start once a managed

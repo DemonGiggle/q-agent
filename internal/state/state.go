@@ -3,6 +3,7 @@ package state
 
 import (
 	"encoding/json"
+	"errors"
 	"fmt"
 	"os"
 	"path/filepath"
@@ -96,6 +97,7 @@ type Store struct {
 	memoryLastKey    string
 	companionRuns    map[string][]CompanionRun
 	companionLastKey string
+	recent           map[string][]RecentMessage
 	atomic           func(string, any) error
 }
 
@@ -103,7 +105,7 @@ func Open(dir string, policy *redaction.Policy, limits ...MemoryLimits) (*Store,
 	if err := os.MkdirAll(filepath.Join(dir, "conversations"), 0700); err != nil {
 		return nil, err
 	}
-	s := &Store{dir: dir, policy: policy, cursor: -1, memories: map[string]ChatMemory{}, atomic: Atomic, memoryLimits: MemoryLimits{MaxBytes: 8192, MaxPendingBytes: DefaultMaxPendingBytes}}
+	s := &Store{dir: dir, policy: policy, cursor: -1, memories: map[string]ChatMemory{}, recent: map[string][]RecentMessage{}, atomic: Atomic, memoryLimits: MemoryLimits{MaxBytes: 8192, MaxPendingBytes: DefaultMaxPendingBytes}}
 	if len(limits) > 0 {
 		if limits[0].MaxBytes > 0 {
 			s.memoryLimits.MaxBytes = limits[0].MaxBytes
@@ -148,6 +150,20 @@ func Open(dir string, policy *redaction.Policy, limits ...MemoryLimits) (*Store,
 	}
 	if err := s.recoverCompanion(); err != nil {
 		return nil, err
+	}
+	if err := s.recoverRecent(); err != nil {
+		// Quarantine syntax/type corruption aside and start fresh; version
+		// and I/O errors still fail startup so operator can fix disk.
+		var syntax *json.SyntaxError
+		var typeErr *json.UnmarshalTypeError
+		if errors.As(err, &syntax) || errors.As(err, &typeErr) {
+			if qerr := quarantineRecent(dir); qerr != nil {
+				return nil, qerr
+			}
+			s.recent = map[string][]RecentMessage{}
+		} else {
+			return nil, err
+		}
 	}
 	return s, nil
 }

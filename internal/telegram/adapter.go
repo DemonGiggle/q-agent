@@ -168,6 +168,64 @@ func Normalize(update Update, bot User) (platform.Message, bool) {
 	return out, true
 }
 
+// ExtractTap returns a lightweight route plus raw text for any human message,
+// regardless of addressing. It feeds the companion recent buffer so group
+// chatter without a mention is still visible within recent_window. Callbacks
+// return false (they go through Normalize/Handle); bot messages, unsupported
+// chat types, and empty texts (without photos) are ignored. Commands to other
+// bots are kept as chatter context, unlike Normalize which drops them.
+// The returned text keeps mentions intact and folds a reply snippet in front
+// so the sweep sees thread context. Timestamps are arrival time (Telegram date
+// is not decoded); Runtime.ObserveTap stamps with time.Now.
+func ExtractTap(update Update) (platform.Message, string, bool) {
+	if update.Callback != nil {
+		return platform.Message{}, "", false
+	}
+	m := update.Message
+	if m == nil || m.From == nil || m.From.IsBot {
+		return platform.Message{}, "", false
+	}
+	if m.Chat.Type != "private" && m.Chat.Type != "group" && m.Chat.Type != "supergroup" {
+		return platform.Message{}, "", false
+	}
+	raw := m.Text
+	if strings.TrimSpace(raw) == "" {
+		raw = m.Caption
+	}
+	text := strings.TrimSpace(raw)
+	hasPhoto := len(m.Photo) > 0
+	if text == "" {
+		if !hasPhoto {
+			return platform.Message{}, "", false
+		}
+		text = "[photo]"
+	} else if hasPhoto {
+		text += " [photo]"
+	}
+	if reply := m.Reply; reply != nil {
+		replyText := strings.TrimSpace(reply.Text)
+		if replyText == "" {
+			replyText = strings.TrimSpace(reply.Caption)
+		}
+		if replyText != "" {
+			if len([]rune(replyText)) > 200 {
+				replyText = string([]rune(replyText)[:200]) + "…"
+			}
+			text = "↩ " + replyText + "\n" + text
+		}
+	}
+	out := platform.Message{
+		Platform:  "telegram",
+		ChatID:    m.Chat.ID,
+		TopicID:   m.TopicID,
+		UserID:    m.From.ID,
+		MessageID: m.ID,
+		UpdateID:  update.ID,
+		Text:      text,
+	}
+	return out, text, true
+}
+
 // Split uses UTF-16 code units, a conservative interpretation of Telegram's
 // 4096-character limit that also protects astral Unicode characters.
 func Split(text string) []string {

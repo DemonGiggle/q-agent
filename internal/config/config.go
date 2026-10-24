@@ -97,6 +97,13 @@ type Memory struct {
 // background LLM/history reads, no queue writes). ActiveTime is the daily
 // wall-clock window (HH:MM-HH:MM) the companion may wake in; Timezone empty
 // means server-local time. Wake-ups inside the window are randomized.
+//
+// RecentWindow bounds the live-chat tap buffer the sweep reads in addition to
+// addressed history+memory. Every human group message inside the window is
+// kept (even without a mention) so the decider sees real chatter; messages
+// older than the window expire and processed messages are consumed after a
+// terminal sweep, so disk stays bounded. RecentMaxMessages/RecentMaxBytes cap
+// each chat; oldest taps are evicted first.
 type Proactive struct {
 	Enabled            bool     `toml:"enabled"`
 	Timezone           string   `toml:"timezone"`
@@ -107,10 +114,13 @@ type Proactive struct {
 	Model              string   `toml:"model"`
 	Kinds              []string `toml:"kinds"`
 	GroupPolicy        string   `toml:"group_policy"`
+	RecentWindow       string   `toml:"recent_window"`
+	RecentMaxMessages  int      `toml:"recent_max_messages"`
+	RecentMaxBytes     int      `toml:"recent_max_bytes"`
 }
 
 func Defaults() Config {
-	return Config{StateDir: "~/.local/share/q-agent", Provider: Provider{Name: "ollama", Model: "qwen3"}, Telegram: Telegram{TokenEnv: "TELEGRAM_BOT_TOKEN"}, Sandbox: Sandbox{Bubblewrap: "bwrap", NewUIDMap: "newuidmap", NewGIDMap: "newgidmap", MMdebstrap: "mmdebstrap"}, Limits: Limits{MaxSteps: 8, MaxConcurrent: 2, TaskTimeout: "5m", InteractiveTaskTimeout: "15m", ShellTimeout: "2m", ShellPromptTimeout: "90s", ShellMaxExtends: 2}, Memory: Memory{Enabled: true, DigestAt: "00:00", MaxBytes: 8192, MaxContextBytes: 2000, MaxPendingBytes: 4 << 20}, Proactive: Proactive{Enabled: true, ActiveTime: "09:00-22:00", MaxPerDay: 1, Cooldown: "6h", SkipRecentActivity: "60m", Kinds: []string{"reminder", "warmth", "comfort", "suggestion"}, GroupPolicy: "conservative"}}
+	return Config{StateDir: "~/.local/share/q-agent", Provider: Provider{Name: "ollama", Model: "qwen3"}, Telegram: Telegram{TokenEnv: "TELEGRAM_BOT_TOKEN"}, Sandbox: Sandbox{Bubblewrap: "bwrap", NewUIDMap: "newuidmap", NewGIDMap: "newgidmap", MMdebstrap: "mmdebstrap"}, Limits: Limits{MaxSteps: 8, MaxConcurrent: 2, TaskTimeout: "5m", InteractiveTaskTimeout: "15m", ShellTimeout: "2m", ShellPromptTimeout: "90s", ShellMaxExtends: 2}, Memory: Memory{Enabled: true, DigestAt: "00:00", MaxBytes: 8192, MaxContextBytes: 2000, MaxPendingBytes: 4 << 20}, Proactive: Proactive{Enabled: true, ActiveTime: "09:00-22:00", MaxPerDay: 1, Cooldown: "6h", SkipRecentActivity: "60m", Kinds: []string{"reminder", "warmth", "comfort", "suggestion"}, GroupPolicy: "conservative", RecentWindow: "12h", RecentMaxMessages: 200, RecentMaxBytes: 32768}}
 }
 func Load(path string) (Config, error) {
 	c := Defaults()
@@ -313,6 +323,24 @@ func Load(path string) (Config, error) {
 	case "conservative", "off", "same":
 	default:
 		return c, fmt.Errorf("invalid proactive.group_policy %q: want conservative|off|same", c.Proactive.GroupPolicy)
+	}
+	if c.Proactive.RecentWindow == "" {
+		c.Proactive.RecentWindow = Defaults().Proactive.RecentWindow
+	}
+	if d, e := time.ParseDuration(c.Proactive.RecentWindow); e != nil || d <= 0 || d > 7*24*time.Hour {
+		return c, fmt.Errorf("invalid proactive.recent_window %q: want positive duration up to 168h", c.Proactive.RecentWindow)
+	}
+	if c.Proactive.RecentMaxMessages == 0 {
+		c.Proactive.RecentMaxMessages = Defaults().Proactive.RecentMaxMessages
+	}
+	if c.Proactive.RecentMaxMessages < 10 || c.Proactive.RecentMaxMessages > 1000 {
+		return c, fmt.Errorf("invalid proactive.recent_max_messages %d: want 10-1000", c.Proactive.RecentMaxMessages)
+	}
+	if c.Proactive.RecentMaxBytes == 0 {
+		c.Proactive.RecentMaxBytes = Defaults().Proactive.RecentMaxBytes
+	}
+	if c.Proactive.RecentMaxBytes < 1024 || c.Proactive.RecentMaxBytes > 1<<20 {
+		return c, fmt.Errorf("invalid proactive.recent_max_bytes %d: want 1024-1048576", c.Proactive.RecentMaxBytes)
 	}
 	c.StateDir, err = absolute(c.StateDir, filepath.Dir(path))
 	if err != nil {

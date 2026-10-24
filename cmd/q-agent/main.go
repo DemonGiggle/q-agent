@@ -352,12 +352,21 @@ func serveWithMaintenance(ctx context.Context, c config.Config, policy *redactio
 			log.Printf("[TELEGRAM] Updates received | updates=%d cursor=%d", len(updates), store.Cursor())
 		}
 		for _, update := range updates {
+			// Tap every human message into the companion recent buffer so the
+			// sweep sees N hours of group chatter, not only mentions. Tapping
+			// is bounded (per-chat caps + recent_window expiry + consume after
+			// processed sweeps) and never fails polling; unauthorized, private,
+			// and group-policy-off taps are skipped inside ObserveTapMessage.
+			if tapMsg, tapText, tapOK := telegram.ExtractTap(update); tapOK {
+				rt.ObserveTapMessage(tapMsg, tapText, time.Now())
+			}
 			message, ok := telegram.Normalize(update, identity)
 			if ok {
 				err = rt.Handle(ctx, message)
 			} else {
 				// Console-only: group messages without a mention/reply and
 				// non-text updates are filtered here and never reach Handle.
+				// They are still tapped above for the companion recent buffer.
 				log.Printf("[TELEGRAM] Update ignored | update=%d reason=%q", update.ID, "not addressed to @"+identity.Username+" or non-text")
 				_, err = store.Accept(update.ID)
 			}

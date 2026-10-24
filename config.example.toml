@@ -127,3 +127,12 @@ model = ""
 kinds = ["reminder", "warmth", "comfort", "suggestion"]
 # Group policy: conservative (groups only get reminders), off (skip groups), same (as private).
 group_policy = "conservative"
+# Live tap window: how far back the sweep reads ALL group messages, even
+# without a mention. History above only has addressed pairs; this fills the
+# gap so quiet groups still trigger. Taps older than the window expire, and
+# processed sweeps consume up to their start watermark, so disk stays bounded.
+# Up to 168h. Private chats are not tapped (their history is already complete).
+recent_window = "12h"
+# Per-chat tap caps: oldest taps evicted first. Bounds disk when sweeps skip.
+recent_max_messages = 200
+recent_max_bytes = 32768

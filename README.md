@@ -12,7 +12,7 @@ Ask questions, work with files, and schedule tasks — without leaving the chat.
 [![Linux](https://img.shields.io/badge/Runs_on-Linux-FCC624?logo=linux&logoColor=black)](#quick-start)
 [![License: MIT](https://img.shields.io/badge/License-MIT-green.svg)](LICENSE)
 
-[Quick start](#quick-start) · [Highlights](#highlights) · [Commands](#commands) · [Docs](#docs)
+[Quick start](#quick-start) · [Highlights](#highlights) · [Telegram](#telegram-commands) · [Command line](#command-line) · [Docs](#docs)
 
 </div>
 
@@ -99,10 +99,7 @@ export TELEGRAM_BOT_TOKEN='your BotFather token'
 Open your bot in Telegram and try `/status` or `/help`. In groups, disable
 privacy via BotFather and mention the bot.
 
-Prefer menus over TOML? See the [console guide](docs/console.md).
-Keeping it running? See [systemd](docs/systemd.md) and [setup](docs/operations.md#1-setup).
-
-## Commands
+## Telegram commands
 
 | Command | What it does |
 | --- | --- |
@@ -115,20 +112,23 @@ Keeping it running? See [systemd](docs/systemd.md) and [setup](docs/operations.m
 Full behavior — addressing, photos, steering, schedules, memory, admin setup —
 is in [talking to the bot](docs/operations.md#3-talking-to-the-bot).
 
+## Command line
+
+The same binary also runs the bot, edits settings, manages the service, and
+self-updates — all from your shell.
+
+See the [command line overview](docs/cli.md) for what each command is for.
+
 ## Docs
 
 | Guide | Covers |
 | --- | --- |
+| [Command line overview](docs/cli.md) | Every `q-agent` command and where its details live |
 | [Configuration & operations](docs/operations.md) | Providers, credentials, host vs sandbox, tools, schedules, memory, companion, state, upgrades |
 | [systemd deployment](docs/systemd.md) | Install, start, sandbox rules, `/restart` & `/update`, removal |
 | [Console guide](docs/console.md) | Guided `models` / `config` menus and script-friendly actions |
 | [Example configuration](config.example.toml) | All settings in one place |
 | [Validation notes](docs/VALIDATION.md) | Test coverage and measured limitations |
-
-A few things worth knowing: tools run with your service account's permissions
-(see [host vs sandbox](docs/operations.md#2-how-tools-run-host-vs-sandbox));
-schedules tick once per minute; photos are the only supported attachment.
-Browser logins arrive as interim messages — reply in the same topic.
 
 ---
 

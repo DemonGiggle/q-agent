@@ -246,7 +246,8 @@ other users) cannot inject. Pending steering is in-memory only; a restart
 drops it — resend after restart. `/status` shows the pending count while busy.
 
 Live progress: one `Working…` preview per task (`contacting <model>`,
-`🔧/✅/⚠️` tool counts, then streamed answer text ~1 edit/sec). It is
+`🔧/✅/⚠️` tool counts, then streamed answer text in batches at paragraph
+boundaries or every few seconds). Rapid status changes are coalesced. It is
 best-effort; the outbox reply that follows is authoritative and resumes
 after restart. Thinking traces never stream.
 

@@ -25,6 +25,7 @@ type liveSink interface {
 
 const (
 	liveThrottle     = 1200 * time.Millisecond
+	liveStreamDelay  = 3 * time.Second
 	livePreviewLimit = 3800 // UTF-16 code units, safely under Telegram's 4096
 	liveTimeout      = 10 * time.Second
 )
@@ -41,11 +42,16 @@ type liveReporter struct {
 	id       int64
 	sent     bool
 	disabled bool
+	closed   bool
 	lastEdit time.Time
+	retryAt  time.Time
 	lastText string
 	failures int
 	status   string
 	stream   strings.Builder
+	timer    *time.Timer
+	timerAt  time.Time
+	timerGen uint64
 }
 
 func newLiveReporter(sink Sink, route platform.Message, policy *redaction.Policy) *liveReporter {
@@ -102,8 +108,8 @@ func (l *liveReporter) renderLocked() string {
 }
 
 func (l *liveReporter) ensureLocked() bool {
-	if l.disabled || l.sent {
-		return l.sent && !l.disabled
+	if l.closed || l.disabled || l.sent {
+		return l.sent && !l.disabled && !l.closed
 	}
 	ctx, cancel := context.WithTimeout(context.Background(), liveTimeout)
 	defer cancel()
@@ -158,13 +164,15 @@ func (l *liveReporter) editLocked(force bool) {
 	err := l.sink.EditLive(ctx, l.route, l.id, text)
 	if err == nil {
 		l.lastText = text
-		l.lastEdit = now
+		l.lastEdit = time.Now()
+		l.retryAt = time.Time{}
 		l.failures = 0
 		return
 	}
 	var api *telegram.APIError
 	if errorAsAPI(err, &api) && api != nil && api.RetryAfter > 0 {
-		l.lastEdit = now
+		l.retryAt = time.Now().Add(time.Duration(api.RetryAfter) * time.Second)
+		l.scheduleLocked(l.retryAt)
 		return
 	}
 	l.failures++
@@ -173,31 +181,68 @@ func (l *liveReporter) editLocked(force bool) {
 	}
 }
 
-// SetStatus replaces the progress header and flushes throttled.
+// scheduleLocked coalesces pending updates and guarantees that the latest
+// value is eventually sent even when no more events arrive.
+func (l *liveReporter) scheduleLocked(at time.Time) {
+	if l.closed || l.disabled || !l.sent || l.id == 0 {
+		return
+	}
+	if earliest := l.lastEdit.Add(liveThrottle); at.Before(earliest) {
+		at = earliest
+	}
+	if at.Before(l.retryAt) {
+		at = l.retryAt
+	}
+	if l.timer != nil && !at.Before(l.timerAt) {
+		return
+	}
+	l.cancelTimerLocked()
+	l.timerAt = at
+	gen := l.timerGen
+	l.timer = time.AfterFunc(time.Until(at), func() {
+		l.mu.Lock()
+		defer l.mu.Unlock()
+		if l.closed || gen != l.timerGen {
+			return
+		}
+		l.timer = nil
+		l.editLocked(false)
+	})
+}
+
+func (l *liveReporter) cancelTimerLocked() {
+	if l.timer != nil {
+		l.timer.Stop()
+		l.timer = nil
+	}
+	l.timerGen++
+}
+
+// SetStatus coalesces rapid tool transitions into one progress update.
 func (l *liveReporter) SetStatus(status string) {
 	l.mu.Lock()
 	defer l.mu.Unlock()
-	if l.disabled && !l.sent {
-		// Still allow first send attempt.
-		if l.sink == nil {
-			return
-		}
+	if l.closed {
+		return
 	}
 	l.status = status
 	if !l.ensureLocked() {
 		return
 	}
-	l.editLocked(false)
+	l.scheduleLocked(time.Now().Add(liveThrottle))
 }
 
 // Steered clears superseded response text before the next model turn.
 func (l *liveReporter) Steered() {
 	l.mu.Lock()
 	defer l.mu.Unlock()
+	if l.closed {
+		return
+	}
 	l.stream.Reset()
 	l.status = "Working… applying follow-up"
 	if l.ensureLocked() {
-		l.editLocked(false)
+		l.scheduleLocked(time.Now().Add(liveThrottle))
 	}
 }
 
@@ -219,13 +264,7 @@ func (l *liveReporter) ToolEnd(name string, count int, err error) {
 	if count > 0 {
 		status += shortCount(count)
 	}
-	l.mu.Lock()
-	defer l.mu.Unlock()
-	l.status = status
-	if !l.ensureLocked() {
-		return
-	}
-	l.editLocked(false)
+	l.SetStatus(status)
 }
 
 func shortCount(n int) string {
@@ -257,20 +296,29 @@ func (l *liveReporter) StreamEvent(ev llm.StreamEvent) {
 	}
 	l.mu.Lock()
 	defer l.mu.Unlock()
+	if l.closed {
+		return
+	}
 	// Detached from run cancellation: best-effort preview.
+	previous := l.stream.String()
+	boundary := strings.Contains(ev.Text, "\n\n") || (strings.HasSuffix(previous, "\n") && strings.HasPrefix(ev.Text, "\n"))
 	l.stream.WriteString(ev.Text)
 	if !l.ensureLocked() {
 		return
 	}
-	// Paragraph boundaries are natural flush points; still throttled to
-	// respect Telegram edit limits.
-	l.editLocked(false)
+	// Publish at paragraph boundaries, or periodically for long paragraphs.
+	if boundary {
+		l.scheduleLocked(time.Now())
+	} else {
+		l.scheduleLocked(time.Now().Add(liveStreamDelay))
+	}
 }
 
 // Flush forces a preview edit, used after streaming completes.
 func (l *liveReporter) Flush() {
 	l.mu.Lock()
 	defer l.mu.Unlock()
+	l.cancelTimerLocked()
 	if !l.ensureLocked() {
 		return
 	}
@@ -282,6 +330,11 @@ func (l *liveReporter) Flush() {
 func (l *liveReporter) FinishSuccess() {
 	l.mu.Lock()
 	defer l.mu.Unlock()
+	if l.closed {
+		return
+	}
+	l.closed = true
+	l.cancelTimerLocked()
 	if !l.sent || l.id == 0 || l.disabled && l.id == 0 {
 		return
 	}
@@ -298,6 +351,11 @@ func (l *liveReporter) FinishSuccess() {
 func (l *liveReporter) FinishError(text string) {
 	l.mu.Lock()
 	defer l.mu.Unlock()
+	if l.closed {
+		return
+	}
+	l.closed = true
+	l.cancelTimerLocked()
 	if !l.sent || l.id == 0 {
 		return
 	}

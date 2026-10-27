@@ -18,6 +18,7 @@ import (
 	"q-agent/internal/host"
 	"q-agent/internal/llm"
 	"q-agent/internal/localtools"
+	"q-agent/internal/logging"
 	"q-agent/internal/maintenance"
 	"q-agent/internal/redaction"
 	run "q-agent/internal/runtime"
@@ -52,6 +53,17 @@ func main() {
 }
 func mainRun() error {
 	args := os.Args[1:]
+	if len(args) > 1 && args[0] == "service" && args[1] == "log-run" {
+		flags := flag.NewFlagSet("service log-run", flag.ContinueOnError)
+		path := flags.String("log-path", "", "absolute log path")
+		if err := flags.Parse(args[2:]); err != nil {
+			return err
+		}
+		if !filepath.IsAbs(*path) || flags.NArg() == 0 {
+			return fmt.Errorf("internal log supervisor requires an absolute --log-path and a command")
+		}
+		return logging.Run(*path, flags.Args())
+	}
 	if len(args) > 1 && args[0] == "service" && args[1] == "maintain" {
 		flags := flag.NewFlagSet("service maintain", flag.ContinueOnError)
 		dir := flags.String("state-dir", "", "absolute state directory")

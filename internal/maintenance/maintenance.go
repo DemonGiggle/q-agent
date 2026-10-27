@@ -234,7 +234,7 @@ func (c *Controller) Request(ctx context.Context, action string, route platform.
 		return err
 	}
 	helperArgv := []string{"service", "maintain", "--state-dir", c.StateDir, "--id", id}
-	pid, err := c.spawn(ctx, executable, helperArgv, c.path("helper-"+id+".log"))
+	pid, err := c.spawn(ctx, executable, helperArgv, c.path("helper.log"))
 	if err != nil {
 		return fail(fmt.Errorf("could not launch independent detached maintenance helper: %w", err))
 	}

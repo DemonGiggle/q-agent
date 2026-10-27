@@ -15,11 +15,29 @@ import (
 	"testing"
 	"time"
 
+	"q-agent/internal/logging"
 	"q-agent/internal/platform"
 	"q-agent/internal/state"
 )
 
 func TestMain(m *testing.M) {
+	if len(os.Args) >= 7 && os.Args[1] == "service" && os.Args[2] == "log-run" && os.Args[3] == "--log-path" && os.Args[5] == "--" {
+		if err := logging.Run(os.Args[4], os.Args[6:]); err != nil {
+			os.Exit(1)
+		}
+		os.Exit(0)
+	}
+	if len(os.Args) == 3 && os.Args[1] == "logging-probe" {
+		fmt.Fprintln(os.Stdout, "first day")
+		for i := 0; i < 500; i++ {
+			if _, err := os.Stat(os.Args[2]); err == nil {
+				fmt.Fprintln(os.Stderr, "second day")
+				os.Exit(0)
+			}
+			time.Sleep(10 * time.Millisecond)
+		}
+		os.Exit(1)
+	}
 	if mode := os.Getenv("Q_AGENT_MAINTENANCE_PROBE_MODE"); mode != "" {
 		if err := maintenanceProbe(mode); err != nil {
 			fmt.Fprintln(os.Stderr, err)

@@ -175,8 +175,14 @@ rejected. Neither command calls the model or provisions a workspace.
 - A helper launches before stopping: transient
   `q-agent-maintenance-<id>.service` via `systemd-run --user` (separate
   cgroup, so stopping the bot cannot kill it), or a detached process for
-  foreground serve (logs at `state_dir/maintenance/helper-<id>.log`, new
-  output at `state_dir/maintenance/serve.log`). The bot arms the request
+  foreground serve (logs at `state_dir/maintenance/helper.log`, new
+  output at `state_dir/maintenance/serve.log`). Each log rotates on the first
+  write of a new local day, keeping the active file and six numbered backups
+  (`.1` is newest). Existing `serve.log` files are preserved and rotated based
+  on their last modification date. Legacy `helper-<id>.log` files are combined
+  into a numbered helper backup during the first detached maintenance. Rotation
+  limits file count, not the size of a single day's output. Systemd output is
+  managed by the journal. The bot arms the request
   only after Telegram confirms the pre-stop notice.
 - `/restart`: stop + start (or SIGTERM + re-exec foreground), then wait up
   to 60s for a new PID and the readiness marker (startup checks, Telegram

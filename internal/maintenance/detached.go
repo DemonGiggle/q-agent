@@ -11,6 +11,7 @@ import (
 	"syscall"
 	"time"
 
+	"q-agent/internal/logging"
 	"q-agent/internal/state"
 	"q-agent/internal/update"
 )
@@ -37,22 +38,18 @@ func (c *Controller) spawn(ctx context.Context, executable string, argv []string
 }
 
 func defaultSpawnDetached(executable string, argv []string, logPath string) (int, error) {
-	if err := os.MkdirAll(filepath.Dir(logPath), 0700); err != nil {
-		return 0, err
+	if err := (&logging.Writer{Path: logPath}).Prepare(); err != nil {
+		return 0, fmt.Errorf("prepare detached log: %w", err)
 	}
-	logFile, err := os.OpenFile(logPath, os.O_CREATE|os.O_APPEND|os.O_WRONLY, 0600)
-	if err != nil {
-		return 0, err
-	}
-	cmd := exec.Command(executable, argv...)
+	// The supervisor owns the log pipe for the child's entire lifetime and
+	// rotates it even when the detached bot runs across midnight.
+	args := append([]string{"service", "log-run", "--log-path", logPath, "--", executable}, argv...)
+	cmd := exec.Command(executable, args...)
 	cmd.SysProcAttr = &syscall.SysProcAttr{Setsid: true}
 	cmd.Env = os.Environ()
 	cmd.Dir = "/"
 	cmd.Stdin = nil
-	cmd.Stdout = logFile
-	cmd.Stderr = logFile
 	if err := cmd.Start(); err != nil {
-		_ = logFile.Close()
 		return 0, err
 	}
 	pid := 0
@@ -60,7 +57,6 @@ func defaultSpawnDetached(executable string, argv []string, logPath string) (int
 		pid = cmd.Process.Pid
 		_ = cmd.Process.Release()
 	}
-	_ = logFile.Close()
 	if pid <= 0 {
 		return 0, fmt.Errorf("detached spawn did not return a process")
 	}
@@ -88,7 +84,7 @@ func (c *Controller) isAlive(pid int) bool {
 // save/notify/arm sequence as the systemd backend so both stay auditable.
 func (c *Controller) launchDetachedHelper(ctx context.Context, executable, stateDir, id string) (int, error) {
 	argv := []string{"service", "maintain", "--state-dir", stateDir, "--id", id}
-	return c.spawn(ctx, executable, argv, c.path("helper-"+id+".log"))
+	return c.spawn(ctx, executable, argv, c.path("helper.log"))
 }
 
 // runDetached stops the foreground bot via SIGTERM, optionally updates the

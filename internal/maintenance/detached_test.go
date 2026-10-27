@@ -244,3 +244,40 @@ func TestDetachedHelperSurvivesOldExit(t *testing.T) {
 		t.Fatal("helper did not stop old foreground process")
 	}
 }
+
+func TestDetachedProcessRotatesWhileRunning(t *testing.T) {
+	dir := t.TempDir()
+	path := filepath.Join(dir, "serve.log")
+	ready := filepath.Join(dir, "continue")
+	executable, err := os.Executable()
+	if err != nil {
+		t.Fatal(err)
+	}
+	pid, err := defaultSpawnDetached(executable, []string{"logging-probe", ready}, path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = syscall.Kill(pid, syscall.SIGTERM) })
+	waitFor := func(path, text string) {
+		t.Helper()
+		deadline := time.Now().Add(5 * time.Second)
+		for time.Now().Before(deadline) {
+			data, _ := os.ReadFile(path)
+			if strings.Contains(string(data), text) {
+				return
+			}
+			time.Sleep(10 * time.Millisecond)
+		}
+		t.Fatalf("%s never contained %q", path, text)
+	}
+	waitFor(path, "first day")
+	yesterday := time.Now().AddDate(0, 0, -1)
+	if err := os.Chtimes(path, yesterday, yesterday); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(ready, nil, 0600); err != nil {
+		t.Fatal(err)
+	}
+	waitFor(path, "second day")
+	waitFor(path+".1", "first day")
+}

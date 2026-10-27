@@ -27,35 +27,38 @@ to the chat.
 
 ### 🪶 Tiny footprint
 
-Single static Go binary (~9 MB), no runtime dependencies. Idles under ~20 MB
-RSS — verify anytime with `/status`. Runs fine on a small VPS or Raspberry Pi,
-as a systemd user service. See [systemd deployment](docs/systemd.md).
+All the agent, none of the bloat:
+
+- **Featherweight:** one static binary that idles under ~20 MB — confirm with
+  `/status` anytime.
+- **Runs anywhere:** happy on a small VPS or Raspberry Pi, with no runtime
+  dependencies to babysit.
+- **Stays out of your way:** installs as a systemd user service and just runs.
+  See [systemd deployment](docs/systemd.md).
 
 ### 📦 Native sandbox, no Docker
 
-Opt-in filesystem isolation with bubblewrap (needs `bubblewrap` installed,
-plus `uidmap` / `mmdebstrap` on Debian to build the image). Each chat gets its
-own Debian rootfs; tools run with a clean env, credentials never enter the
-sandbox, and failures never silently fall back to host mode. Host mode stays
-the default for speed. See [host vs sandbox](docs/operations.md#2-how-tools-run-host-vs-sandbox).
+Let it do real work — without handing over the keys:
+
+- **Truly isolated:** each chat gets its own Debian world, powered by
+  bubblewrap (just needs `bubblewrap` installed; on Debian, `uidmap` /
+  `mmdebstrap` build the image).
+- **Credentials stay out:** your keys live on the host and never enter the
+  sandbox.
+- **Honest by design:** if isolation can't be guaranteed, it stops instead of
+  silently running unprotected. Fast host mode stays the default for speed.
+  See [host vs sandbox](docs/operations.md#2-how-tools-run-host-vs-sandbox).
 
 ### 👋 Companion mode, on by default
 
-q-agent checks in quietly instead of waiting to be asked:
+Your agent doesn't just wait to be asked — it looks out for you:
 
-- **How it works:** a sweep wakes at random moments inside `active_time`
-  (default `09:00-22:00`), a few times per day. It reads addressed history +
-  memory notes + live group chatter (`recent_window`, default 12h), then makes
-  one cheap no-tools model call that decides `silent` / `reminder` / `warmth` /
-  `comfort` / `suggestion`. Silence is a healthy outcome.
-- **Throttled:** at most 1 message per chat per sweep, max 1/day with a 6h
-  cooldown (rolling 24h, survives restarts). No tools, no shell, no web, no
-  cross-chat profiling.
-- **Safe:** skips unauthorized chats, busy tasks, recent activity (default 60m),
-  and empty input. Groups default to reminders-only.
-- **Yours to tune:** `/companion` shows buttons plus today's sweep diagnostics;
-  `/companion on|off|default|status|history` per chat, `[proactive]
-  enabled=false` as the global kill switch.
+- **It reaches out first:** a gentle reminder, a word of encouragement, or a
+  timely suggestion, grounded in your recent conversations and memory.
+- **Quiet by nature:** it knows silence is usually the right answer, and never
+  interrupts when you're busy or recently active.
+- **On your terms:** tune it per chat from `/companion`, or turn it off
+  entirely.
 
 Full rules in [operations](docs/operations.md#3-talking-to-the-bot).
 

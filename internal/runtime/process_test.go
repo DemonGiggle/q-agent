@@ -188,7 +188,12 @@ func TestProcessDeadlineStepLimitAndShutdownCleanup(t *testing.T) {
 	for _, kind := range []string{"deadline", "steps", "shutdown", "cancel"} {
 		t.Run(kind, func(t *testing.T) {
 			r, p, dir := setupProcessRuntime(t)
-			r.Config.Limits.TaskTimeout = "50ms"
+			// Keep the pre-interactive budget generous: under -race the agent
+			// loop's first model call can take longer than a few dozen ms to
+			// start, and a task that dies before its first request makes the
+			// provider-wait below flake. Must stay under 1s so the
+			// `(sleep 1; touch late)` session is killed before `touch` runs.
+			r.Config.Limits.TaskTimeout = "500ms"
 			r.Config.Limits.InteractiveTaskTimeout = "150ms"
 			if kind == "steps" {
 				r.Config.Limits.MaxSteps = 1

@@ -12,7 +12,7 @@ Ask questions, work with files, and schedule tasks — without leaving the chat.
 [![Linux](https://img.shields.io/badge/Runs_on-Linux-FCC624?logo=linux&logoColor=black)](#quick-start)
 [![License: MIT](https://img.shields.io/badge/License-MIT-green.svg)](LICENSE)
 
-[Quick start](#quick-start) · [Features](#features) · [Commands](#commands) · [Docs](#docs)
+[Quick start](#quick-start) · [Highlights](#highlights) · [Commands](#commands) · [Docs](#docs)
 
 </div>
 
@@ -23,21 +23,55 @@ preferred model, choose who can use it, and give it tasks in plain language.
 It works with files and commands on your Linux host and brings the result back
 to the chat.
 
-## Features
+## Highlights
 
-- 💬 **Telegram-native** — private chats, groups (mention or reply), and topics with separate histories sharing one folder.
-- 🤖 **Bring your model** — Ollama, OpenAI, OpenCode Go, or ChatGPT subscription. Switch per chat with `/provider`, `/model`, `/think`, `/max_steps`.
-- 📁 **Files & shell** — read, write, edit, search, and run commands. Host mode by default, optional Debian sandbox for filesystem isolation.
-- 🌐 **Web built in** — DuckDuckGo search and text web fetching, no API key needed.
-- 🗓️ **Reminders & schedules** — one-time reminders and daily/weekly agent tasks, just by asking.
-- 🧠 **Memory** — short-term conversation context plus opt-in nightly notes per chat.
-- 👋 **Companion** — quiet opt-out-able check-ins during your active hours.
-- 🖼️ **Photos** — send an image with a caption for vision-capable models.
-- 🖥️ **Interactive apps** — drive terminal and background processes, including login flows that reply mid-task.
-- 🔄 **Steer & control** — live `Working…` progress, steer running tasks with follow-up text, `/cancel` to stop, `/new` for a fresh start.
-- ⌨️ **Console & service** — guided `models` / `config` CLI for humans and scripts, systemd user service, `q-agent update` plus Telegram `/update` and `/restart`.
+### 🪶 Tiny footprint
 
-> Details, limits, and configuration for everything above live in [Docs](#docs).
+Single static Go binary (~9 MB), no runtime dependencies. Idles under ~20 MB
+RSS — verify anytime with `/status`. Runs fine on a small VPS or Raspberry Pi,
+as a systemd user service. See [systemd deployment](docs/systemd.md).
+
+### 📦 Native sandbox, no Docker
+
+Opt-in filesystem isolation with bubblewrap (needs `bubblewrap` installed,
+plus `uidmap` / `mmdebstrap` on Debian to build the image). Each chat gets its
+own Debian rootfs; tools run with a clean env, credentials never enter the
+sandbox, and failures never silently fall back to host mode. Host mode stays
+the default for speed. See [host vs sandbox](docs/operations.md#2-how-tools-run-host-vs-sandbox).
+
+### 👋 Companion mode, on by default
+
+q-agent checks in quietly instead of waiting to be asked:
+
+- **How it works:** a sweep wakes at random moments inside `active_time`
+  (default `09:00-22:00`), a few times per day. It reads addressed history +
+  memory notes + live group chatter (`recent_window`, default 12h), then makes
+  one cheap no-tools model call that decides `silent` / `reminder` / `warmth` /
+  `comfort` / `suggestion`. Silence is a healthy outcome.
+- **Throttled:** at most 1 message per chat per sweep, max 1/day with a 6h
+  cooldown (rolling 24h, survives restarts). No tools, no shell, no web, no
+  cross-chat profiling.
+- **Safe:** skips unauthorized chats, busy tasks, recent activity (default 60m),
+  and empty input. Groups default to reminders-only.
+- **Yours to tune:** `/companion` shows buttons plus today's sweep diagnostics;
+  `/companion on|off|default|status|history` per chat, `[proactive]
+  enabled=false` as the global kill switch.
+
+Full rules in [operations](docs/operations.md#3-talking-to-the-bot).
+
+## More features
+
+- Telegram: private chats, groups (mention or reply), topics with separate histories.
+- Models: Ollama, OpenAI, OpenCode Go, ChatGPT subscription; per-chat `/provider`, `/model`, `/think`, `/max_steps`.
+- Tools: `read`, `list`, `search`, `write`, `edit`, `shell` with capped output.
+- Web: `web_search` (DuckDuckGo, no key), `web_fetch` (text-only, no JS/login).
+- Schedules: one-time reminders and daily/weekly agent tasks by asking; list/delete in chat.
+- Memory: short-term context per topic plus nightly notes per chat (`/memory`, `/forget`).
+- Photos: image + caption input for vision-capable models.
+- Interactive sessions: PTY/pipe process sessions (`shell` + `process`), incl. login flows.
+- Control: live `Working…` progress, steer running tasks with follow-up text, `/cancel`, `/new`.
+- Console: guided `models` / `config` menus plus script-friendly `--json` actions.
+- Service: systemd user unit, `q-agent update`, Telegram `/update` + `/restart` (admin only).
 
 ## Quick start
 

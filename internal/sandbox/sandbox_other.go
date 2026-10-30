@@ -5,6 +5,8 @@ package sandbox
 import (
 	"context"
 	"fmt"
+	"time"
+
 	"q-agent/internal/llm"
 )
 
@@ -16,3 +18,9 @@ func Provision(context.Context, Options, string, string) error {
 	return fmt.Errorf("sandbox requires Linux")
 }
 func Remove(context.Context, Options, string) error { return fmt.Errorf("sandbox requires Linux") }
+func PutInboxFile(context.Context, Options, string, string, []byte, int64) (string, error) {
+	return "", fmt.Errorf("sandbox requires Linux")
+}
+func ClearInbox(context.Context, Options, string, time.Time) (int, int64, error) {
+	return 0, 0, fmt.Errorf("sandbox requires Linux")
+}

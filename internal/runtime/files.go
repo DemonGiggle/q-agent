@@ -81,6 +81,60 @@ func uniqueInboxPath(dir, name string) string {
 	return candidate
 }
 
+// persistInboxFile stores data as name in the chat inbox, delegating to the
+// workspace backend when it supports sandbox writes. It returns the final
+// basename after dedup suffixing. The sandbox path enforces quota, dedup,
+// and containment inside the namespace where rootfs/workspace is writable;
+// the host fallback preserves HostManager and test doubles.
+func (r *Runtime) persistInboxFile(ctx context.Context, root, name string, data []byte) (string, error) {
+	if writer, ok := r.Workspaces.(interface {
+		WriteInboxFile(context.Context, string, string, []byte, int64) (string, error)
+	}); ok {
+		return writer.WriteInboxFile(ctx, root, name, data, telegram.MaxInboxBytes)
+	}
+	inbox := inboxDirForRoot(root)
+	if err := os.MkdirAll(inbox, 0700); err != nil {
+		return "", err
+	}
+	if inboxUsage(inbox) > telegram.MaxInboxBytes {
+		return "", fmt.Errorf("chat inbox is full (100 MB limit); remove files from inbox/ and resend")
+	}
+	if int64(len(data))+inboxUsage(inbox) > telegram.MaxInboxBytes {
+		return "", fmt.Errorf("chat inbox is full (100 MB limit); remove files from inbox/ and resend")
+	}
+	dst := uniqueInboxPath(inbox, name)
+	// Containment check against symlink races on the directory.
+	if rel, err := filepath.Rel(inbox, dst); err != nil || rel == ".." || strings.HasPrefix(rel, ".."+string(filepath.Separator)) {
+		return "", fmt.Errorf("invalid file name %q", name)
+	}
+	if err := os.WriteFile(dst, data, 0600); err != nil {
+		return "", err
+	}
+	_ = state.SyncDir(inbox)
+	return filepath.Base(dst), nil
+}
+
+// clearInboxForRoot removes expired entries via the workspace backend when
+// available (sandbox namespace, where directory write exists), falling back
+// to host deletion for HostManager and test doubles.
+func (r *Runtime) clearInboxForRoot(ctx context.Context, root string, cutoff time.Time) (int, int64, error) {
+	if cleaner, ok := r.Workspaces.(interface {
+		ClearInbox(context.Context, string, time.Time) (int, int64, error)
+	}); ok {
+		return cleaner.ClearInbox(ctx, root, cutoff)
+	}
+	inbox := inboxDirForRoot(root)
+	// Convert the absolute cutoff back to an age for the host helper so both
+	// paths share the same expiry instant.
+	maxAge := time.Since(cutoff)
+	if maxAge < 0 {
+		maxAge = 0
+	}
+	removed, freed := clearInboxDir(inbox, time.Now(), maxAge)
+	_ = ctx
+	return removed, freed, nil
+}
+
 // saveFiles downloads generic Telegram attachments into the chat workspace
 // inbox and folds workspace-relative paths into the prompt. It runs before
 // busy routing so follow-ups steering an active task keep their files.
@@ -101,13 +155,6 @@ func (r *Runtime) saveFiles(ctx context.Context, m *platform.Message) error {
 	if err != nil {
 		return fmt.Errorf("workspace unavailable: %v", err)
 	}
-	inbox := inboxDirForRoot(root)
-	if err := os.MkdirAll(inbox, 0700); err != nil {
-		return fmt.Errorf("workspace unavailable: %v", err)
-	}
-	if inboxUsage(inbox) > telegram.MaxInboxBytes {
-		return fmt.Errorf("chat inbox is full (100 MB limit); remove files from inbox/ and resend")
-	}
 	var saved []string
 	for _, f := range m.Files {
 		display := f.Name
@@ -118,30 +165,28 @@ func (r *Runtime) saveFiles(ctx context.Context, m *platform.Message) error {
 		if err != nil {
 			return fmt.Errorf("could not load the attached file %q: %v", display, err)
 		}
-		if int64(len(data))+inboxUsage(inbox) > telegram.MaxInboxBytes {
-			return fmt.Errorf("chat inbox is full (100 MB limit); remove files from inbox/ and resend")
-		}
 		name := telegram.SanitizeFileName(f.Name)
 		if name == "" {
 			name = "file.bin"
 		}
-		dst := uniqueInboxPath(inbox, name)
-		// Containment check against symlink races on the directory.
-		if rel, err := filepath.Rel(inbox, dst); err != nil || rel == ".." || strings.HasPrefix(rel, ".."+string(filepath.Separator)) {
-			return fmt.Errorf("invalid file name %q", display)
-		}
-		if err := os.WriteFile(dst, data, 0600); err != nil {
+		base, err := r.persistInboxFile(ctx, root, name, data)
+		if err != nil {
+			// Preserve the user-facing quota phrasing; sandbox quota errors
+			// already carry it, host errors are rebuilt here.
+			msg := err.Error()
+			if strings.Contains(msg, "chat inbox is full") {
+				return fmt.Errorf("%s", msg)
+			}
 			return fmt.Errorf("could not save the attached file %q: %v", display, err)
 		}
-		_ = state.SyncDir(inbox)
 		if len(m.Images) < 2 {
 			if ct, ok := isImageData(data); ok {
 				m.Images = append(m.Images, llm.Image{MediaType: ct, Data: data})
 			}
 		}
-		rel := "inbox/" + filepath.Base(dst)
+		rel := "inbox/" + base
 		saved = append(saved, fmt.Sprintf("%s (%d bytes)", rel, len(data)))
-		r.logf("[TELEGRAM] File saved | update=%d name=%q bytes=%d", m.UpdateID, filepath.Base(dst), len(data))
+		r.logf("[TELEGRAM] File saved | update=%d name=%q bytes=%d", m.UpdateID, base, len(data))
 	}
 	m.Files = nil
 	m.Text += "\n\n[Uploaded file(s) saved to " + strings.Join(saved, ", ") + ". Files persist in this chat's workspace for ~24h before the daily cleanup; reference them as inbox/<name> or /workspace/inbox/<name>.]"
@@ -171,13 +216,6 @@ func (r *Runtime) savePhotos(ctx context.Context, m *platform.Message) error {
 	if err != nil {
 		return fmt.Errorf("workspace unavailable: %v", err)
 	}
-	inbox := inboxDirForRoot(root)
-	if err := os.MkdirAll(inbox, 0700); err != nil {
-		return fmt.Errorf("workspace unavailable: %v", err)
-	}
-	if inboxUsage(inbox) > telegram.MaxInboxBytes {
-		return fmt.Errorf("chat inbox is full (100 MB limit); remove files from inbox/ and resend")
-	}
 	anchor := m.MessageID
 	if anchor == 0 {
 		anchor = m.UpdateID
@@ -188,26 +226,23 @@ func (r *Runtime) savePhotos(ctx context.Context, m *platform.Message) error {
 		if err != nil {
 			return fmt.Errorf("could not load the attached image: %v", err)
 		}
-		if int64(len(image.Data))+inboxUsage(inbox) > telegram.MaxInboxBytes {
-			return fmt.Errorf("chat inbox is full (100 MB limit); remove files from inbox/ and resend")
-		}
 		m.Images = append(m.Images, image)
 		name := fmt.Sprintf("photo-%d-%d.%s", anchor, i+1, photoExtension(image.MediaType))
 		name = telegram.SanitizeFileName(name)
 		if name == "" {
 			name = "file.bin"
 		}
-		dst := uniqueInboxPath(inbox, name)
-		if rel, err := filepath.Rel(inbox, dst); err != nil || rel == ".." || strings.HasPrefix(rel, ".."+string(filepath.Separator)) {
-			return fmt.Errorf("invalid image name %q", name)
-		}
-		if err := os.WriteFile(dst, image.Data, 0600); err != nil {
+		base, err := r.persistInboxFile(ctx, root, name, image.Data)
+		if err != nil {
+			msg := err.Error()
+			if strings.Contains(msg, "chat inbox is full") {
+				return fmt.Errorf("%s", msg)
+			}
 			return fmt.Errorf("could not save the attached image %q: %v", name, err)
 		}
-		_ = state.SyncDir(inbox)
-		rel := "inbox/" + filepath.Base(dst)
+		rel := "inbox/" + base
 		saved = append(saved, fmt.Sprintf("%s (%d bytes)", rel, len(image.Data)))
-		r.logf("[TELEGRAM] Photo saved | update=%d name=%q bytes=%d", m.UpdateID, filepath.Base(dst), len(image.Data))
+		r.logf("[TELEGRAM] Photo saved | update=%d name=%q bytes=%d", m.UpdateID, base, len(image.Data))
 	}
 	m.PhotoIDs = nil
 	m.Text += "\n\n[Uploaded image(s) saved to " + strings.Join(saved, ", ") + ". Files persist in this chat's workspace for ~24h before the daily cleanup; reference them as inbox/<name> or /workspace/inbox/<name>.]"
@@ -299,8 +334,13 @@ func (r *Runtime) sweepInbox(ctx context.Context) error {
 				continue
 			}
 		}
-		inbox := inboxDirForRoot(root)
-		if removed, freed := clearInboxDir(inbox, time.Now(), inboxMaxAge); removed > 0 {
+		cutoff := time.Now().Add(-inboxMaxAge)
+		removed, freed, err := r.clearInboxForRoot(ctx, root, cutoff)
+		if err != nil {
+			r.logf("[INBOX] Sweep skipped, workspace unavailable | workspace=%s error=%q", chat.Key, r.Options.Redaction.Text(redaction.Terminal, err.Error()))
+			continue
+		}
+		if removed > 0 {
 			r.logf("[INBOX] Cleared expired files | workspace=%s removed=%d freed=%d", chat.Key, removed, freed)
 		}
 	}

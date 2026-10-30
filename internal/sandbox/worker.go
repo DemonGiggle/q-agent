@@ -10,6 +10,7 @@ import (
 	"path/filepath"
 	"q-agent/internal/localtools"
 	"strings"
+	"time"
 )
 
 // Worker is an internal command. It refuses to execute unless the namespace
@@ -47,9 +48,95 @@ func Worker(mode string, in io.Reader, out io.Writer) error {
 			}
 		}
 		return nil
+	case "inbox-put":
+		return inboxPutWorker(in, out)
+	case "inbox-clear":
+		return inboxClearWorker(in, out)
 	default:
 		return fmt.Errorf("unknown worker operation")
 	}
+}
+
+type inboxPutRequest struct {
+	Name     string `json:"name"`
+	MaxBytes int64  `json:"max_bytes"`
+}
+
+type inboxPutResponse struct {
+	Name string `json:"name"`
+	Size int64  `json:"size"`
+}
+
+type inboxClearRequest struct {
+	CutoffUnix int64 `json:"cutoff_unix"`
+}
+
+type inboxClearResponse struct {
+	Removed int   `json:"removed"`
+	Freed   int64 `json:"freed"`
+}
+
+// inboxPutWorker copies /input.bin (ro-bound host staging file) into
+// /workspace/inbox with quota, dedup, and containment enforced inside the
+// namespace where the directory is writable. Stdin carries only the small
+// JSON header so 20 MB payloads never traverse the 1 MB tool-request path.
+func inboxPutWorker(in io.Reader, out io.Writer) error {
+	var req inboxPutRequest
+	d := json.NewDecoder(io.LimitReader(in, 1<<20))
+	d.DisallowUnknownFields()
+	if err := d.Decode(&req); err != nil {
+		return err
+	}
+	if err := validateInboxName(req.Name); err != nil {
+		return err
+	}
+	if req.MaxBytes <= 0 || req.MaxBytes > 1<<30 {
+		return fmt.Errorf("invalid inbox quota")
+	}
+	data, err := os.ReadFile("/input.bin")
+	if err != nil {
+		return err
+	}
+	if len(data) == 0 {
+		return fmt.Errorf("empty inbox input")
+	}
+	// Defense in depth: the host DownloadFile path already caps at 20 MB.
+	if int64(len(data)) > 20<<20 {
+		return fmt.Errorf("inbox input exceeds 20 MB limit")
+	}
+	saved, err := writeInboxData("/workspace/inbox", req.Name, data, req.MaxBytes)
+	if err != nil {
+		return err
+	}
+	return json.NewEncoder(out).Encode(inboxPutResponse{Name: saved, Size: int64(len(data))})
+}
+
+// inboxClearWorker removes inbox entries older than the cutoff inside the
+// namespace. The host cannot delete sandbox-owned files when the inbox
+// directory itself is owned by the subordinate UID, so deletion must also
+// run where directory write permission exists.
+func inboxClearWorker(in io.Reader, out io.Writer) error {
+	var req inboxClearRequest
+	d := json.NewDecoder(io.LimitReader(in, 1<<20))
+	d.DisallowUnknownFields()
+	if err := d.Decode(&req); err != nil {
+		return err
+	}
+	if req.CutoffUnix <= 0 {
+		return fmt.Errorf("invalid inbox cutoff")
+	}
+	cutoff := time.Unix(req.CutoffUnix, 0)
+	// Missing inbox is a no-op so chats without uploads cost nothing.
+	if st, err := os.Lstat("/workspace/inbox"); err != nil {
+		if os.IsNotExist(err) {
+			return json.NewEncoder(out).Encode(inboxClearResponse{})
+		}
+		return err
+	} else if !st.IsDir() || st.Mode()&os.ModeSymlink != 0 {
+		return fmt.Errorf("inbox is not a directory")
+	}
+	removed, freed := clearInboxEntries("/workspace/inbox", cutoff)
+	return json.NewEncoder(out).Encode(inboxClearResponse{Removed: removed, Freed: freed})
 }
 func parentsSafe(root, name string) error {
 	path := filepath.Dir(name)

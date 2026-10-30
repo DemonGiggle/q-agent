@@ -193,8 +193,8 @@ func TestSweepInboxSkipsBusyAndMissing(t *testing.T) {
 		}
 	}
 	r.Workspaces = &peekWorkspace{roots: map[string]string{
-		idle.WorkspaceKey():  rootIdle,
-		busy.WorkspaceKey():  rootBusy,
+		idle.WorkspaceKey(): rootIdle,
+		busy.WorkspaceKey(): rootBusy,
 		// missing intentionally absent to exercise the Peek-miss path.
 	}}
 	old := time.Now().Add(-25 * time.Hour)

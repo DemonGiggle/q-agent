@@ -88,7 +88,8 @@ func TestHostWorkspaceRejectsIncompleteAndUnsafeTrees(t *testing.T) {
 	}
 }
 
-func TestHostProvisionCancellationAndAbandonedStaging(t *testing.T) {	m := &HostManager{Dir: t.TempDir()}
+func TestHostProvisionCancellationAndAbandonedStaging(t *testing.T) {
+	m := &HostManager{Dir: t.TempDir()}
 	msg := platform.Message{Platform: "telegram", ChatID: 1}
 	ctx, cancel := context.WithCancel(context.Background())
 	cancel()

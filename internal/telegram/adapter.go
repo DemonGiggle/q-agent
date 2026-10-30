@@ -28,8 +28,21 @@ type PhotoSize struct {
 	FileSize int64  `json:"file_size,omitempty"`
 }
 
+type FileMeta struct {
+	FileID   string `json:"file_id"`
+	FileName string `json:"file_name,omitempty"`
+	MimeType string `json:"mime_type,omitempty"`
+	FileSize int64  `json:"file_size,omitempty"`
+}
+
 type Message struct {
 	Photo           []PhotoSize `json:"photo,omitempty"`
+	Document        *FileMeta   `json:"document,omitempty"`
+	Video           *FileMeta   `json:"video,omitempty"`
+	Audio           *FileMeta   `json:"audio,omitempty"`
+	Voice           *FileMeta   `json:"voice,omitempty"`
+	VideoNote       *FileMeta   `json:"video_note,omitempty"`
+	Animation       *FileMeta   `json:"animation,omitempty"`
 	CaptionEntities []Entity    `json:"caption_entities,omitempty"`
 	ID              int64       `json:"message_id"`
 	TopicID         int64       `json:"message_thread_id,omitempty"`
@@ -142,11 +155,19 @@ func Normalize(update Update, bot User) (platform.Message, bool) {
 	if m.Reply != nil {
 		photos = append(photos, photoIDs(m.Reply)...)
 	}
-	if !addressed || text == "" && len(photos) == 0 {
+	files := messageFiles(m)
+	if m.Reply != nil {
+		files = append(files, messageFiles(m.Reply)...)
+	}
+	if !addressed || text == "" && len(photos) == 0 && len(files) == 0 {
 		return platform.Message{}, false
 	}
 	if text == "" {
-		text = "Describe the attached image."
+		if len(photos) > 0 {
+			text = "Describe the attached image."
+		} else {
+			text = "Process the attached file(s)."
+		}
 	}
 	// /new and /cancel with a mention in place of a command target.
 	if strings.HasPrefix(text, "/new") || strings.HasPrefix(text, "/cancel") {
@@ -155,7 +176,7 @@ func Normalize(update Update, bot User) (platform.Message, bool) {
 			text = parts[0]
 		}
 	}
-	out := platform.Message{Platform: "telegram", ChatID: m.Chat.ID, TopicID: m.TopicID, UserID: m.From.ID, MessageID: m.ID, UpdateID: update.ID, Text: text, PhotoIDs: photos}
+	out := platform.Message{Platform: "telegram", ChatID: m.Chat.ID, TopicID: m.TopicID, UserID: m.From.ID, MessageID: m.ID, UpdateID: update.ID, Text: text, PhotoIDs: photos, Files: files}
 	if reply := m.Reply; reply != nil {
 		replyText := reply.Text
 		if strings.TrimSpace(replyText) == "" {
@@ -194,13 +215,26 @@ func ExtractTap(update Update) (platform.Message, string, bool) {
 	}
 	text := strings.TrimSpace(raw)
 	hasPhoto := len(m.Photo) > 0
+	hasFile := hasMessageFile(m)
 	if text == "" {
-		if !hasPhoto {
+		if !hasPhoto && !hasFile {
 			return platform.Message{}, "", false
 		}
-		text = "[photo]"
-	} else if hasPhoto {
-		text += " [photo]"
+		parts := []string{}
+		if hasPhoto {
+			parts = append(parts, "[photo]")
+		}
+		if hasFile {
+			parts = append(parts, "[file]")
+		}
+		text = strings.Join(parts, " ")
+	} else {
+		if hasPhoto {
+			text += " [photo]"
+		}
+		if hasFile {
+			text += " [file]"
+		}
 	}
 	if reply := m.Reply; reply != nil {
 		replyText := strings.TrimSpace(reply.Text)
@@ -262,4 +296,69 @@ func photoIDs(m *Message) []string {
 		return nil
 	}
 	return []string{best.FileID}
+}
+
+// hasMessageFile reports whether the Telegram message carries any generic
+// file attachment (document, video, audio, voice, video note, animation).
+func hasMessageFile(m *Message) bool {
+	if m == nil {
+		return false
+	}
+	return len(messageFiles(m)) > 0
+}
+
+// messageFiles collects generic file attachments in a stable order. Each
+// Telegram message carries at most one media payload, but replies may add
+// one more, so callers handle slices. Missing filenames get a kind-based
+// fallback so the runtime can always save a usable inbox name.
+func messageFiles(m *Message) []platform.File {
+	if m == nil {
+		return nil
+	}
+	var out []platform.File
+	add := func(meta *FileMeta, fallback string) {
+		if meta == nil || meta.FileID == "" {
+			return
+		}
+		name := meta.FileName
+		if name == "" {
+			name = fallback
+		}
+		out = append(out, platform.File{FileID: meta.FileID, Name: name, Mime: meta.MimeType, Size: meta.FileSize})
+	}
+	add(m.Document, fallbackFileName("", m.Document))
+	add(m.Video, fallbackFileName("video.mp4", m.Video))
+	add(m.Audio, fallbackFileName("audio.mp3", m.Audio))
+	add(m.Voice, fallbackFileName("voice.ogg", m.Voice))
+	add(m.VideoNote, fallbackFileName("video_note.mp4", m.VideoNote))
+	add(m.Animation, fallbackFileName("animation.mp4", m.Animation))
+	return out
+}
+
+func fallbackFileName(fallback string, meta *FileMeta) string {
+	if fallback != "" {
+		return fallback
+	}
+	if meta == nil {
+		return "file.bin"
+	}
+	if meta.FileName != "" {
+		return meta.FileName
+	}
+	switch meta.MimeType {
+	case "image/jpeg":
+		return "file.jpg"
+	case "image/png":
+		return "file.png"
+	case "image/gif":
+		return "file.gif"
+	case "image/webp":
+		return "file.webp"
+	case "application/pdf":
+		return "file.pdf"
+	case "text/plain":
+		return "file.txt"
+	default:
+		return "file.bin"
+	}
 }

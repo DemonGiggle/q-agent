@@ -12,6 +12,30 @@ import (
 
 type HostManager struct{ Dir string }
 
+// Peek returns the workspace root without provisioning. It reports false when
+// the workspace was never published so daily sweeps can skip it cheaply.
+func (m *HostManager) Peek(msg platform.Message) (string, bool) {
+	owner := Owner{msg.Platform, msg.ChatID}
+	base := filepath.Join(m.Dir, msg.WorkspaceKey())
+	root := filepath.Join(base, "workspace")
+	st, err := os.Lstat(base)
+	if err != nil || !st.IsDir() || st.Mode()&os.ModeSymlink != 0 {
+		return "", false
+	}
+	data, err := os.ReadFile(filepath.Join(base, "owner.json"))
+	if err != nil {
+		return "", false
+	}
+	var saved Owner
+	if json.Unmarshal(data, &saved) != nil || saved != owner {
+		return "", false
+	}
+	if st, err = os.Lstat(root); err != nil || !st.IsDir() || st.Mode()&os.ModeSymlink != 0 {
+		return "", false
+	}
+	return root, true
+}
+
 // Ensure atomically publishes a private chat folder with permanent ownership.
 // Topics use the same WorkspaceKey. The runtime holds the chat execution slot.
 func (m *HostManager) Ensure(ctx context.Context, msg platform.Message) (string, error) {

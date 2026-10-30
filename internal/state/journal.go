@@ -327,6 +327,7 @@ func (s *Store) addMemoryNotice(mem *ChatMemory, route platform.Message, id stri
 	route.Text = ""
 	route.Images = nil
 	route.PhotoIDs = nil
+	route.Files = nil
 	route.ReplyTo = nil
 	parts = append([]string(nil), parts...)
 	for i := range parts {

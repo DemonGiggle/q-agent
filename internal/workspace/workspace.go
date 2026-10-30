@@ -113,6 +113,26 @@ type Manager struct {
 
 // Ensure publishes the owner and rootfs together, only after extraction succeeds.
 // The caller holds the workspace execution slot throughout this operation.
+func (m *Manager) Peek(msg platform.Message) (string, bool) {
+	owner := Owner{msg.Platform, msg.ChatID}
+	base := filepath.Join(m.Dir, msg.WorkspaceKey())
+	root := filepath.Join(base, "rootfs")
+	data, err := os.ReadFile(filepath.Join(base, "owner.json"))
+	if err != nil {
+		return "", false
+	}
+	var saved Owner
+	if json.Unmarshal(data, &saved) != nil || saved != owner {
+		return "", false
+	}
+	if st, e := os.Lstat(root); e != nil || !st.IsDir() || st.Mode()&os.ModeSymlink != 0 {
+		return "", false
+	}
+	return root, true
+}
+
+// Ensure publishes the owner and rootfs together, only after extraction succeeds.
+// The caller holds the workspace execution slot throughout this operation.
 func (m *Manager) Ensure(ctx context.Context, msg platform.Message) (string, error) {
 	owner := Owner{msg.Platform, msg.ChatID}
 	base := filepath.Join(m.Dir, msg.WorkspaceKey())

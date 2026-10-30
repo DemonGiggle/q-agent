@@ -11,8 +11,9 @@ import (
 )
 
 // Generic file attachments are bounded independently of Telegram's larger
-// getFile limit. Photos stay on the vision path (10 MB); any other file
-// lands in the chat workspace inbox for the agent to read with tools.
+// getFile limit. Photos (10 MB) and any other file both land in the chat
+// workspace inbox for the agent to read with tools; photos double as vision
+// input.
 const MaxIncomingFileBytes = 20 << 20
 
 // MaxFilesPerMessage caps generic attachments per Telegram message so one

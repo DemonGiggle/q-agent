@@ -148,6 +148,85 @@ func (r *Runtime) saveFiles(ctx context.Context, m *platform.Message) error {
 	return nil
 }
 
+// savePhotos downloads Telegram photo sizes into the chat workspace inbox
+// and feeds the same bytes to vision. It runs before busy routing so the
+// agent can reference the persisted file with tools (for example copying a
+// logo into docs/assets/) instead of losing the image after the task.
+// Photos keep their existing 2-per-message vision limit; inbox quota and
+// daily retention match generic files.
+func (r *Runtime) savePhotos(ctx context.Context, m *platform.Message) error {
+	if len(m.PhotoIDs) == 0 {
+		return nil
+	}
+	loader, ok := r.Sink.(interface {
+		DownloadPhoto(context.Context, string) (llm.Image, error)
+	})
+	if !ok {
+		return fmt.Errorf("image input is unavailable in this adapter")
+	}
+	if len(m.PhotoIDs) > 2 {
+		return fmt.Errorf("too many attached images (maximum 2 per message)")
+	}
+	root, err := r.Workspaces.Ensure(ctx, *m)
+	if err != nil {
+		return fmt.Errorf("workspace unavailable: %v", err)
+	}
+	inbox := inboxDirForRoot(root)
+	if err := os.MkdirAll(inbox, 0700); err != nil {
+		return fmt.Errorf("workspace unavailable: %v", err)
+	}
+	if inboxUsage(inbox) > telegram.MaxInboxBytes {
+		return fmt.Errorf("chat inbox is full (100 MB limit); remove files from inbox/ and resend")
+	}
+	anchor := m.MessageID
+	if anchor == 0 {
+		anchor = m.UpdateID
+	}
+	var saved []string
+	for i, id := range m.PhotoIDs {
+		image, err := loader.DownloadPhoto(ctx, id)
+		if err != nil {
+			return fmt.Errorf("could not load the attached image: %v", err)
+		}
+		if int64(len(image.Data))+inboxUsage(inbox) > telegram.MaxInboxBytes {
+			return fmt.Errorf("chat inbox is full (100 MB limit); remove files from inbox/ and resend")
+		}
+		m.Images = append(m.Images, image)
+		name := fmt.Sprintf("photo-%d-%d.%s", anchor, i+1, photoExtension(image.MediaType))
+		name = telegram.SanitizeFileName(name)
+		if name == "" {
+			name = "file.bin"
+		}
+		dst := uniqueInboxPath(inbox, name)
+		if rel, err := filepath.Rel(inbox, dst); err != nil || rel == ".." || strings.HasPrefix(rel, ".."+string(filepath.Separator)) {
+			return fmt.Errorf("invalid image name %q", name)
+		}
+		if err := os.WriteFile(dst, image.Data, 0600); err != nil {
+			return fmt.Errorf("could not save the attached image %q: %v", name, err)
+		}
+		_ = state.SyncDir(inbox)
+		rel := "inbox/" + filepath.Base(dst)
+		saved = append(saved, fmt.Sprintf("%s (%d bytes)", rel, len(image.Data)))
+		r.logf("[TELEGRAM] Photo saved | update=%d name=%q bytes=%d", m.UpdateID, filepath.Base(dst), len(image.Data))
+	}
+	m.PhotoIDs = nil
+	m.Text += "\n\n[Uploaded image(s) saved to " + strings.Join(saved, ", ") + ". Files persist in this chat's workspace for ~24h before the daily cleanup; reference them as inbox/<name> or /workspace/inbox/<name>.]"
+	return nil
+}
+
+func photoExtension(mediaType string) string {
+	switch mediaType {
+	case "image/png":
+		return "png"
+	case "image/gif":
+		return "gif"
+	case "image/webp":
+		return "webp"
+	default:
+		return "jpg"
+	}
+}
+
 // clearInboxDir removes inbox entries older than maxAge. It never follows
 // symlinks and never removes the inbox directory itself. Missing directories
 // are a no-op so chats without uploads cost nothing.

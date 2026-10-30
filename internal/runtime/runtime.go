@@ -184,25 +184,15 @@ func (r *Runtime) Handle(ctx context.Context, m platform.Message) error {
 		return r.showModels(ctx, m)
 	}
 	// Only authorized, accepted messages may cause a Telegram file download.
+	// Photos are saved to the chat workspace inbox (and fed to vision) so the
+	// agent can process them with tools across tasks; generic files below
+	// share the same inbox, quota, and daily retention.
 	if len(m.PhotoIDs) > 0 && !strings.HasPrefix(m.Text, "/") {
-		loader, ok := r.Sink.(interface {
-			DownloadPhoto(context.Context, string) (llm.Image, error)
-		})
-		if !ok {
-			return r.reply(m, "Image input is unavailable in this adapter.")
+		if err := r.savePhotos(ctx, &m); err != nil {
+			return r.reply(m, err.Error()+". Please resend it.")
 		}
-		if len(m.PhotoIDs) > 2 {
-			return r.reply(m, "Too many attached images (maximum 2 per message).")
-		}
-		for _, id := range m.PhotoIDs {
-			image, err := loader.DownloadPhoto(ctx, id)
-			if err != nil {
-				return r.reply(m, "Could not load the attached image: "+err.Error()+". Please resend it.")
-			}
-			m.Images = append(m.Images, image)
-		}
+	} else {
 		m.PhotoIDs = nil
-		m.Text += "\n\n[Attached image(s) are available for this task only; resend them if needed in a later task.]"
 	}
 	// Generic files (documents, video, audio, voice, animation) are saved to
 	// the chat workspace inbox before busy routing so follow-ups keep them.

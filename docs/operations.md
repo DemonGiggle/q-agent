@@ -405,8 +405,11 @@ applications automatically, but `human_input:true` returns an immediate,
 recoverable `human input unavailable` observation.
 
 Photos: send a photo with a caption (`@your_bot` in groups) as model input.
-Needs a vision-capable model; up to 10 MB per image, binary never stored in
-history.
+Needs a vision-capable model; up to 2 photos per message, 10 MB each, binary
+never stored in history. Photos are also saved to `inbox/` in the chat
+workspace (for example `inbox/photo-<message>-1.jpg`) and persist across
+tasks; reference them as `inbox/<name>` or `/workspace/inbox/<name>` so the
+agent can copy or edit them with tools.
 
 Files: send a document, video, audio, voice, or animation with a caption saying
 what to do. Files are saved to `inbox/` in the chat workspace and persist

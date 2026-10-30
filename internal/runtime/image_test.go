@@ -3,6 +3,9 @@ package runtime
 import (
 	"context"
 	"fmt"
+	"os"
+	"path/filepath"
+	"strings"
 	"testing"
 	"time"
 
@@ -25,8 +28,22 @@ func (s *photoSink) DownloadPhoto(context.Context, string) (llm.Image, error) {
 	return llm.Image{MediaType: "image/jpeg", Data: []byte("test-image")}, nil
 }
 
+// photoWorkspace replaces the mock workspace with a real temp rootfs so
+// savePhotos can persist to inbox/ without polluting the package dir.
+func photoWorkspace(t *testing.T, r *Runtime) string {
+	t.Helper()
+	dir := t.TempDir()
+	rootfs := filepath.Join(dir, "rootfs")
+	if err := os.MkdirAll(filepath.Join(rootfs, "workspace"), 0700); err != nil {
+		t.Fatal(err)
+	}
+	r.Workspaces = &dirWorkspace{dir: rootfs}
+	return rootfs
+}
+
 func TestIncomingPhotoReachesModel(t *testing.T) {
 	r, _, p := fixture(t)
+	rootfs := photoWorkspace(t, r)
 	sink := &photoSink{}
 	r.Sink = sink
 	m, ok := telegram.Normalize(telegram.Update{ID: 1, Message: &telegram.Message{
@@ -49,10 +66,28 @@ func TestIncomingPhotoReachesModel(t *testing.T) {
 	if len(last.Images) != 1 || string(last.Images[0].Data) != "test-image" {
 		t.Fatalf("image lost: %+v", last)
 	}
+	// Photo must also persist to inbox/ so tools can use it later.
+	inbox := filepath.Join(rootfs, "workspace", "inbox")
+	entries, err := os.ReadDir(inbox)
+	if err != nil || len(entries) != 1 {
+		t.Fatalf("inbox entries=%v err=%v", entries, err)
+	}
+	name := entries[0].Name()
+	if !strings.HasPrefix(name, "photo-1-1.") {
+		t.Fatalf("unexpected photo name %q", name)
+	}
+	data, err := os.ReadFile(filepath.Join(inbox, name))
+	if err != nil || string(data) != "test-image" {
+		t.Fatalf("inbox bytes=%q err=%v", string(data), err)
+	}
+	if !strings.Contains(last.Content, "inbox/"+name) {
+		t.Fatalf("prompt missing inbox path: %q", last.Content)
+	}
 }
 
 func TestIncomingPhotoAuthorizationAndFailure(t *testing.T) {
 	r, _, p := fixture(t)
+	photoWorkspace(t, r)
 	sink := &photoSink{fail: true}
 	r.Sink = sink
 	m := input(1, -99, 0, 1, "describe")
@@ -75,6 +110,73 @@ func TestIncomingPhotoAuthorizationAndFailure(t *testing.T) {
 	_, ok := r.Store.Pending()
 	if !ok {
 		t.Fatal("download error silently dropped")
+	}
+}
+
+func TestSavePhotosToInbox(t *testing.T) {
+	r, _, _ := fixture(t)
+	rootfs := photoWorkspace(t, r)
+	sink := &photoSink{}
+	r.Sink = sink
+	m := platform.Message{Platform: "telegram", ChatID: 1, UserID: 1, UpdateID: 7, MessageID: 42, Text: "use this", PhotoIDs: []string{"p1"}}
+	if err := r.savePhotos(context.Background(), &m); err != nil {
+		t.Fatal(err)
+	}
+	if len(m.PhotoIDs) != 0 {
+		t.Fatal("PhotoIDs not cleared")
+	}
+	if len(m.Images) != 1 {
+		t.Fatalf("vision missing: %+v", m.Images)
+	}
+	if !strings.Contains(m.Text, "inbox/photo-42-1.jpg") {
+		t.Fatalf("path not folded: %q", m.Text)
+	}
+	data, err := os.ReadFile(filepath.Join(rootfs, "workspace", "inbox", "photo-42-1.jpg"))
+	if err != nil || string(data) != "test-image" {
+		t.Fatalf("saved=%q err=%v", string(data), err)
+	}
+}
+
+func TestSavePhotosTooMany(t *testing.T) {
+	r, _, _ := fixture(t)
+	photoWorkspace(t, r)
+	r.Sink = &photoSink{}
+	m := platform.Message{Platform: "telegram", ChatID: 1, UserID: 1, Text: "many", PhotoIDs: []string{"a", "b", "c"}}
+	if err := r.savePhotos(context.Background(), &m); err == nil || !strings.Contains(err.Error(), "maximum 2") {
+		t.Fatalf("expected limit error, got %v", err)
+	}
+}
+
+func TestPhotoExtension(t *testing.T) {
+	for mt, want := range map[string]string{
+		"image/jpeg": "jpg",
+		"image/png":  "png",
+		"image/gif":  "gif",
+		"image/webp": "webp",
+		"other":      "jpg",
+	} {
+		if got := photoExtension(mt); got != want {
+			t.Errorf("extension %q = %q, want %q", mt, got, want)
+		}
+	}
+}
+
+func TestPhotoCommandSkipsDownload(t *testing.T) {
+	r, _, p := fixture(t)
+	photoWorkspace(t, r)
+	sink := &photoSink{}
+	r.Sink = sink
+	m := input(1, 1, 0, 1, "/status")
+	m.PhotoIDs = []string{"file"}
+	if err := r.Handle(context.Background(), m); err != nil {
+		t.Fatal(err)
+	}
+	r.Wait()
+	if sink.calls != 0 {
+		t.Fatalf("command triggered download")
+	}
+	if len(p.requests) != 0 {
+		t.Fatal("command started a task")
 	}
 }
 
@@ -103,6 +205,7 @@ func (*finishingPhotoSink) DownloadPhoto(context.Context, string) (llm.Image, er
 
 func TestLatePhotoStartsAfterFinalCommit(t *testing.T) {
 	r, _, p := setupSteer(t)
+	rootfs := photoWorkspace(t, r)
 	sink := &finishingPhotoSink{&finishingSink{entered: make(chan struct{}), release: make(chan struct{})}}
 	r.Sink = sink
 	must(t, r.Handle(context.Background(), input(1, -10, 7, 1, "original")))
@@ -126,6 +229,14 @@ func TestLatePhotoStartsAfterFinalCommit(t *testing.T) {
 	last := req.Messages[len(req.Messages)-1]
 	if len(last.Images) != 1 || string(last.Images[0].Data) != "late-image" {
 		t.Fatalf("late image lost: %+v", last)
+	}
+	if !strings.Contains(last.Content, "inbox/photo-") {
+		t.Fatalf("late prompt missing inbox path: %q", last.Content)
+	}
+	// Late photo must also persist for tools.
+	entries, err := os.ReadDir(filepath.Join(rootfs, "workspace", "inbox"))
+	if err != nil || len(entries) != 1 {
+		t.Fatalf("late inbox=%v err=%v", entries, err)
 	}
 	p.responses <- steerResponse{text: "second final"}
 	r.Wait()

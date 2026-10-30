@@ -417,7 +417,9 @@ across tasks; reference them as `inbox/<name>` or `/workspace/inbox/<name>`.
 Up to 5 files per message, 20 MB each, 100 MB per chat inbox. A daily sweep
 removes files older than 24h (busy chats are skipped to the next day), so act
 promptly. Image documents
-double as vision input. Albums arrive as separate messages.
+double as vision input. Albums arrive as separate messages. In sandbox mode
+inbox writes and sweeps run inside the namespace so subordinate-UID ownership
+never blocks the host.
 
 ## 5. State, logs, backups
 

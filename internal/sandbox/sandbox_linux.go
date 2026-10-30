@@ -11,6 +11,7 @@ import (
 	"os"
 	"os/exec"
 	"os/user"
+	"path/filepath"
 	"q-agent/internal/llm"
 	"q-agent/internal/localtools"
 	"strconv"
@@ -256,4 +257,88 @@ func Remove(ctx context.Context, o Options, target string) error {
 	mounts := []string{"--tmpfs", "/", "--bind", target, "/target", "--proc", "/proc", "--ro-bind", o.Worker, workerPath, "--chdir", "/", workerPath, "worker", "remove"}
 	_, err := run(ctx, o, mounts, nil)
 	return err
+}
+
+// inboxPutMounts binds the chat rootfs as / plus the host staging file as
+// /input.bin (read-only). The worker copies /input.bin into
+// /workspace/inbox where directory write permission exists.
+func inboxPutMounts(o Options, rootfs, staging string) []string {
+	return []string{"--tmpfs", "/", "--bind", rootfs, "/", "--proc", "/proc", "--dev", "/dev", "--tmpfs", "/tmp", "--chmod", "1777", "/tmp", "--tmpfs", "/run", "--ro-bind", o.Worker, workerPath, "--ro-bind", staging, "/input.bin", "--chdir", "/", workerPath, "worker", "inbox-put"}
+}
+
+func inboxClearMounts(o Options, rootfs string) []string {
+	return []string{"--tmpfs", "/", "--bind", rootfs, "/", "--proc", "/proc", "--dev", "/dev", "--tmpfs", "/tmp", "--chmod", "1777", "/tmp", "--tmpfs", "/run", "--ro-bind", o.Worker, workerPath, "--chdir", "/", workerPath, "worker", "inbox-clear"}
+}
+
+// PutInboxFile stages data host-side (0600, account-private) and delegates
+// the inbox write to the namespace so subordinate-UID ownership never blocks
+// the host. Quota, dedup, and containment are enforced inside.
+func PutInboxFile(ctx context.Context, o Options, rootfs, name string, data []byte, maxBytes int64) (string, error) {
+	if err := validateInboxName(name); err != nil {
+		return "", err
+	}
+	if len(data) == 0 {
+		return "", fmt.Errorf("empty inbox input")
+	}
+	if int64(len(data)) > 20<<20 {
+		return "", fmt.Errorf("inbox input exceeds 20 MB limit")
+	}
+	// Stage under the chat base (0700, host-owned) so the payload never
+	// traverses the 1 MB JSON stdin path and never lands world-readable.
+	stagingDir := filepath.Dir(rootfs)
+	if err := os.MkdirAll(stagingDir, 0700); err != nil {
+		return "", err
+	}
+	tmp, err := os.CreateTemp(stagingDir, ".inbox-put-*")
+	if err != nil {
+		return "", err
+	}
+	tmpName := tmp.Name()
+	defer os.Remove(tmpName)
+	if _, err := tmp.Write(data); err != nil {
+		tmp.Close()
+		return "", err
+	}
+	if err := tmp.Sync(); err != nil {
+		tmp.Close()
+		return "", err
+	}
+	if err := tmp.Close(); err != nil {
+		return "", err
+	}
+	// The worker only needs read access; keep the staging file 0600.
+	_ = os.Chmod(tmpName, 0600)
+	timeoutCtx, cancel := context.WithTimeout(ctx, 30*time.Second)
+	defer cancel()
+	out, err := run(timeoutCtx, o, inboxPutMounts(o, rootfs, tmpName), inboxPutRequest{Name: name, MaxBytes: maxBytes})
+	if err != nil {
+		return "", err
+	}
+	var resp inboxPutResponse
+	if err := json.Unmarshal(out, &resp); err != nil {
+		return "", fmt.Errorf("invalid inbox worker response: %w", err)
+	}
+	if err := validateInboxName(resp.Name); err != nil {
+		return "", fmt.Errorf("invalid inbox worker response")
+	}
+	return resp.Name, nil
+}
+
+// ClearInbox removes inbox entries older than cutoff inside the namespace,
+// where directory write permission exists for subordinate-UID-owned trees.
+func ClearInbox(ctx context.Context, o Options, rootfs string, cutoff time.Time) (int, int64, error) {
+	timeoutCtx, cancel := context.WithTimeout(ctx, 30*time.Second)
+	defer cancel()
+	out, err := run(timeoutCtx, o, inboxClearMounts(o, rootfs), inboxClearRequest{CutoffUnix: cutoff.Unix()})
+	if err != nil {
+		return 0, 0, err
+	}
+	var resp inboxClearResponse
+	if err := json.Unmarshal(out, &resp); err != nil {
+		return 0, 0, fmt.Errorf("invalid inbox worker response: %w", err)
+	}
+	if resp.Removed < 0 || resp.Freed < 0 {
+		return 0, 0, fmt.Errorf("invalid inbox worker response")
+	}
+	return resp.Removed, resp.Freed, nil
 }

@@ -1,5 +1,7 @@
 <div align="center">
 
+<img src="docs/assets/logo.jpg" alt="q-agent logo" width="240" />
+
 # q-agent
 
 ### Your own AI agent. Right inside Telegram.

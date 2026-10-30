@@ -411,7 +411,9 @@ history.
 Files: send a document, video, audio, voice, or animation with a caption saying
 what to do. Files are saved to `inbox/` in the chat workspace and persist
 across tasks; reference them as `inbox/<name>` or `/workspace/inbox/<name>`.
-Up to 5 files per message, 20 MB each, 100 MB per chat inbox. Image documents
+Up to 5 files per message, 20 MB each, 100 MB per chat inbox. A daily sweep
+removes files older than 24h (busy chats are skipped to the next day), so act
+promptly. Image documents
 double as vision input. Albums arrive as separate messages.
 
 ## 5. State, logs, backups

@@ -70,6 +70,8 @@ type Runtime struct {
 	digestMu          sync.Mutex
 	digestRetries     map[string]digestRetry
 	digestGlobalRetry state.MemoryRetry
+	inboxCancel       context.CancelFunc
+	inboxDone         chan struct{}
 	proactiveCancel   context.CancelFunc
 	proactiveDone     chan struct{}
 	proactiveMu       sync.Mutex
@@ -531,14 +533,20 @@ func (r *Runtime) Close() {
 	if r.digestCancel != nil {
 		r.digestCancel()
 	}
+	if r.inboxCancel != nil {
+		r.inboxCancel()
+	}
 	if r.proactiveCancel != nil {
 		r.proactiveCancel()
 	}
 	for _, t := range r.active {
-		t.cancel()
+		if t.cancel != nil {
+			t.cancel()
+		}
 	}
 	done := r.scheduleDone
 	digestDone := r.digestDone
+	inboxDone := r.inboxDone
 	proactiveDone := r.proactiveDone
 	r.mu.Unlock()
 	if done != nil {
@@ -546,6 +554,9 @@ func (r *Runtime) Close() {
 	}
 	if digestDone != nil {
 		<-digestDone
+	}
+	if inboxDone != nil {
+		<-inboxDone
 	}
 	if proactiveDone != nil {
 		<-proactiveDone

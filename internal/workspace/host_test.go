@@ -88,8 +88,7 @@ func TestHostWorkspaceRejectsIncompleteAndUnsafeTrees(t *testing.T) {
 	}
 }
 
-func TestHostProvisionCancellationAndAbandonedStaging(t *testing.T) {
-	m := &HostManager{Dir: t.TempDir()}
+func TestHostProvisionCancellationAndAbandonedStaging(t *testing.T) {	m := &HostManager{Dir: t.TempDir()}
 	msg := platform.Message{Platform: "telegram", ChatID: 1}
 	ctx, cancel := context.WithCancel(context.Background())
 	cancel()
@@ -104,5 +103,25 @@ func TestHostProvisionCancellationAndAbandonedStaging(t *testing.T) {
 	}
 	if _, err := m.Ensure(context.Background(), msg); err != nil {
 		t.Fatal(err)
+	}
+}
+
+func TestHostPeekSkipsUnprovisioned(t *testing.T) {
+	m := &HostManager{Dir: t.TempDir()}
+	msg := platform.Message{Platform: "telegram", ChatID: 7}
+	if _, ok := m.Peek(msg); ok {
+		t.Fatal("unprovisioned workspace should miss")
+	}
+	root, err := m.Ensure(context.Background(), msg)
+	if err != nil {
+		t.Fatal(err)
+	}
+	got, ok := m.Peek(msg)
+	if !ok || got != root {
+		t.Fatalf("peek=%q ok=%v want %q", got, ok, root)
+	}
+	other := platform.Message{Platform: "telegram", ChatID: 8}
+	if _, ok := m.Peek(other); ok {
+		t.Fatal("other chat should miss")
 	}
 }

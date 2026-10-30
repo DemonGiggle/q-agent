@@ -2,10 +2,12 @@ package runtime
 
 import (
 	"context"
+	"fmt"
 	"os"
 	"path/filepath"
 	"strings"
 	"testing"
+	"time"
 
 	"q-agent/internal/platform"
 	"q-agent/internal/telegram"
@@ -98,5 +100,128 @@ func TestSaveFilesTooMany(t *testing.T) {
 	m := platform.Message{Platform: "telegram", ChatID: 1, UserID: 1, Text: "many", Files: files}
 	if err := r.saveFiles(context.Background(), &m); err == nil || !strings.Contains(err.Error(), "maximum") {
 		t.Fatalf("expected limit error, got %v", err)
+	}
+}
+
+func TestClearInboxDirAge(t *testing.T) {
+	dir := t.TempDir()
+	now := time.Now()
+	oldFile := filepath.Join(dir, "old.txt")
+	newFile := filepath.Join(dir, "new.txt")
+	if err := os.WriteFile(oldFile, []byte("old"), 0600); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(newFile, []byte("new"), 0600); err != nil {
+		t.Fatal(err)
+	}
+	oldTime := now.Add(-25 * time.Hour)
+	if err := os.Chtimes(oldFile, oldTime, oldTime); err != nil {
+		t.Fatal(err)
+	}
+	sub := filepath.Join(dir, "sub")
+	if err := os.Mkdir(sub, 0700); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(sub, "inner.txt"), []byte("x"), 0600); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Chtimes(sub, oldTime, oldTime); err != nil {
+		t.Fatal(err)
+	}
+	removed, _ := clearInboxDir(dir, now, inboxMaxAge)
+	if removed != 2 {
+		t.Fatalf("removed=%d, want 2 (old file + old dir)", removed)
+	}
+	if _, err := os.Stat(oldFile); !os.IsNotExist(err) {
+		t.Fatal("old file not removed")
+	}
+	if _, err := os.Stat(sub); !os.IsNotExist(err) {
+		t.Fatal("old dir not removed")
+	}
+	if _, err := os.Stat(newFile); err != nil {
+		t.Fatalf("new file should survive: %v", err)
+	}
+	if _, err := os.Stat(dir); err != nil {
+		t.Fatalf("inbox dir itself must survive: %v", err)
+	}
+}
+
+func TestClearInboxDirMissing(t *testing.T) {
+	if removed, freed := clearInboxDir(filepath.Join(t.TempDir(), "nope"), time.Now(), inboxMaxAge); removed != 0 || freed != 0 {
+		t.Fatalf("missing dir should be no-op, got %d/%d", removed, freed)
+	}
+}
+
+type peekWorkspace struct {
+	roots map[string]string
+}
+
+func (w *peekWorkspace) Ensure(_ context.Context, m platform.Message) (string, error) {
+	return w.roots[m.WorkspaceKey()], nil
+}
+
+func (w *peekWorkspace) Peek(m platform.Message) (string, bool) {
+	root, ok := w.roots[m.WorkspaceKey()]
+	if !ok {
+		return "", false
+	}
+	return root, true
+}
+
+func TestSweepInboxSkipsBusyAndMissing(t *testing.T) {
+	r, _, _ := fixture(t)
+	base := t.TempDir()
+	var n int
+	mkroot := func() string {
+		n++
+		rootfs := filepath.Join(base, fmt.Sprintf("ws%d", n), "rootfs")
+		if err := os.MkdirAll(filepath.Join(rootfs, "workspace", "inbox"), 0700); err != nil {
+			t.Fatal(err)
+		}
+		return rootfs
+	}
+	rootIdle := mkroot()
+	rootBusy := mkroot()
+	// Chat 1 idle with an expired file, chat 2 busy with an expired file,
+	// chat 3 recorded but never provisioned (Peek miss).
+	idle := platform.Message{Platform: "telegram", ChatID: 11, UserID: 11}
+	busy := platform.Message{Platform: "telegram", ChatID: 22, UserID: 22}
+	missing := platform.Message{Platform: "telegram", ChatID: 33, UserID: 33}
+	for _, m := range []platform.Message{idle, busy, missing} {
+		if err := r.Store.RecordChat(m, time.Now()); err != nil {
+			t.Fatal(err)
+		}
+	}
+	r.Workspaces = &peekWorkspace{roots: map[string]string{
+		idle.WorkspaceKey():  rootIdle,
+		busy.WorkspaceKey():  rootBusy,
+		// missing intentionally absent to exercise the Peek-miss path.
+	}}
+	old := time.Now().Add(-25 * time.Hour)
+	for _, root := range []string{rootIdle, rootBusy} {
+		p := filepath.Join(inboxDirForRoot(root), "stale.txt")
+		if err := os.WriteFile(p, []byte("stale"), 0600); err != nil {
+			t.Fatal(err)
+		}
+		if err := os.Chtimes(p, old, old); err != nil {
+			t.Fatal(err)
+		}
+	}
+	r.mu.Lock()
+	if r.active == nil {
+		r.active = map[string]task{}
+	}
+	ctx, cancel := context.WithCancel(context.Background())
+	_ = ctx
+	r.active[busy.WorkspaceKey()] = task{cancel: cancel}
+	r.mu.Unlock()
+	if err := r.sweepInbox(context.Background()); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := os.Stat(filepath.Join(inboxDirForRoot(rootIdle), "stale.txt")); !os.IsNotExist(err) {
+		t.Fatal("idle inbox should be cleared")
+	}
+	if _, err := os.Stat(filepath.Join(inboxDirForRoot(rootBusy), "stale.txt")); err != nil {
+		t.Fatalf("busy inbox must survive to next run: %v", err)
 	}
 }

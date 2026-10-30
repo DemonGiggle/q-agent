@@ -159,6 +159,18 @@ func (r *Runtime) StartScheduler(ctx context.Context) error {
 			r.digestLoop(digestCtx)
 		}()
 	}
+	// Inbox cleanup always runs, even with memory disabled, so uploads never
+	// accumulate. It shares the memory digest schedule for a single daily
+	// maintenance window.
+	{
+		inboxCtx, inboxCancel := context.WithCancel(ctx)
+		r.inboxCancel = inboxCancel
+		r.inboxDone = make(chan struct{})
+		go func() {
+			defer close(r.inboxDone)
+			r.inboxLoop(inboxCtx)
+		}()
+	}
 	if r.Config.Proactive.Enabled {
 		proactiveCtx, proactiveCancel := context.WithCancel(ctx)
 		r.proactiveCancel = proactiveCancel

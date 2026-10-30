@@ -2,8 +2,6 @@
 
 <img src="docs/assets/logo.jpg" alt="q-agent logo" width="240" />
 
-# q-agent
-
 ### Your own AI agent. Right inside Telegram.
 
 Ask questions, work with files, and schedule tasks — without leaving the chat.

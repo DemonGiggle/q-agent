@@ -202,6 +202,15 @@ func (r *Runtime) Handle(ctx context.Context, m platform.Message) error {
 		m.PhotoIDs = nil
 		m.Text += "\n\n[Attached image(s) are available for this task only; resend them if needed in a later task.]"
 	}
+	// Generic files (documents, video, audio, voice, animation) are saved to
+	// the chat workspace inbox before busy routing so follow-ups keep them.
+	if len(m.Files) > 0 && !strings.HasPrefix(m.Text, "/") {
+		if err := r.saveFiles(ctx, &m); err != nil {
+			return r.reply(m, err.Error()+". Please resend it.")
+		}
+	} else {
+		m.Files = nil
+	}
 	r.mu.Lock()
 	if r.active == nil {
 		r.active = map[string]task{}

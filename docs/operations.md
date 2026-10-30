@@ -406,7 +406,13 @@ recoverable `human input unavailable` observation.
 
 Photos: send a photo with a caption (`@your_bot` in groups) as model input.
 Needs a vision-capable model; up to 10 MB per image, binary never stored in
-history. Albums and document-uploaded images are not supported.
+history.
+
+Files: send a document, video, audio, voice, or animation with a caption saying
+what to do. Files are saved to `inbox/` in the chat workspace and persist
+across tasks; reference them as `inbox/<name>` or `/workspace/inbox/<name>`.
+Up to 5 files per message, 20 MB each, 100 MB per chat inbox. Image documents
+double as vision input. Albums arrive as separate messages.
 
 ## 5. State, logs, backups
 

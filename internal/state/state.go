@@ -304,6 +304,7 @@ func (s *Store) queueWithPhotos(route platform.Message, parts []string, photos [
 	route.Text = ""
 	route.Images = nil
 	route.PhotoIDs = nil
+	route.Files = nil
 	route.ReplyTo = nil
 	id := fmt.Sprintf("%s:%d%s", route.Platform, route.UpdateID, suffix)
 	for _, r := range s.outbox {

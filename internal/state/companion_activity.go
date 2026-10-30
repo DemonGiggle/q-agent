@@ -148,7 +148,7 @@ func (s *Store) QueueCompanion(key, id, hash, draft string, route platform.Messa
 		for j := range copyParts {
 			copyParts[j] = s.policy.Text(redaction.Remote, copyParts[j])
 		}
-		route.Text, route.Images, route.PhotoIDs, route.ReplyTo = "", nil, nil, nil
+		route.Text, route.Images, route.PhotoIDs, route.Files, route.ReplyTo = "", nil, nil, nil, nil
 		runs[i].Reply = &Reply{ID: id, Route: route, Parts: copyParts}
 		runs[i].SentAt, runs[i].Finished = time.Now(), time.Now()
 		runs[i].Result, runs[i].Detail = "queued", "awaiting delivery"

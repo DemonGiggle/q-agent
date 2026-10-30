@@ -11,6 +11,7 @@ type Message struct {
 	// Input-only: never persist Telegram file IDs or binary image data in routes.
 	PhotoIDs     []string    `json:"-"`
 	Images       []llm.Image `json:"-"`
+	Files        []File      `json:"-"`
 	Platform     string      `json:"platform"`
 	ChatID       int64       `json:"chat_id"`
 	TopicID      int64       `json:"topic_id,omitempty"`
@@ -23,6 +24,17 @@ type Message struct {
 	// ReplyTo is input-only context. The runtime folds it into the user prompt
 	// before saving history; delivery and schedule routes must not persist it.
 	ReplyTo *ReplyContext `json:"-"`
+}
+
+// File is an input-only generic attachment (document, video, audio, voice,
+// video note, animation). FileID is Telegram-only and never persisted;
+// after download the runtime saves bytes into the chat workspace inbox and
+// folds the workspace-relative path into Text.
+type File struct {
+	FileID string `json:"-"`
+	Name   string `json:"-"`
+	Mime   string `json:"-"`
+	Size   int64  `json:"-"`
 }
 
 type ReplyContext struct {

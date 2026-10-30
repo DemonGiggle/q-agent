@@ -70,7 +70,7 @@ Full rules in [operations](docs/operations.md#3-talking-to-the-bot).
 - Web: `web_search` (DuckDuckGo, no key), `web_fetch` (text-only, no JS/login).
 - Schedules: one-time reminders and daily/weekly agent tasks by asking; list/delete in chat.
 - Memory: short-term context per topic plus nightly notes per chat (`/memory`, `/forget`).
-- Photos: image + caption input for vision-capable models.
+- Photos & files: image + caption input for vision models; documents, video, audio, voice saved to `inbox/` (5 files, 20 MB each, 100 MB per chat).
 - Interactive sessions: PTY/pipe process sessions (`shell` + `process`), incl. login flows.
 - Control: live `Working…` progress, steer running tasks with follow-up text, `/cancel`, `/new`.
 - Console: guided `models` / `config` menus plus script-friendly `--json` actions.
@@ -109,7 +109,7 @@ privacy via BotFather and mention the bot.
 | `/new`, `/cancel` | Fresh conversation · stop the running task |
 | `/update`, `/restart` | Admin-only service update/restart |
 
-Full behavior — addressing, photos, steering, schedules, memory, admin setup —
+Full behavior — addressing, photos & files, steering, schedules, memory, admin setup —
 is in [talking to the bot](docs/operations.md#3-talking-to-the-bot).
 
 ## Command line

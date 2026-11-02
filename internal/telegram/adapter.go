@@ -159,14 +159,26 @@ func Normalize(update Update, bot User) (platform.Message, bool) {
 	if m.Reply != nil {
 		files = append(files, messageFiles(m.Reply)...)
 	}
-	if !addressed || text == "" && len(photos) == 0 && len(files) == 0 {
+	replyHasText := false
+	if m.Reply != nil {
+		replyText := m.Reply.Text
+		if strings.TrimSpace(replyText) == "" {
+			replyText = m.Reply.Caption
+		}
+		if strings.TrimSpace(replyText) != "" {
+			replyHasText = true
+		}
+	}
+	if !addressed || text == "" && len(photos) == 0 && len(files) == 0 && !replyHasText {
 		return platform.Message{}, false
 	}
 	if text == "" {
 		if len(photos) > 0 {
 			text = "Describe the attached image."
-		} else {
+		} else if len(files) > 0 {
 			text = "Process the attached file(s)."
+		} else if replyHasText {
+			text = "Please respond to the quoted message."
 		}
 	}
 	// /new and /cancel with a mention in place of a command target.

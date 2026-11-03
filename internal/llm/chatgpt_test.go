@@ -16,11 +16,22 @@ func writeChatGPTOAuth(t *testing.T, access, refresh, account string, expires ti
 	t.Helper()
 	dir := t.TempDir()
 	path := filepath.Join(dir, "oauth.json")
+	saved := expires.Add(-time.Hour)
 	data, _ := json.Marshal(map[string]any{
-		"access_token":  access,
-		"refresh_token": refresh,
-		"expires_at":    expires.Unix(),
-		"account_id":    account,
+		"email":             "user@example.com",
+		"issuer":            "https://auth.openai.com",
+		"subject":           account,
+		"client_id":         "oaiapp_test123",
+		"ext_agent_host_id": "urn:uuid:host-1",
+		"id_token":          "test-id-token",
+		"access_token":      access,
+		"refresh_token":     refresh,
+		"token_type":        "Bearer",
+		"expires_in":        3600,
+		"scopes":            []string{"openid", "profile", "email", "offline_access", "resource.invoke", "chatgpt.tokens.use.direct"},
+		"saved_at":          saved.UTC().Format(time.RFC3339),
+		"expires_at":        expires.Unix(),
+		"account_id":        account,
 	})
 	if err := os.WriteFile(path, append(data, '\n'), 0600); err != nil {
 		t.Fatal(err)
@@ -31,7 +42,7 @@ func writeChatGPTOAuth(t *testing.T, access, refresh, account string, expires ti
 func TestChatGPTCodexRequestContract(t *testing.T) {
 	oauthPath := writeChatGPTOAuth(t, "test-access", "test-refresh", "acct-1", time.Now().Add(time.Hour))
 	var gotBody map[string]json.RawMessage
-	var gotAccount, gotAuth string
+	var gotAuth string
 	var gotPath string
 	client := doerFunc(func(request *http.Request) (*http.Response, error) {
 		// #24: Complete best-effort warms the catalog before /responses.
@@ -41,7 +52,9 @@ func TestChatGPTCodexRequestContract(t *testing.T) {
 		}
 		gotPath = request.URL.Path
 		gotAuth = request.Header.Get("Authorization")
-		gotAccount = request.Header.Get("ChatGPT-Account-Id")
+		if acct := request.Header.Get("ChatGPT-Account-Id"); acct != "" {
+			t.Errorf("SIWC Responses must not send ChatGPT-Account-Id, got %q", acct)
+		}
 		var body []byte
 		if request.Body != nil {
 			body, _ = io.ReadAll(request.Body)
@@ -90,9 +103,6 @@ func TestChatGPTCodexRequestContract(t *testing.T) {
 	if gotAuth != "Bearer test-access" {
 		t.Fatalf("auth = %q", gotAuth)
 	}
-	if gotAccount != "acct-1" {
-		t.Fatalf("account header = %q", gotAccount)
-	}
 }
 
 func TestChatGPT401RefreshesOnceWithStaleReuse(t *testing.T) {
@@ -107,7 +117,7 @@ func TestChatGPT401RefreshesOnceWithStaleReuse(t *testing.T) {
 		// Token endpoint.
 		if strings.Contains(request.URL.String(), "auth.openai.com") {
 			calls++
-			body := `{"access_token":"fresh-access","refresh_token":"r2","expires_in":3600,"account_id":"acct-1"}`
+			body := `{"access_token":"fresh-access","refresh_token":"r2","expires_in":3600,"scope":"openid profile email offline_access resource.invoke chatgpt.tokens.use.direct","id_token":"new-id"}`
 			return &http.Response{StatusCode: 200, Status: "200 OK", Header: make(http.Header), Body: io.NopCloser(strings.NewReader(body))}, nil
 		}
 		if request.Header.Get("Authorization") == "Bearer stale-access" {
@@ -140,10 +150,15 @@ func TestChatGPT401RefreshesOnceWithStaleReuse(t *testing.T) {
 
 func TestChatGPTModelsCodexCatalog(t *testing.T) {
 	oauthPath := writeChatGPTOAuth(t, "test-access", "test-refresh", "acct-1", time.Now().Add(time.Hour))
-	var gotURL, gotAccount string
+	var gotURL string
 	client := doerFunc(func(request *http.Request) (*http.Response, error) {
 		gotURL = request.URL.String()
-		gotAccount = request.Header.Get("ChatGPT-Account-Id")
+		if acct := request.Header.Get("ChatGPT-Account-Id"); acct != "" {
+			t.Errorf("SIWC must not send ChatGPT-Account-Id, got %q", acct)
+		}
+		if !strings.Contains(gotURL, "https://api.openai.com/v1/models") {
+			t.Errorf("catalog URL must be SIWC endpoint, got %q", gotURL)
+		}
 		body := `{"models":[{"slug":"gpt-5.6-codex","display_name":"Codex","visibility":"list"},{"slug":"hidden-1","display_name":"Hidden","visibility":"hidden"},{"slug":"","display_name":"Empty","visibility":"list"}]}`
 		return &http.Response{StatusCode: 200, Status: "200 OK", Header: make(http.Header), Body: io.NopCloser(strings.NewReader(body))}, nil
 	})
@@ -162,11 +177,8 @@ func TestChatGPTModelsCodexCatalog(t *testing.T) {
 	if len(models) != 1 || models[0] != "gpt-5.6-codex" {
 		t.Fatalf("models = %v, want [gpt-5.6-codex]", models)
 	}
-	if !strings.Contains(gotURL, "client_version=") {
-		t.Fatalf("catalog URL missing client_version: %q", gotURL)
-	}
-	if gotAccount != "acct-1" {
-		t.Fatalf("account header = %q, want acct-1", gotAccount)
+	if strings.Contains(gotURL, "client_version=") {
+		t.Fatalf("SIWC catalog must not send client_version: %q", gotURL)
 	}
 }
 

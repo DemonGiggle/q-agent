@@ -11,7 +11,8 @@ configuration (default `~/.config/q-agent/config.toml`). `q-agent --help` and
 | `serve` | Run the bot in the foreground | [Setup](operations.md#1-setup) |
 | `models` | Review and change providers/models, guided or scripted | [Console guide](console.md#models) |
 | `config` | Show, edit, and validate settings | [Console guide](console.md#other-settings) |
-| `login chatgpt` | Connect a ChatGPT subscription via OAuth | See `chatgpt` comments in [example configuration](../config.example.toml) |
+| `login chatgpt` | Connect a ChatGPT subscription via Sign in with ChatGPT (127.0.0.1 loopback, plan scopes) | See `chatgpt` comments in [example configuration](../config.example.toml) |
+| `logout chatgpt` | Revoke the ChatGPT session and clear stored tokens | — |
 | `service install`, `service print` | Install or preview the systemd user unit | [systemd deployment](systemd.md#install) |
 | `image build` | Build the Debian base image for sandbox mode | [Host vs sandbox](operations.md#2-how-tools-run-host-vs-sandbox) |
 | `update` | Install the latest GitHub Release over the current binary | [Upgrading](operations.md#6-upgrading) |

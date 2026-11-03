@@ -37,17 +37,24 @@ thinking = ""
 # model = "YOUR_OPENCODE_MODEL"
 # api_key_env = "OPENCODE_GO_API_KEY"
 #
-# ChatGPT subscription (no API key). Run `q-agent login chatgpt` first,
-# then use `q-agent models set-default --provider chatgpt --model gpt-5.6-codex`
-# to make it the default, or `q-agent models add --provider chatgpt --model gpt-5.6-codex`
-# to offer it as an extra via /provider.
+# ChatGPT subscription (no API key) via Sign in with ChatGPT. Run
+# `q-agent login chatgpt` first, then use
+# `q-agent models set-default --provider chatgpt --model gpt-6.1-sol`
+# to make it the default, or `q-agent models add --provider chatgpt --model gpt-6-sol`
+# to offer it as an extra via /provider. Inference uses
+# https://api.openai.com/v1/responses with store:false. Existing Codex-CLI
+# logins (localhost, app_EMoam...) must re-login: this flow uses
+# 127.0.0.1 loopback, dynamic_agent_client registration, and plan scopes.
 # [providers.chatgpt]
-# model = "gpt-5.6-codex"
+# model = "gpt-6.1-sol"
 
-# ChatGPT OAuth file written by `q-agent login chatgpt`. Empty uses the
+# ChatGPT OAuth record written by `q-agent login chatgpt`. Empty uses the
 # default ~/.config/q-agent/chatgpt-oauth.json (0600, owner-only, no symlink).
+# host_path persists the stable ext_agent_host_id; empty uses
+# ~/.config/q-agent/chatgpt-host-id. Sign out with `q-agent logout chatgpt`.
 # [chatgpt]
 # oauth_path = "~/.config/q-agent/chatgpt-oauth.json"
+# host_path = "~/.config/q-agent/chatgpt-host-id"
 
 [telegram]
 token_env = "TELEGRAM_BOT_TOKEN"

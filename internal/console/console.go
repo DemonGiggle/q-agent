@@ -27,6 +27,7 @@ Human menus (require a terminal):
   q-agent models [--config FILE]
   q-agent config [--config FILE]
   q-agent login chatgpt [--config FILE]
+  q-agent logout chatgpt [--config FILE]
 
 Automation (never prompts; --json for machine-readable output):
   q-agent models show [--provider NAME | --all] [--config FILE] [--json]
@@ -78,7 +79,7 @@ func run(args []string, in io.Reader, out, errOut io.Writer, terminal bool) (boo
 		return true, err
 	}
 	group := args[0]
-	if group != "models" && group != "config" && group != "login" {
+	if group != "models" && group != "config" && group != "login" && group != "logout" {
 		return false, nil
 	}
 	c := &console{in: bufio.NewReader(in), out: out, errOut: errOut, terminal: terminal, path: config.DefaultPath}
@@ -93,6 +94,14 @@ func run(args []string, in io.Reader, out, errOut io.Writer, terminal bool) (boo
 		}
 		// Login is always interactive; it never has a menu or JSON mode.
 		return true, c.login(rest)
+	}
+	if group == "logout" {
+		if len(rest) > 0 && (rest[0] == "--help" || rest[0] == "-h") {
+			_, err := fmt.Fprint(out, Help)
+			return true, err
+		}
+		// Logout is always interactive; it never has a menu or JSON mode.
+		return true, c.logout(rest)
 	}
 	if len(rest) > 0 && (rest[0] == "--help" || rest[0] == "-h" ||
 		(len(rest) == 2 && (rest[1] == "--help" || rest[1] == "-h"))) {

@@ -7,18 +7,18 @@ import (
 	"fmt"
 	"io"
 	"net/http"
-	"net/url"
 	"strings"
 	"time"
 
 	"q-agent/internal/chatgptoauth"
 )
 
-// chatGPTBaseURL is the subscription (Codex) endpoint, not the platform
-// api.openai.com API. The Responses wire format is reused with a Codex
-// request contract: top-level instructions, store:false, and the
-// ChatGPT-Account-Id header.
-const chatGPTBaseURL = "https://chatgpt.com/backend-api/codex"
+// chatGPTBaseURL is the Sign in with ChatGPT plan-usage endpoint. Per
+// https://developers.openai.com/siwc/token-sharing-open-source/models-and-inference
+// inference uses the public Responses API, not ChatGPT backend-api endpoints.
+// The Responses wire format uses top-level instructions, store:false, and
+// stream:true with the OAuth access token as Bearer.
+const chatGPTBaseURL = "https://api.openai.com/v1"
 
 type chatGPTProvider struct {
 	baseURL    string
@@ -41,10 +41,8 @@ func newChatGPT(config Config) (Provider, error) {
 // Name returns the registry name.
 func (p *chatGPTProvider) Name() string { return "chatgpt" }
 
-// codexClientVersion is sent as ?client_version=... on the Codex catalog
-// request, mirroring the Codex reference client (codex-rs/codex-api
-// endpoint/models.rs). The server uses it for compatibility gating
-// (minimal_client_version).
+// codexClientVersion versions the local catalog cache key. It is no longer
+// sent as a query parameter: the SIWC models endpoint is plain GET /v1/models.
 const codexClientVersion = "1.0.0"
 
 // Models lists models from the Codex catalog (models[].slug). It preserves
@@ -81,7 +79,7 @@ func (p *chatGPTProvider) RefreshCatalog(ctx context.Context) (CodexCatalogSnaps
 	if err != nil {
 		return CodexCatalogSnapshot{}, err
 	}
-	cacheKey := codexCatalogCacheKey(p.baseURL, creds.AccountID, p.tokensPath, codexClientVersion)
+	cacheKey := codexCatalogCacheKey(p.baseURL, creds.Identity(), p.tokensPath, codexClientVersion)
 	if cached, ok := getCodexCatalogCache(cacheKey, time.Now()); ok && !cached.Stale {
 		return cached, nil
 	}
@@ -122,22 +120,11 @@ func (e *codexAuthError) Error() string { return e.msg }
 // return *codexAuthError.
 func (p *chatGPTProvider) fetchCatalogWithCreds(ctx context.Context, creds chatgptoauth.Tokens, cacheKey string) (CodexCatalogSnapshot, error) {
 	catalogURL := p.baseURL + "/models"
-	if u, err := url.Parse(catalogURL); err == nil {
-		q := u.Query()
-		q.Set("client_version", codexClientVersion)
-		u.RawQuery = q.Encode()
-		catalogURL = u.String()
-	} else {
-		catalogURL += "?client_version=" + codexClientVersion
-	}
 	req, err := http.NewRequestWithContext(ctx, http.MethodGet, catalogURL, nil)
 	if err != nil {
 		return CodexCatalogSnapshot{}, err
 	}
 	req.Header.Set("Authorization", "Bearer "+creds.AccessToken)
-	if creds.AccountID != "" {
-		req.Header.Set("ChatGPT-Account-Id", creds.AccountID)
-	}
 	resp, err := p.client.Do(req)
 	if err != nil {
 		return CodexCatalogSnapshot{}, err
@@ -243,7 +230,7 @@ func codexWarmContext(parent context.Context) (context.Context, context.CancelFu
 // completion deadline. The actual /responses POST always uses the original
 // context. On warm-up timeout the caller proceeds with stale/Unknown.
 func (p *chatGPTProvider) ensureCatalogWithCreds(ctx context.Context, creds chatgptoauth.Tokens) {
-	cacheKey := codexCatalogCacheKey(p.baseURL, creds.AccountID, p.tokensPath, codexClientVersion)
+	cacheKey := codexCatalogCacheKey(p.baseURL, creds.Identity(), p.tokensPath, codexClientVersion)
 	if cached, ok := getCodexCatalogCache(cacheKey, time.Now()); ok && !cached.Stale {
 		return
 	}
@@ -276,7 +263,7 @@ func (p *chatGPTProvider) ensureCatalogWithCreds(ctx context.Context, creds chat
 // fall back to the legacy endpoint-scoped scan.
 func (p *chatGPTProvider) CachedCatalog() (CodexCatalogSnapshot, bool) {
 	if toks, err := chatgptoauth.Load(p.tokensPath); err == nil {
-		if snap, ok := p.cachedCatalogExact(toks.AccountID); ok {
+		if snap, ok := p.cachedCatalogExact(toks.Identity()); ok {
 			return snap, true
 		}
 		return CodexCatalogSnapshot{}, false
@@ -404,7 +391,7 @@ func capabilityForSnapshot(snap CodexCatalogSnapshot, model string) ThinkingCapa
 // switches must not reuse the previous account's levels. No snapshot returns
 // Unknown without source.
 func (p *chatGPTProvider) capabilityForCreds(creds chatgptoauth.Tokens, model string) ThinkingCapability {
-	key := codexCatalogCacheKey(p.baseURL, creds.AccountID, p.tokensPath, codexClientVersion)
+	key := codexCatalogCacheKey(p.baseURL, creds.Identity(), p.tokensPath, codexClientVersion)
 	if snap, ok := getCodexCatalogCache(key, time.Now()); ok {
 		return capabilityForSnapshot(snap, model)
 	}
@@ -422,9 +409,6 @@ func (p *chatGPTProvider) doCodexWithCapability(ctx context.Context, input Reque
 	}
 	req.Header.Set("Content-Type", "application/json")
 	req.Header.Set("Authorization", "Bearer "+creds.AccessToken)
-	if creds.AccountID != "" {
-		req.Header.Set("ChatGPT-Account-Id", creds.AccountID)
-	}
 	resp, err := p.client.Do(req)
 	if err != nil {
 		return Response{}, err
@@ -444,7 +428,7 @@ func (p *chatGPTProvider) doCodex(ctx context.Context, input Request, creds chat
 	return p.doCodexWithCapability(ctx, input, creds, p.ThinkingCapability(input.Model), onText)
 }
 
-// Complete sends a Codex Responses request with the OAuth access token,
+// Complete sends a Responses request with the SIWC OAuth access token,
 // refreshing once on 401 before giving up. The 401 retry reuses the
 // serialized RefreshAndSaveWithStale path so a concurrent refresh is not
 // spent twice on the same rotating refresh token.
@@ -460,6 +444,9 @@ func (p *chatGPTProvider) Complete(ctx context.Context, input Request, onText St
 	creds, err := chatgptoauth.GetValidTokens(ctx, p.client, p.tokensPath)
 	if err != nil {
 		return Response{}, err
+	}
+	if !creds.HasPlanScope() {
+		return Response{}, fmt.Errorf("chatgpt plan use isn't enabled (missing chatgpt.tokens.use.direct); run `q-agent login chatgpt` again and approve plan usage")
 	}
 	p.ensureCatalogWithCreds(ctx, creds)
 	cap := p.capabilityForCreds(creds, input.Model)

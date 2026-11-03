@@ -201,6 +201,11 @@ func (s *Store) CommitExchange(route platform.Message, sourceID string, c Conver
 	}
 	// Immutable policy work outside the global lock.
 	cleaned := s.cleanConversation(c)
+	// Only the newest pair is journaled: c carries the full bounded history and
+	// each task commits once with a unique sourceID. Cross-turn causality is
+	// merged at digest time by batching multiple sources into one distill call.
+	// The transcript comes from the raw last pair: cleaning bounds history and
+	// may drop pairs, but the journal must never lose the new exchange.
 	base := strings.ToValidUTF8(s.policy.Text(redaction.Persistence, sourceTranscript(c.Pairs[len(c.Pairs)-1])), "�")
 	at = at.UTC()
 	// Pre-truncate with a placeholder sequence; the in-lock check below only
@@ -251,6 +256,63 @@ func (s *Store) CommitExchange(route platform.Message, sourceID string, c Conver
 		return err
 	}
 	return s.recoverExchange(key, &mem)
+}
+
+// recordFailureTranscript appends a journal source for a failed/interrupted
+// task (issue #34 pit 5) without touching prompt history. History for the
+// failure is already saved by the caller via Save; this only ensures the
+// lesson is digestible tomorrow.
+func (s *Store) recordFailureLocked(route platform.Message, sourceID, userText, errText string, at time.Time) error {
+	key := route.WorkspaceKey()
+	mem, err := s.loadMemory(key)
+	if err != nil {
+		return err
+	}
+	if err := s.recoverExchange(key, &mem); err != nil {
+		return err
+	}
+	if mem.LastSourceID == sourceID {
+		return nil
+	}
+	userText = strings.ToValidUTF8(s.policy.Text(redaction.Persistence, userText), "�")
+	errText = strings.ToValidUTF8(s.policy.Text(redaction.Persistence, errText), "�")
+	if len(errText) > 2000 {
+		errText = UTF8Prefix(errText, 2000)
+	}
+	base := "user: " + userText + "\nassistant: outcome:failed lesson:" + errText + "\n"
+	stored, original, final := truncateSourceTranscript(base, sourceID, route.TopicID, at.UTC(), 0)
+	mem.NextSequence++
+	if final > MaxSourceBytes {
+		var orig int
+		stored, orig, final = truncateSourceTranscript(base, sourceID, route.TopicID, at.UTC(), mem.NextSequence)
+		original = orig
+	}
+	event := SourceEvent{Sequence: mem.NextSequence, ID: sourceID, Topic: route.TopicID, At: at.UTC(), Transcript: stored}
+	if original > MaxSourceBytes {
+		mem.Loss.TruncatedEvents++
+		omissionEncoded := encodedSize(sourceOmission) - 2
+		if omissionEncoded < 0 {
+			omissionEncoded = 0
+		}
+		mem.Loss.TruncatedBytes += uint64(original - final + omissionEncoded)
+	}
+	mem.Pending = append(mem.Pending, event)
+	mem.Route = platform.Message{Platform: route.Platform, ChatID: route.ChatID, UserID: route.UserID}
+	s.boundPending(key, &mem, mem.Route)
+	mem.LastSourceID = sourceID
+	return s.writeMemory(key, mem)
+}
+
+// RecordFailure journals a failed task so the next digest can distill a
+// lesson. sourceID must be unique per attempt (caller appends a suffix).
+// It never fails the chat path: persistence errors are returned for logging.
+func (s *Store) RecordFailure(route platform.Message, sourceID, userText, errText string, at time.Time) error {
+	if sourceID == "" {
+		return fmt.Errorf("failure requires source identity")
+	}
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	return s.recordFailureLocked(route, sourceID, userText, errText, at)
 }
 
 func encodedSize(value any) int {

@@ -242,7 +242,13 @@ func TestSteerRacingFinalAnswerStartsAfterCommitAndKeepsBothReplies(t *testing.T
 	close(sink.release)
 	req := request(t, p)
 	texts := userTexts(req)
-	if len(texts) != 2 || texts[0] != "original" || strings.Count(texts[1], previous) != 1 || !strings.HasSuffix(texts[1], "late follow-up\n\nlate detail") || req.Messages[2].Content != "first final" {
+	assistantFinal := false
+	for _, m := range req.Messages {
+		if m.Role == "assistant" && m.Content == "first final" {
+			assistantFinal = true
+		}
+	}
+	if len(texts) != 2 || texts[0] != "original" || strings.Count(texts[1], previous) != 1 || !strings.HasSuffix(texts[1], "late follow-up\n\nlate detail") || !assistantFinal {
 		t.Fatalf("committed history: %+v", req.Messages)
 	}
 	p.responses <- steerResponse{text: "second final"}

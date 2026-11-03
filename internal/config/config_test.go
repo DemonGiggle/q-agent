@@ -34,7 +34,7 @@ allowed_groups = [-1001234567890]
 	if c.Sandbox.Enabled || c.Provider.APIKeyEnv != "OPENCODE_GO_API_KEY" || c.StateDir != filepath.Join(dir, "state") || c.Limits.MaxSteps != 8 || c.TaskDuration() != 5*time.Minute || c.InteractiveTaskDuration() != 15*time.Minute || c.ShellDuration() != 2*time.Minute {
 		t.Fatalf("%+v", c)
 	}
-	if !c.Memory.Enabled || c.Memory.DigestAt != "00:00" || c.Memory.MaxBytes != 8192 || c.Memory.MaxContextBytes != 2000 || c.Memory.MaxPendingBytes != 4<<20 {
+	if !c.Memory.Enabled || c.Memory.DigestAt != "00:00" || c.Memory.MaxBytes != 32768 || c.Memory.MaxContextBytes != 6000 || c.Memory.MaxPendingBytes != 4<<20 {
 		t.Fatalf("memory defaults: %+v", c.Memory)
 	}
 	if len(c.Telegram.AllowedUsers) != 1 || len(c.Telegram.AllowedGroups) != 1 || c.Telegram.AllowedGroups[0] != -1001234567890 {

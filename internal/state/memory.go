@@ -26,10 +26,46 @@ type ChatRecord struct {
 	LastSeen time.Time `json:"last_seen"`
 }
 
-// MemoryEntry is one dated digest note for a chat/group.
+// MemoryEntry is one dated digest note for a chat/group. Kind/Keys/
+// Importance/Pinned/ExpiresAt are additive (Phase 1, issue #34) and stay
+// omitempty so files written before structuring keep loading unchanged.
 type MemoryEntry struct {
-	Date string `json:"date"`
-	Text string `json:"text"`
+	Date       string     `json:"date"`
+	Text       string     `json:"text"`
+	Kind       string     `json:"kind,omitempty"`
+	Keys       []string   `json:"keys,omitempty"`
+	Importance int        `json:"importance,omitempty"`
+	Pinned     bool       `json:"pinned,omitempty"`
+	ExpiresAt  *time.Time `json:"expires_at,omitempty"`
+}
+
+// EffectiveImportance returns the 1-5 importance used for eviction and
+// retrieval. Legacy notes without a score default to medium (3) so they are
+// neither protected like pinned notes nor dropped like trivia.
+func (e MemoryEntry) EffectiveImportance() int {
+	if e.Importance < 1 {
+		return 3
+	}
+	if e.Importance > 5 {
+		return 5
+	}
+	return e.Importance
+}
+
+// Expired reports whether the note passed its optional expiry.
+func (e MemoryEntry) Expired(now time.Time) bool {
+	return e.ExpiresAt != nil && !now.Before(*e.ExpiresAt)
+}
+
+// PinnedCount counts notes protected from compaction/eviction.
+func (m ChatMemory) PinnedCount() int {
+	n := 0
+	for _, e := range m.Entries {
+		if e.Pinned {
+			n++
+		}
+	}
+	return n
 }
 
 const MemoryVersion = 1
@@ -286,14 +322,47 @@ func (s *Store) PrepareMemory(mem ChatMemory, maxBytes int) ChatMemory {
 func (s *Store) boundMemory(mem *ChatMemory, maxBytes int) {
 	for i := range mem.Entries {
 		mem.Entries[i].Text = strings.ToValidUTF8(s.policy.Text(redaction.Persistence, mem.Entries[i].Text), "�")
+		for j, k := range mem.Entries[i].Keys {
+			mem.Entries[i].Keys[j] = s.policy.Text(redaction.Persistence, k)
+		}
+		if mem.Entries[i].Kind != "" {
+			mem.Entries[i].Kind = NormalizeMemoryKind(mem.Entries[i].Kind)
+		}
 	}
 	if maxBytes <= 0 {
 		maxBytes = s.memoryLimits.MaxBytes
 	}
+	now := time.Now()
+	if len(mem.Entries) > 0 {
+		kept := mem.Entries[:0]
+		for _, e := range mem.Entries {
+			if e.Expired(now) {
+				mem.Loss.DroppedNotes++
+				mem.Loss.DroppedNoteBytes += uint64(len(e.Text))
+				continue
+			}
+			kept = append(kept, e)
+		}
+		// Clear the tail so dropped entries do not linger via the backing array.
+		for i := len(kept); i < len(mem.Entries); i++ {
+			mem.Entries[i] = MemoryEntry{}
+		}
+		mem.Entries = kept
+	}
+	// Evict low-signal notes first: expired already went, then non-pinned by
+	// ascending importance, oldest first. Pinned notes are dropped only when
+	// everything left is pinned (hard budget must still hold).
 	for mem.Bytes() > maxBytes && len(mem.Entries) > 1 {
+		victim := -1
+		for i := range mem.Entries {
+			if victim < 0 || evictPriority(mem.Entries[i]) < evictPriority(mem.Entries[victim]) ||
+				(evictPriority(mem.Entries[i]) == evictPriority(mem.Entries[victim]) && i < victim) {
+				victim = i
+			}
+		}
 		mem.Loss.DroppedNotes++
-		mem.Loss.DroppedNoteBytes += uint64(len(mem.Entries[0].Text))
-		mem.Entries = mem.Entries[1:]
+		mem.Loss.DroppedNoteBytes += uint64(len(mem.Entries[victim].Text))
+		mem.Entries = append(mem.Entries[:victim], mem.Entries[victim+1:]...)
 	}
 	if mem.Bytes() > maxBytes && len(mem.Entries) == 1 {
 		old := len(mem.Entries[0].Text)
@@ -303,6 +372,79 @@ func (s *Store) boundMemory(mem *ChatMemory, maxBytes int) {
 	if len(mem.Entries) == 1 && mem.Entries[0].Text == "" {
 		mem.Entries = nil
 	}
+}
+
+// evictPriority orders eviction victims: lower is dropped first. Pinned notes
+// sort far above everything else; otherwise importance decides, so an
+// importance-1 note goes before the oldest importance-3 note.
+func evictPriority(e MemoryEntry) int {
+	if e.Pinned {
+		return 100 + e.EffectiveImportance()
+	}
+	return e.EffectiveImportance()
+}
+
+// NormalizeMemoryKind folds the kind vocabulary; unknown kinds become "fact".
+func NormalizeMemoryKind(kind string) string {
+	switch strings.ToLower(strings.TrimSpace(kind)) {
+	case "preference":
+		return "preference"
+	case "project":
+		return "project"
+	case "decision":
+		return "decision"
+	case "lesson":
+		return "lesson"
+	case "fact", "":
+		return "fact"
+	default:
+		return "fact"
+	}
+}
+
+// ExtractMemoryKeys derives up to 8 short lookup keys from free text for
+// retrieval. It is intentionally crude (no new dependencies): lowercase
+// alphanumerics, length >= 2, de-duplicated, stop-words dropped.
+func ExtractMemoryKeys(text string) []string {
+	stop := map[string]bool{
+		"the": true, "and": true, "for": true, "with": true, "that": true,
+		"this": true, "from": true, "have": true, "will": true, "user": true,
+		"likes": true, "prefers": true, "using": true, "use": true,
+	}
+	var keys []string
+	seen := map[string]bool{}
+	cur := strings.Builder{}
+	flush := func() {
+		w := strings.ToLower(strings.TrimSpace(cur.String()))
+		cur.Reset()
+		if len(w) < 2 || len(w) > 32 || seen[w] || stop[w] {
+			return
+		}
+		isAlnum := true
+		for _, r := range w {
+			if !(r >= 'a' && r <= 'z' || r >= '0' && r <= '9' || r == '_' || r == '-' || r >= 0x4e00 && r <= 0x9fff) {
+				isAlnum = false
+				break
+			}
+		}
+		if !isAlnum {
+			return
+		}
+		seen[w] = true
+		keys = append(keys, w)
+	}
+	for _, r := range text {
+		if r >= 'a' && r <= 'z' || r >= 'A' && r <= 'Z' || r >= '0' && r <= '9' || r == '_' || r == '-' || r >= 0x4e00 && r <= 0x9fff {
+			cur.WriteRune(r)
+		} else {
+			flush()
+		}
+		if len(keys) >= 8 {
+			break
+		}
+	}
+	flush()
+	return keys
 }
 
 // ClearMemory advances the epoch, invalidating model work already in flight.
@@ -334,11 +476,76 @@ func (s *Store) AppendMemory(key, date, text string, maxBytes int) (ChatMemory, 
 	if err != nil {
 		return mem, err
 	}
-	mem.Entries = append(mem.Entries, MemoryEntry{Date: date, Text: text})
+	mem.Entries = append(mem.Entries, MemoryEntry{Date: date, Text: text, Kind: "fact", Importance: 3, Keys: ExtractMemoryKeys(text)})
 	s.boundMemory(&mem, maxBytes)
 	mem.Revision++
 	err = s.writeMemory(key, mem)
 	return mem, err
+}
+
+// RememberPinned stores a user-confirmed note (via /remember) that compaction
+// and budget eviction must never drop.
+func (s *Store) RememberPinned(key, date, text string, maxBytes int) (ChatMemory, error) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	mem, err := s.loadMemory(key)
+	if err != nil {
+		return mem, err
+	}
+	mem.Entries = append(mem.Entries, MemoryEntry{
+		Date: date, Text: text, Kind: "preference",
+		Keys: ExtractMemoryKeys(text), Importance: 5, Pinned: true,
+	})
+	s.boundMemory(&mem, maxBytes)
+	mem.Revision++
+	err = s.writeMemory(key, mem)
+	return mem, err
+}
+
+// ForgetByKeyword deletes notes whose text or keys fuzzily match the keyword
+// (case-insensitive substring). It returns the removed count.
+func (s *Store) ForgetByKeyword(key, keyword string) (int, error) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	mem, err := s.loadMemory(key)
+	if err != nil {
+		return 0, err
+	}
+	kw := strings.ToLower(strings.TrimSpace(keyword))
+	if kw == "" {
+		return 0, nil
+	}
+	kept := mem.Entries[:0]
+	removed := 0
+	var removedBytes uint64
+	for _, e := range mem.Entries {
+		hit := strings.Contains(strings.ToLower(e.Text), kw)
+		if !hit {
+			for _, k := range e.Keys {
+				if strings.Contains(strings.ToLower(k), kw) {
+					hit = true
+					break
+				}
+			}
+		}
+		if hit {
+			removed++
+			removedBytes += uint64(len(e.Text))
+			continue
+		}
+		kept = append(kept, e)
+	}
+	if removed == 0 {
+		return 0, nil
+	}
+	for i := len(kept); i < len(mem.Entries); i++ {
+		mem.Entries[i] = MemoryEntry{}
+	}
+	mem.Entries = kept
+	mem.Loss.DroppedNotes += uint64(removed)
+	mem.Loss.DroppedNoteBytes += removedBytes
+	mem.Revision++
+	return removed, s.writeMemory(key, mem)
 }
 
 // WorkspaceRoute rebuilds a sendable route for a registered workspace. Topic

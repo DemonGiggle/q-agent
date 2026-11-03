@@ -421,7 +421,9 @@ func (r *Runtime) buildProactiveInput(chat state.ChatRecordWithKey) (string, boo
 	}
 	mem, err := r.Store.LoadMemory(key)
 	if err == nil && len(mem.Entries) > 0 {
-		for _, e := range mem.Entries {
+		// Share the task-prompt ranking (issue #34 Phase 2): one scoring
+		// function, not two truncation logics.
+		for _, e := range rankMemoryEntries(mem.Entries, nil) {
 			if b.Len() >= proactiveInputCap {
 				break
 			}

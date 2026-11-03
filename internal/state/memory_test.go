@@ -1,6 +1,8 @@
 package state
 
 import (
+	"os"
+	"path/filepath"
 	"testing"
 	"time"
 
@@ -118,5 +120,111 @@ func TestLoadMemoryMissing(t *testing.T) {
 	}
 	if len(mem.Entries) != 0 || mem.Bytes() != 0 {
 		t.Fatalf("nonempty: %+v", mem)
+	}
+}
+
+func TestBoundMemoryDropsLowImportanceFirst(t *testing.T) {
+	s, err := Open(t.TempDir(), nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	key := "workspace"
+	if _, err := s.AppendMemory(key, "2026-10-17", "old important", 1<<20); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := s.AppendMemory(key, "2026-10-18", "x", 1<<20); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := s.AppendMemory(key, "2026-10-19", "newest medium", 1<<20); err != nil {
+		t.Fatal(err)
+	}
+	s.mu.Lock()
+	loaded, err := s.loadMemory(key)
+	if err != nil {
+		s.mu.Unlock()
+		t.Fatal(err)
+	}
+	loaded.Entries[0].Importance, loaded.Entries[0].Kind = 5, "preference"
+	loaded.Entries[1].Importance, loaded.Entries[1].Kind = 1, "fact"
+	loaded.Entries[2].Importance = 3
+	// Budget fits the oldest and the newest, but not all three.
+	s.boundMemory(&loaded, len("old important")+len("newest medium"))
+	got := loaded
+	s.mu.Unlock()
+	if len(got.Entries) != 2 {
+		t.Fatalf("entries=%+v", got.Entries)
+	}
+	for _, e := range got.Entries {
+		if e.Text == "x" {
+			t.Fatalf("trivia survived instead of newest: %+v", got.Entries)
+		}
+	}
+}
+
+func TestRememberPinnedSurvivesBudgetAndForgetByKeyword(t *testing.T) {
+	s, err := Open(t.TempDir(), nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	key := "workspace"
+	if _, err := s.RememberPinned(key, "2026-10-19", "user prefers concise answers", 1<<20); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := s.AppendMemory(key, "2026-10-19", "some trivia note here", 1<<20); err != nil {
+		t.Fatal(err)
+	}
+	mem, err := s.LoadMemory(key)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if mem.PinnedCount() != 1 {
+		t.Fatalf("pinned=%+v", mem.Entries)
+	}
+	// Tight budget: trivia must go before the pinned note.
+	s.mu.Lock()
+	loaded, _ := s.loadMemory(key)
+	s.boundMemory(&loaded, len("user prefers concise answers"))
+	s.mu.Unlock()
+	if len(loaded.Entries) != 1 || !loaded.Entries[0].Pinned {
+		t.Fatalf("pinned dropped: %+v", loaded.Entries)
+	}
+	removed, err := s.ForgetByKeyword(key, "concise")
+	if err != nil || removed != 1 {
+		t.Fatalf("forget=%d err=%v", removed, err)
+	}
+	mem, _ = s.LoadMemory(key)
+	if len(mem.Entries) != 1 || mem.PinnedCount() != 0 {
+		t.Fatalf("after forget: %+v", mem.Entries)
+	}
+	if n, _ := s.ForgetByKeyword(key, "nothing matches this"); n != 0 {
+		t.Fatalf("spurious removal: %d", n)
+	}
+}
+
+func writeLegacyMemory(dir, key, data string) error {
+	if err := os.MkdirAll(filepath.Join(dir, "memory"), 0700); err != nil {
+		return err
+	}
+	return os.WriteFile(filepath.Join(dir, "memory", key+".json"), []byte(data), 0600)
+}
+
+func TestLegacyMemoryFileLoadsWithDefaults(t *testing.T) {
+	dir := t.TempDir()
+	if err := writeLegacyMemory(dir, "workspace", `{"version":1,"epoch":1,"entries":[{"date":"2026-10-01","text":"legacy note"}]}`); err != nil {
+		t.Fatal(err)
+	}
+	s, err := Open(dir, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	mem, err := s.LoadMemory("workspace")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(mem.Entries) != 1 || mem.Entries[0].Text != "legacy note" {
+		t.Fatalf("legacy: %+v", mem.Entries)
+	}
+	if mem.Entries[0].EffectiveImportance() != 3 || mem.Entries[0].Pinned {
+		t.Fatalf("defaults: %+v", mem.Entries[0])
 	}
 }

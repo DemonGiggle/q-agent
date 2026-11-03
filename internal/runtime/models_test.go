@@ -215,7 +215,8 @@ func TestModelRevisionPreventsResurrectingOtherTopicHistory(t *testing.T) {
 	}
 	r.Wait()
 	// Only system + new user; old A history must not return after A -> B -> A.
-	if len(p.requests[1].Messages) != 2 {
+	// (Long-term memory injections are excluded from the count.)
+	if len(nonMemoryMessages(p.requests[1].Messages)) != 2 {
 		t.Fatalf("stale history resurrected: %+v", p.requests[1].Messages)
 	}
 }

@@ -180,6 +180,9 @@ func (r *Runtime) Handle(ctx context.Context, m platform.Message) error {
 	if fields := strings.Fields(m.Text); len(fields) > 0 && fields[0] == "/companion" {
 		return r.companionCommand(m, fields)
 	}
+	if fields := strings.Fields(m.Text); len(fields) > 0 && (fields[0] == "/memory" || fields[0] == "/remember" || fields[0] == "/forget") {
+		return r.memoryCommand(m, fields)
+	}
 	if m.Text == "/models" {
 		return r.showModels(ctx, m)
 	}
@@ -226,7 +229,7 @@ func (r *Runtime) Handle(ctx context.Context, m platform.Message) error {
 			default:
 			}
 			// Fall through to normal cancellation below.
-		} else if m.Text == "/status" || m.Text == "/help" || m.Text == "/memory" || m.Text == "/forget" {
+		} else if m.Text == "/status" || m.Text == "/help" || m.Text == "/memory" || m.Text == "/forget" || strings.HasPrefix(m.Text, "/memory ") || strings.HasPrefix(m.Text, "/remember") || strings.HasPrefix(m.Text, "/forget ") {
 			// Let the switch handle these without consuming the prompt.
 		} else if extend, isDecision := parseShellDecision(m.Text); isDecision {
 			delete(r.shellPrompts, key)
@@ -259,7 +262,7 @@ func (r *Runtime) Handle(ctx context.Context, m platform.Message) error {
 		return r.reply(m, text)
 	case "/help":
 		r.mu.Unlock()
-		return r.reply(m, "**q-agent commands**\n`/update` — Install the latest stable Release and restart (private admin only).\n`/restart` — Restart the systemd user service (private admin only).\n`/status` — Show current runtime, process RSS memory, and safe settings (no model call).\n`/models` — Choose a model for this chat.\n`/provider` — Show providers or choose this chat's provider (`/provider <name|default>` also works).\n`/model` <id|default> — Set this chat’s model.\n`/think` <level|auto|default> — Set this chat’s thinking.\n`/max_steps` [number|default] — Show or set this chat’s model-step limit.\n`/settings` [reset] — Show settings or restore defaults.\n`/memory` — Show this chat’s long-term memory.\n`/forget` — Clear notes and pending memory sources across all topics; running tasks may add new sources when they finish.\n`/help` — Show this help.\n`/new` — Clear this topic's conversation; keep workspace.\n`/cancel` — Cancel this topic's active task.\n\nSend a message to start a task. Send follow-up text in the same topic to steer your running task. `/cancel` stops the task and pending follow-ups.\n\nIn groups, address commands to @your_bot (e.g. `/status@your_bot`), mention the bot, or reply to it.")
+		return r.reply(m, "**q-agent commands**\n`/update` — Install the latest stable Release and restart (private admin only).\n`/restart` — Restart the systemd user service (private admin only).\n`/status` — Show current runtime, process RSS memory, and safe settings (no model call).\n`/models` — Choose a model for this chat.\n`/provider` — Show providers or choose this chat's provider (`/provider <name|default>` also works).\n`/model` <id|default> — Set this chat’s model.\n`/think` <level|auto|default> — Set this chat’s thinking.\n`/max_steps` [number|default] — Show or set this chat’s model-step limit.\n`/settings` [reset] — Show settings or restore defaults.\n`/memory` — Show this chat’s long-term memory.\n`/remember <note>` — Pin one lasting fact so compaction never drops it.\n`/forget [keyword]` — Clear notes and pending memory sources across all topics (keyword deletes matches only); running tasks may add new sources when they finish.\n`/help` — Show this help.\n`/new` — Clear this topic's conversation; keep workspace.\n`/cancel` — Cancel this topic's active task.\n\nSend a message to start a task. Send follow-up text in the same topic to steer your running task. `/cancel` stops the task and pending follow-ups.\n\nIn groups, address commands to @your_bot (e.g. `/status@your_bot`), mention the bot, or reply to it.")
 	case "/memory":
 		text := r.memoryShow(m)
 		r.mu.Unlock()
@@ -412,7 +415,7 @@ func (r *Runtime) run(ctx context.Context, m platform.Message, runID string) boo
 						}
 						r.mu.Unlock()
 					}()
-					result, err := agent.Run(ctx, provider, &scheduleTools{base: baseTools, runtime: r, owner: m}, r.memoryHistory(m, conversation), m.Text, options)
+					result, err := agent.Run(ctx, provider, &scheduleTools{base: baseTools, runtime: r, owner: m}, r.memoryHistoryWithQuery(m, conversation, m.Text), m.Text, options)
 					answer = result.Answer
 					runErr = err
 					if err == nil {
@@ -443,6 +446,16 @@ func (r *Runtime) run(ctx context.Context, m platform.Message, runID string) boo
 								r.report(fmt.Errorf("save continuation context: %w", saveErr))
 							} else {
 								continuationSaved = true
+							}
+						}
+						// Journal the failure as a digestible lesson (issue #34 pit 5).
+						if r.Config.Memory.Enabled {
+							failureID := fmt.Sprintf("update:%s:%d:failed", m.Platform, m.UpdateID)
+							if runID != "" {
+								failureID = "schedule:" + runID + ":failed"
+							}
+							if ferr := r.Store.RecordFailure(m, failureID, m.Text, err.Error(), time.Now()); ferr != nil {
+								r.report(fmt.Errorf("record failure memory: %w", ferr))
 							}
 						}
 					}

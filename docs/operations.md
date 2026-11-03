@@ -232,7 +232,7 @@ address the bot (`/status@your_bot`, `/status @your_bot`, or reply with
 | `/model <id\|default>` | Same as above as text command. |
 | `/think <level\|auto\|default>` | Thinking override for this chat. |
 | `/max_steps [n\|default]`, `/settings [reset]` | Step limit / show or clear all overrides. |
-| `/memory`, `/forget` | Show memory state / clear notes + pending sources for the whole chat. Files, history, schedules stay. |
+| `/memory`, `/remember <note>`, `/forget [keyword]` | Show memory state / pin one lasting fact / clear notes + pending sources for the whole chat (keyword deletes matches only). Files, history, schedules stay. |
 | `/companion` | Quiet check-ins for this chat: on by default, `/companion` shows buttons, `/companion on\|off\|default\|status` as text. Chat-wide. |
 | `/new` | Clear this topic's history. Files and schedules stay. |
 | `/cancel` | Stop this topic's task. Finished side effects stay. |
@@ -276,13 +276,20 @@ chat's current provider, mode, files, and history.
   in the same topic. It is reference data, not a replay queue: completed
   calls are never re-dispatched automatically.
 - Long-term (`[memory]`, on by default): successful tasks journal a source
-  event per chat (shared across topics, tools/reasoning excluded). A daily
-  sweep (server-local midnight by default) distills sources into notes
-  (default 8 KiB text, 2 KiB injected context, 4 MiB pending journal).
-  Overflow evicts oldest-first with counters; `/memory` shows budgets,
-  pending age, retries, and loss counts. `/forget` clears everything memory
-  related. Corrupt memory files are quarantined aside so one bad chat
-  cannot block startup.
+  event per chat (shared across topics, tools/reasoning excluded); failed
+  tasks journal a one-line `outcome:failed` lesson. A daily sweep
+  (server-local midnight by default) distills sources into structured notes
+  (kind/importance/keys/pinned), merging duplicates instead of appending.
+  A backlog of 20+ pending sources (or 512 KiB) also triggers a daytime
+  digest without waiting for midnight.
+  Defaults: 32 KiB note text, 6 KiB injected context, 4 MiB pending journal.
+  The task prompt sees consolidated notes plus the 2 newest unconsolidated
+  sources (marked as not yet digested), ranked by kind/importance/query
+  match/recency. Overflow evicts lowest-importance first (pinned notes
+  survive); `/memory` shows budgets, pinned count, pending age, retries, and
+  loss counts. `/remember` pins one fact; `/forget <keyword>` deletes
+  matches, bare `/forget` clears everything memory related. Corrupt memory
+  files are quarantined aside so one bad chat cannot block startup.
 
 ### Companion: quiet check-ins, on by default
 

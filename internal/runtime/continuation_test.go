@@ -73,7 +73,8 @@ func TestFailedTaskContinuesAfterRestartWithoutReplayingTools(t *testing.T) {
 				if len(tools.calls) != 1 {
 					t.Fatalf("tools=%v", tools.calls)
 				}
-				// Failure itself is durable before its reply; it is not a successful memory fact.
+				// Failure itself is durable before its reply. It journals a
+				// digestible lesson (issue #34 pit 5), not a success fact.
 				reopened, err := state.Open(r.Config.StateDir, nil)
 				must(t, err)
 				r.Store = reopened
@@ -84,7 +85,11 @@ func TestFailedTaskContinuesAfterRestartWithoutReplayingTools(t *testing.T) {
 				}
 				mem, err := r.Store.LoadMemory(route.WorkspaceKey())
 				must(t, err)
-				if len(mem.Pending) != 0 {
+				if memory {
+					if len(mem.Pending) != 1 || !strings.Contains(mem.Pending[0].Transcript, "outcome:failed") || !strings.Contains(mem.Pending[0].Transcript, "ORIGINAL_REQUEST") {
+						t.Fatalf("failure lesson not journaled: %+v", mem.Pending)
+					}
+				} else if len(mem.Pending) != 0 {
 					t.Fatal("failure recorded as successful long-term source")
 				}
 				if !strings.Contains(strings.Join(drainReplies(t, r.Store), "\n"), "Task context saved") {

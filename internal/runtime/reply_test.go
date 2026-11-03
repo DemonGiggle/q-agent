@@ -56,7 +56,13 @@ func TestTelegramReplyContextWithoutRecentHistoryAndAfterRestart(t *testing.T) {
 			r.Store = reopened
 			must(t, r.Handle(context.Background(), input(2, tc.chat, tc.topic, 1, "Continue.")))
 			r.Wait()
-			if p.requests[1].Messages[1].Content != prompt.Content {
+			found := false
+			for _, m := range p.requests[1].Messages {
+				if m.Content == prompt.Content {
+					found = true
+				}
+			}
+			if !found {
 				t.Fatalf("reply context lost after restart: %+v", p.requests[1].Messages)
 			}
 		})
@@ -101,7 +107,8 @@ func TestTelegramReplyCommandsKeepTheirMeaning(t *testing.T) {
 	}
 	must(t, r.Handle(ctx, telegramReply(t, 3, -10, 7, "supergroup", "Explain that again.", "earlier answer")))
 	r.Wait()
-	if len(p.requests) != 2 || len(p.requests[1].Messages) != 2 || !strings.Contains(p.requests[1].Messages[1].Content, "earlier answer") {
+	msgs := nonMemoryMessages(p.requests[1].Messages)
+	if len(p.requests) != 2 || len(msgs) != 2 || !strings.Contains(msgs[1].Content, "earlier answer") {
 		t.Fatalf("explicit reply lost context after /new: %+v", p.requests)
 	}
 }

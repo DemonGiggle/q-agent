@@ -8,6 +8,7 @@ import (
 	"q-agent/internal/llm"
 	"q-agent/internal/platform"
 	"q-agent/internal/state"
+	"strings"
 	"sync"
 	"testing"
 	"time"
@@ -89,6 +90,20 @@ func fixture(t *testing.T) (*Runtime, *testWorkspace, *testProvider) {
 func input(id, chat, topic, user int64, text string) platform.Message {
 	return platform.Message{Platform: "telegram", UpdateID: id, ChatID: chat, TopicID: topic, UserID: user, Text: text}
 }
+
+// nonMemoryMessages strips long-term memory injections (consolidated notes and
+// unconsolidated same-day journal) so working-history assertions stay focused
+// on prompt history rather than the memory feature's prompt shape.
+func nonMemoryMessages(msgs []llm.Message) []llm.Message {
+	var out []llm.Message
+	for _, m := range msgs {
+		if m.Role == "system" && (strings.Contains(m.Content, "Long-term memory") || strings.Contains(m.Content, "Unconsolidated notes")) {
+			continue
+		}
+		out = append(out, m)
+	}
+	return out
+}
 func TestAuthorizationAndDuplicates(t *testing.T) {
 	r, w, _ := fixture(t)
 	// Private spoof, unlisted private, unlisted group, and private spoof command.
@@ -128,7 +143,7 @@ func TestTopicHistoryNewAndRestart(t *testing.T) {
 		}
 		r.Wait()
 	}
-	if len(p.requests[1].Messages) != 2 || len(p.requests[2].Messages) != 4 {
+	if len(nonMemoryMessages(p.requests[1].Messages)) != 2 || len(nonMemoryMessages(p.requests[2].Messages)) != 4 {
 		t.Fatal("topic history mixed")
 	}
 	m := input(4, -10, 7, 1, "/new")

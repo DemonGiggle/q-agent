@@ -32,3 +32,21 @@ func TestLoginRejectsJSON(t *testing.T) {
 		t.Fatalf("expected --json error, got %v", err)
 	}
 }
+
+func TestLogoutRequiresTerminal(t *testing.T) {
+	path := consoleConfig(t)
+	var out bytes.Buffer
+	_, err := run([]string{"logout", "chatgpt", "--config", path}, noRead{t}, &out, &out, false)
+	if err == nil || !strings.Contains(err.Error(), "terminal") {
+		t.Fatalf("expected terminal error, got %v", err)
+	}
+}
+
+func TestLogoutRejectsUnknownTarget(t *testing.T) {
+	path := consoleConfig(t)
+	var out bytes.Buffer
+	handled, err := run([]string{"logout", "github", "--config", path}, strings.NewReader(""), &out, &out, true)
+	if !handled || err == nil || !strings.Contains(err.Error(), "usage") {
+		t.Fatalf("handled=%v err=%v", handled, err)
+	}
+}

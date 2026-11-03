@@ -22,12 +22,12 @@ func TestAccountSwitchSamePathRefreshes(t *testing.T) {
 	client := doerFunc(func(r *http.Request) (*http.Response, error) {
 		if strings.Contains(r.URL.Path, "/models") {
 			modelsCalls++
-			acct := r.Header.Get("ChatGPT-Account-Id")
+			auth := r.Header.Get("Authorization")
 			var body string
-			switch acct {
-			case "acct-A":
+			switch auth {
+			case "Bearer a":
 				body = `{"models":[{"slug":"model-a","visibility":"list","supported_reasoning_levels":[{"effort":"low"}]}]}`
-			case "acct-B":
+			case "Bearer b":
 				body = `{"models":[{"slug":"model-b","visibility":"list","supported_reasoning_levels":[{"effort":"high"}]}]}`
 			default:
 				body = `{"models":[]}`
@@ -53,7 +53,11 @@ func TestAccountSwitchSamePathRefreshes(t *testing.T) {
 	}
 	// Same path now stores account B.
 	if err := chatgptoauth.Save(oauthPath, chatgptoauth.Tokens{
-		AccessToken: "b", RefreshToken: "r",
+		Email: "user@example.com", Issuer: "https://auth.openai.com", Subject: "acct-B",
+		ClientID: "oaiapp_test123", ExtAgentHostID: "urn:uuid:host-1", IDToken: "id-b",
+		AccessToken: "b", RefreshToken: "r", TokenType: "Bearer", ExpiresIn: 3600,
+		Scopes:    []string{"openid", "profile", "email", "offline_access", "resource.invoke", "chatgpt.tokens.use.direct"},
+		SavedAt:   time.Now().UTC().Format(time.RFC3339),
 		ExpiresAt: time.Now().Add(time.Hour).Unix(), AccountID: "acct-B",
 	}); err != nil {
 		t.Fatal(err)

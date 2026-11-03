@@ -39,9 +39,12 @@ type Provider struct {
 
 // ChatGPT holds the console-only ChatGPT OAuth settings. OAuthPath points at
 // the JSON file written by `q-agent login chatgpt`. Empty means the default
-// ~/.config/q-agent/chatgpt-oauth.json. It never holds a secret itself.
+// ~/.config/q-agent/chatgpt-oauth.json. HostPath persists the stable
+// ext_agent_host_id (urn:uuid:...); empty means the default
+// ~/.config/q-agent/chatgpt-host-id. Neither field ever holds a secret itself.
 type ChatGPT struct {
 	OAuthPath string `toml:"oauth_path"`
+	HostPath  string `toml:"host_path"`
 }
 type Telegram struct {
 	TokenEnv      string  `toml:"token_env"`
@@ -348,6 +351,12 @@ func Load(path string) (Config, error) {
 	}
 	if c.ChatGPT.OAuthPath != "" {
 		c.ChatGPT.OAuthPath, err = absolute(c.ChatGPT.OAuthPath, filepath.Dir(path))
+		if err != nil {
+			return c, err
+		}
+	}
+	if c.ChatGPT.HostPath != "" {
+		c.ChatGPT.HostPath, err = absolute(c.ChatGPT.HostPath, filepath.Dir(path))
 		if err != nil {
 			return c, err
 		}

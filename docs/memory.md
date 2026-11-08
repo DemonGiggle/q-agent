@@ -3,250 +3,332 @@
 How q-agent **remembers** discussions, **distills** them into notes, and
 **retrieves** them for the next task.
 
-Companion doc: [Context composition](context.md) — exact prompt order,
-tool placement, and cache guidance. Related guides:
-[Configuration & operations](operations.md) ·
-[Console guide](console.md) ·
-[Example configuration](../config.example.toml).
+Companion doc: [Context composition](context.md) — what order everything
+is sent to the model in, where the toolbox sits, and how caching works.
+Related guides: [Configuration & operations](operations.md) ·
+[Console guide](console.md) · [Example configuration](../config.example.toml).
+
+## 0. Words we use in these two docs (read this first)
+
+These definitions avoid implementation names on purpose. Once you know
+these five words, the rest reads plainly.
+
+**Chat:** one Telegram conversation. A private DM with the bot is one chat.
+One group is another chat.
+
+**Topic:** one thread inside a chat. Telegram forum topics and message
+threads map directly to this.
+
+```text
+What you see in Telegram            What q-agent keeps
+
+Private DM with the bot       -->   one chat, always topic 0
+Plain group, no threads       -->   one chat, everyone shares topic 0
+Forum group with threads      -->   one chat, many topics:
+  General                     -->     topic 1, its own short history
+  Lunch, thread 7             -->     topic 7, its own short history
+  Drama, thread 8             -->     topic 8, its own short history
+  Message with no thread id   -->     topic 0, the main thread
+```
+
+File names on disk are hashes, so you cannot tell which file is which
+chat from the name. Content is still fully separated per topic.
+
+**Turn (one question plus one answer):** one message from you plus the one
+final reply the bot sent back for it. This is the unit we count. It is
+not one model call.
+
+```text
+you send one message
+        |
+        v
+bot works for a while,
+may call tools many times,
+may talk to the model many times
+        |
+        v
+bot sends one final reply in Telegram
+        |
+        v
+saved as ONE turn:
+  question = what you sent
+  answer   = that final reply only
+```
+
+What is inside a turn, and what is not:
+
+- Saved: your wording, the final reply wording.
+- Not saved: tool outputs, web pages, reasoning steps, intermediate drafts.
+- Follow-ups while the bot is still working do not open a new turn. They
+  are attached to the same turn and only the final reply is kept.
+- Commands like /new, /forget, /remember, /model never create a turn.
+  They act immediately and leave history alone.
+
+```text
+Normal, two turns:
+
+  Turn 0: you ask A / bot answers A
+  Turn 1: you ask B / bot answers B
+
+Follow-up while busy, still one turn:
+
+  Turn 0: you ask A + you add "oh also..." / bot answers corrected A
+          ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^   ^^^^^^^^^^^^^^^^^^^^^^
+          kept together                      only this version is kept
+```
+
+**Short-term history:** the last few turns of one topic, replayed word
+for word. One topic has one short history.
+
+**Long-term memory:** distilled notes for a whole chat, shared by all its
+topics. Two parts:
+
+- journal: raw day-to-day records, not yet summarized, may contain noise.
+- distilled notes: short facts the nightly summarizer already cleaned up.
+
+**Live taps:** recent group chatter the bot overheard without being
+mentioned, kept 12 hours only. Used only to decide whether to check in,
+never as task history. Private chats are never tapped.
 
 ## 1. The three memories at a glance
 
-q-agent keeps three separate stores. They differ in scope, lifetime, and
-who reads them.
+Same data folder, three jobs. They differ in scope, lifetime, and who
+reads them.
 
 ```text
                     +-------------------------------+
-                    |        state_dir/             |
+                    |          data folder          |
                     +---------------+---------------+
                                     |
         +---------------------------+---------------------------+
         |                           |                           |
 +-------v---------+        +--------v--------+        +---------v---------+
 | SHORT-TERM      |        | LONG-TERM       |        | LIVE TAPS         |
-| per TOPIC       |        | per CHAT        |        | per CHAT          |
-| conversations/  |        | memory/         |        | recent.json       |
-|  <hash>.json    |        |  <hash>.json    |        | companion runs    |
+| one per topic   |        | one per chat    |        | one per chat      |
+| past turns      |        | journal + notes |        | overheard chatter |
 +-------+---------+        +--------+--------+        +---------+---------+
         |                           |                           |
-  topic history               chat digest notes          group chatter
-  12 pairs / 32 KiB           32 KiB notes               200 msgs / 32 KiB
-  exact replay                distilled facts            12h window
+  last 12 turns               cleaned facts               last 200 msgs
+  or 32 KB, exact             32 KB notes                 12 hour window
+  replay                      shared by topics            group only
         |                           |                           |
         +-----------+---------------+-------------+-------------+
                     |                             |
-            TASK prompt                     COMPANION decider
-            (agent.Run)                     (proactive sweep)
+              TASK request                  CHECK-IN decider
+              (doing your job)              (should I say hi?)
 ```
 
-| Store | Scope | What it holds | Budget (default) | Read by |
+| Store | Lives where | What it holds | Default limit | Who reads it |
 | --- | --- | --- | --- | --- |
-| Short-term `Conversation` | one topic (`chat:topic`) | ordered `user / assistant` pairs, steers, bounded interrupted entry | `MaxPairs=12`, `MaxHistoryBytes=32 KiB` | every task, verbatim |
-| Long-term `ChatMemory` | whole chat (all topics share it) | `Entries[]` distilled notes + `Pending[]` unconsolidated journal | notes `max_bytes=32 KiB`, injected `max_context_bytes=6 KiB`, journal `max_pending_bytes=4 MiB` | every task (ranked), companion decider |
-| Recent taps + companion runs | whole chat | tapped group messages (arrival time), last check-in drafts | taps `200 msgs / 32 KiB`, `recent_window=12h`; proactive input `6 KiB` | companion decider only (plus 3 recent check-ins as task reference in topic 0) |
+| Short-term | one topic | past questions + final answers in order, plus follow-ups and one bounded interruption note | last 12 turns, 32 KB total | every task, replayed exactly |
+| Long-term | whole chat, shared by topics | distilled facts + not-yet-summarized journal | 32 KB notes on disk, 6 KB sent to model per task, 4 MB journal cap | every task (ranked) and check-in decider |
+| Recent taps + check-in runs | whole chat | overheard group messages with arrival time, last check-in drafts | 200 msgs / 32 KB, 12 h window, 6 KB decider input | check-in decider only (plus last 3 check-ins shown as reference in topic 0) |
 
-Scope rule: `/new` clears **one topic's** short-term history.
-`/forget` clears the **whole chat's** long-term memory. Files, schedules,
-and other topics are untouched by either.
+Scope rule: /new clears **one topic's** short history. /forget clears
+the **whole chat's** long-term notes and journal. Files, schedules, and
+other topics are untouched by either.
 
-On-disk layout (under `state_dir`, outside every sandbox mount):
+On disk, under the data folder and outside every sandbox mount:
 
 ```text
-state_dir/
-  conversations/<workspace-hash>.json   # provider identity + bounded pairs
-  memory/<workspace-hash>.json          # entries + pending + cursor + notices
-  recent.json                           # tapped group messages per chat
-  companion_activity.json               # check-in runs, drafts, rate evidence
-  chats.json                            # workspace registry for sweeps
+data-folder/
+  conversations/<hash>.json   # which model + last turns of one topic
+  memory/<hash>.json          # notes + journal + position + notices
+  recent.json                 # overheard group messages per chat
+  companion_activity.json     # check-in runs, drafts, rate proof
+  chats.json                  # chat registry for background sweeps
 ```
 
-## 2. How a discussion is remembered (write path)
+Hash names are intentional: you cannot guess the chat from the file name.
 
-Every completed task journals **once**. The journal is durable and
-independent of the prompt history that was sent.
+## 2. How a discussion is remembered
+
+Every finished task is journaled **once**. The journal is durable and
+separate from the short history that is replayed next time.
 
 ```text
- user sends message (topic T, chat C)
+you send a message (in topic T, chat C)
         |
         v
- agent runs tools, produces answer
+bot works, uses tools, produces a final reply
         |
-        +-- success --> CommitExchange(C, sourceID, conversation)
-        |                 transcript = "user: <last user>\nassistant: <answer>"
-        |                 tools / reasoning EXCLUDED, only ordered text
-        |                 appended to Pending[] as SourceEvent{seq, id, topic, at}
+        +-- success --> journal one record:
+        |                 "you: <your last message>
+        |                  bot: <final reply>"
+        |                 tool outputs excluded, only final wording
         |
-        +-- failure --> RecordFailure(C, sourceID, userText, errText)
-                          transcript = "user: ...\nassistant: outcome:failed lesson:..."
-                          one line, so the next digest can distill a lesson
+        +-- failure --> journal one short lesson line:
+                          "you: ...
+                           bot: failed, lesson: ..."
+                          so the next summary can learn from it
 ```
 
 Notes:
 
-- Transcript is persistence-redacted, then truncated to `MaxSourceBytes`
-  (256 KiB encoded). Oversize counts toward `Loss.TruncatedEvents/Bytes`.
-- `CommitExchange` and the conversation `Save` happen in one memory write
-  (history intent + source commit). A crash after `Accept` but before commit
-  loses both the reply and its source; redelivery is dropped as duplicate,
-  so memory inherits that at-most-once window.
-- The digest later acknowledges **exactly a prefix** of the snapshot
-  (`CommitDigest`). Concurrent appends survive; `forget`, eviction, or an
-  overlapping digest invalidates the snapshot with `ErrStaleDigest` and the
-  round is retried fairly.
-- Disabled memory (`[memory] enabled=false`) keeps old notes for `/memory`
-  and `/forget` but stops new journaling and sweeps.
+- Records are cleaned for secrets, then cut if huge (256 KB encoded
+  cap). Oversize counts toward a loss counter you can see in /memory.
+- Short history save and journal append happen together. A crash between
+  accepting your message and finishing the save can lose both the reply
+  and its journal line; a redelivered duplicate is dropped, so memory
+  inherits that at-most-once window.
+- The later summarizer confirms exactly a prefix of what it saw.
+  Records added during summarizing survive. If notes were cleared,
+  trimmed, or another summary overlapped, that round is discarded and
+  retried fairly.
+- Turned-off memory keeps old notes visible for /memory and /forget but
+  stops new journaling and background summaries.
 
-Manual pins bypass the journal:
+Manual pins skip the journal entirely:
 
 ```text
-/remember <note>  -->  MemoryEntry{Date: today, Text: note,
-                                 Importance: 5, Pinned: true}
+/remember buy oat milk on Fridays  -->  pinned note, today, top importance
+                                       never auto-deleted, never compressed away
 ```
 
-## 3. How notes are distilled (digest pipeline)
+## 3. How notes are distilled
 
-A background loop distills `Pending[]` into `Entries[]`. Two triggers feed
-the same worker:
+A background loop turns the raw journal into short notes. Two triggers
+feed the same worker:
 
 ```text
-              +------------------ minute tick ------------------+
-              |                                                 |
-  nightly sweep (digest_at, default 00:00)     daytime fast path
-  enrolls every chat with Pending>0            Pending>=20 sources
-                                               OR PendingBytes>=512 KiB
-              |                                                 |
-              +------------------ digestWork -------------------+
+              +------------------ every minute ------------------+
+              |                                                  |
+  nightly sweep at midnight         daytime fast path when busy
+  takes every chat with               20+ unsummarized records
+  anything unsummarized               OR 512 KB of journal
+              |                                                  |
+              +------------------ same worker -------------------+
                                       |
                                       v
-                              digestPass (fair round-robin,
-                              one chat per pass, stale retry)
+                              one chat at a time,
+                              round-robin so no chat starves,
+                              retry if notes changed underneath
                                       |
                                       v
-                          digestBatch: pack complete sources
-                          in sequence order, cap 20 KiB transcript
-                          (one oversize source -> labeled fragments)
+                              pack records in order,
+                              up to ~20 KB of text per batch
+                              (one giant record is split
+                               into labeled fragments)
                                       |
                                       v
-                          distill(): one LLM call per batch
-                          system: "Distill a day of chat history ..."
-                          user:   "Source N (id, topic, time):\n<transcript>"
-                          temp 0.2, chat's provider/model (or [memory.override])
+                              one model call per batch,
+                              low creativity, using this chat's
+                              own model unless overridden:
+                                "summarize a day of chat..."
+                                + "Record N (topic, time): ..."
                                       |
                                       v
-                          parseDistilledNotes: expect JSON array
-                          [{text, kind, keys, importance, expires_at}]
+                              expect back a list of notes,
+                              each with text, kind, search keys,
+                              importance, optional expiry
                                       |
                                       v
-                          merge: dedup by overlap>=2 tokens, update
-                          corrected prefs, drop one-off output,
-                          never repeat secrets
+                              merge: drop duplicates that share
+                              2+ words, update a preference when
+                              corrected, drop one-off outputs,
+                              never repeat secrets
                                       |
                                       v
-                          CommitDigest: Entries+=new, Pending-=acked,
-                          Revision++, Cursor=last seq, queue notice
+                              append new notes, drop confirmed
+                              journal, advance position,
+                              queue a two-line highlight
 ```
 
-The operator sees the result as a two-line highlight delivered from the
-memory outbox (bounded to newest 16 notices); the full notes stay in
-`/memory`.
+You see the result as a two-line highlight from the memory outbox (keeps
+newest 16). Full notes stay in /memory.
 
-Compaction and eviction keep disk bounded (`max_bytes`, default 32 KiB
-note text, cap 1 MiB):
+Keeping disk bounded (default 32 KB of note text, hard cap 1 MB):
 
 ```text
- over budget?
+over budget?
     |
-    +-- first try compactMemory(): keep pinned + newest verbatim,
-    |   compress older notes via one LLM call ("Compress these ..."),
-    |   failure returns input unchanged (eviction still bounds it)
+    +-- first try to compress: keep pinned + newest word for word,
+    |   ask the model to squeeze older notes smaller.
+    |   If that fails, keep going — trimming below still bounds it.
     |
-    +-- then boundMemory(): drop lowest-importance first,
-        pinned never dropped, trim oldest text on UTF-8 boundary
+    +-- then trim: drop least important first,
+        pinned are never dropped, cut oldest text on character boundary
 ```
 
-Corrupt memory files are quarantined aside (`memory.corrupt-<time>.json`)
-so one bad chat cannot block startup.
+A broken memory file is moved aside with a timestamp in the name so one
+bad chat cannot block startup.
 
-## 4. How discussions are retrieved (read path)
+## 4. How discussions are retrieved
 
-Retrieval happens on **every task**, inside
-`memoryHistoryWithQuery()`. Scoring prefers durable, specific, relevant,
-recent notes; display stays chronological so diffs are stable.
+Retrieval happens on **every task**. Scoring prefers durable, specific,
+relevant, recent notes. What is picked is ranked by score, what you see
+is sorted by date so diffs stay stable.
 
-```text
- query = current user text (or last non-empty pair user text)
- tokens = up to 32 lowercase words, len 2..32
-        |
-        v
- score(e):
-   pinned .............. +40
-   kind: preference +10, project +8, decision +5, lesson +4, else +2
-   importance .......... + EffectiveImportance() * 3   (default 3, pin 5)
-   query hit ........... +3 per matching key, +1..+3 for text hits
-   recency ............. +2 if dated within 30 days
-        |
-        v
- rank all entries by (score desc, index desc)
- admit greedily within budget (pending gets 1/3, max 2 KiB)
- sort admitted chronologically (date asc) for display
-```
+The current question is the query. If it is empty, fall back to the last
+non-empty question in history. It is split into up to 32 keywords.
 
-Pending (not-yet-digested) journal is injected alongside, explicitly
-labeled so the model knows it may contain noise:
+Priority order, high to low:
+
+- pinned notes always win by a large margin.
+- kind: preference, then project, then decision, then lesson, then other.
+- importance 1-5 (pins are 5, default is 3), weighted strongly.
+- keyword match: match on search keys beats match on note text.
+- dated within the last 30 days gets a small freshness bonus.
+
+Then: rank everything by score, take what fits the 6 KB send budget
+(journal gets at most one third, up to 2 KB), show taken notes oldest
+first.
+
+Not-yet-summarized journal is sent alongside, explicitly labeled so the
+model knows it may contain noise:
 
 ```text
 Long-term memory for this chat (distilled nightly, newest last):
 - [2026-11-08][preference][!4] prefers oolong tea in the afternoon
-- [2026-11-08][project] qcode deploy on 10.0.0.5, release v0.1.22
+- [2026-11-08][project] deploy on 10.0.0.5, release v0.1.22
 Unconsolidated notes from today (not yet digested, may contain noise):
-- [pending 14:32] user: ... / assistant: ...
+- [pending 14:32] you: ... / bot: ...
 ```
 
-Only the **2 newest** pending sources are injected. When there are no
-distilled entries yet, pending may use the whole budget. Redaction runs
-before allocation, and truncation respects UTF-8 boundaries; a tiny budget
-may inject nothing rather than a misleading partial note.
+Only the **2 newest** journal records are sent. When no distilled notes
+exist yet, journal may use the whole budget. Cleaning runs before
+budgeting, cuts respect character boundaries, and a tiny budget may send
+nothing rather than a misleading half note.
 
-Companion reads the same ranking (`rankMemoryEntries`) plus its own inputs
-(see [context composition](context.md#2-companion-and-proactive-context-separate-path)).
-
+The check-in decider uses the same ranking plus its own inputs (see
+[context composition](context.md#2-companion-and-proactive-context-separate-path)).
 
 ## 5. Commands and budgets cheat sheet
 
 ```text
-/topic history/      per topic, 12 pairs / 32 KiB, /new clears it
-/chat memory/        per chat, shared by topics
-  /memory            show notes + budgets + pending age + retries + loss
-  /remember <note>   pin Importance=5 fact (compaction/eviction-proof)
-  /forget [keyword]  keyword deletes matches, bare clears all memory
+short history ..... one topic, 12 turns / 32 KB, /new clears it
+chat memory ....... whole chat, shared by topics
+  /memory ......... show notes + budgets + journal age + retries + loss
+  /remember <note>  pin one lasting fact, top importance, never auto-dropped
+  /forget [word] .. with a word deletes matches only, bare clears all memory
 ```
 
 ```text
-[memory] max_bytes=32 KiB ......... note text on disk
-[memory] max_context_bytes=6 KiB .. injected memory message
-[memory] max_pending_bytes=4 MiB .. encoded journal cap
-[memory] digest_at=00:00 .......... nightly sweep (timezone=server-local)
-         fast path: >=20 pending OR >=512 KiB, no midnight wait
+[memory] max_bytes=32 KiB ......... note text kept on disk
+[memory] max_context_bytes=6 KiB .. notes sent to the model per task
+[memory] max_pending_bytes=4 MiB .. raw journal cap
+[memory] digest_at=00:00 .......... nightly summary (server local time)
+         fast path: 20+ records OR 512+ KB, no midnight wait
 ```
 
-Companion/proactive budgets (`[proactive]`, taps, sweeps) live in the
+Check-in budgets live in the
 [context composition](context.md#2-companion-and-proactive-context-separate-path)
 doc, next to the decider input they bound.
 
-## 6. Failure and redaction notes
+## 6. Failure and privacy notes
 
-- Failed tasks save a bounded interrupted entry (`<=16 KiB`: request +
-  steering + failure + tool observations) offered to the next follow-up in
-  the **same topic** as reference data, never as a replay queue.
-- Steering merges up to 16 messages / 64 KiB into the next request. Other
-  topics/users cannot inject. Pending steering is in-memory only; a restart
-  drops it.
-- Redaction runs at three boundaries: persistence (journal/disk), remote
-  (every provider request), terminal (logs). Logs carry IDs, counts, and
-  timings, never message text or tool arguments.
-- Trust envelope: untrusted content (tool results, companion context,
-  interrupted observations, web) is wrapped as
-  `{"origin": ..., "trust": "untrusted", "notice": "Reference data only...",
-  "content": ...}` so content cannot forge the surrounding boundary.
+- Failed tasks save one bounded interruption note (up to 16 KB: request
+  + follow-ups + failure + tool observations). It is offered to the next
+  follow-up in the **same topic** as reference, never as a replay queue.
+- Follow-ups merge up to 16 messages / 64 KB into the next request. Other
+  topics or users cannot inject. Unsent follow-ups live only in memory;
+  a restart drops them.
+- Cleaning runs at three edges: when saving to disk, on every model
+  request, and in logs. Logs carry IDs, counts, timings — never message
+  text or tool arguments.
+- Untrusted content (tool results, check-in context, interruption notes,
+  web pages) is labeled as reference-only so it cannot pretend to be a
+  system instruction or a chat command.
 
 See [context composition](context.md) for how these notes and tails are
-ordered in the LLM request, and why stable prefixes cache well.
+ordered in the model request, and why stable beginnings cache well.

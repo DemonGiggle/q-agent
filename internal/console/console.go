@@ -44,7 +44,7 @@ Automation (never prompts; --json for machine-readable output):
                        [--config FILE] [--json]
   q-agent models remove --provider NAME [--config FILE] [--json]
   q-agent models set ... (deprecated alias for set-default)
-  q-agent config show|validate [--config FILE] [--json]
+  q-agent config show|validate|check [--config FILE] [--json]
   q-agent config get KEY [--config FILE] [--json]
   q-agent config set KEY VALUE [--config FILE] [--json]
 
@@ -212,6 +212,38 @@ func (c *console) load() (config.Config, error) {
 	}
 	return cfg, nil
 }
+
+// check runs the offline configuration audit: errors for misused settings,
+// warnings for deprecated settings. It reads the file as-is without
+// migrating it, so deprecated keys are still visible. Warnings alone keep a
+// zero exit; errors print the report and fail.
+func (c *console) check() error {
+	rep := config.Check(c.path)
+	if c.json {
+		if err := c.output(map[string]any{"valid": rep.Valid, "errors": rep.Errors, "warnings": rep.Warnings}); err != nil {
+			return err
+		}
+	} else {
+		for _, e := range rep.Errors {
+			fmt.Fprintf(c.out, "error: %s\n", e)
+		}
+		for _, w := range rep.Warnings {
+			fmt.Fprintf(c.out, "warning: %s\n", w)
+		}
+		switch {
+		case rep.Valid && len(rep.Warnings) == 0:
+			fmt.Fprintln(c.out, "configuration OK")
+		case rep.Valid:
+			fmt.Fprintf(c.out, "check passed with %d warning(s)\n", len(rep.Warnings))
+		default:
+			fmt.Fprintf(c.out, "check failed: %d error(s), %d warning(s)\n", len(rep.Errors), len(rep.Warnings))
+		}
+	}
+	if !rep.Valid {
+		return fmt.Errorf("configuration check failed: %d error(s)", len(rep.Errors))
+	}
+	return nil
+}
 func (c *console) action(group, action string, args []string) error {
 	if group == "models" {
 		switch action {
@@ -255,6 +287,7 @@ func (c *console) action(group, action string, args []string) error {
 	} else {
 		allowed["get"] = 1
 		allowed["validate"] = 0
+		allowed["check"] = 0
 	}
 	count, ok := allowed[action]
 	if !ok {
@@ -262,6 +295,9 @@ func (c *console) action(group, action string, args []string) error {
 	}
 	if len(args) != count {
 		return fmt.Errorf("%s %s expects %d arguments; use --help", group, action, count)
+	}
+	if action == "check" {
+		return c.check()
 	}
 	cfg, err := c.load()
 	if err != nil {

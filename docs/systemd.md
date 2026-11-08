@@ -92,7 +92,8 @@ journalctl --user -u q-agent.service -n 100 --no-pager
 ```
 
 `config validate` checks TOML/settings only — not credentials, allowlists,
-or sandbox readiness. Startup enforces those and logs actionable errors.
+or sandbox readiness. Use `config check` for that offline audit before
+starting. Startup enforces those and logs actionable errors.
 
 The unit restarts on failure after 5s; explicit stops stay stopped.
 A stop sends SIGTERM with up to 30s to shut down. `UMask=0077` keeps new

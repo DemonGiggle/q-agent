@@ -120,6 +120,7 @@ TOML configuration, for example `provider.model`, `sandbox.enabled`, or
 q-agent config show --json
 q-agent config get provider.model --json
 q-agent config validate --json
+q-agent config check --json
 q-agent config set limits.task_timeout 10m
 q-agent config set sandbox.enabled true
 q-agent config set telegram.allowed_users '[123456789]'
@@ -136,6 +137,16 @@ credential sources via `config set` requires clearing the old reference first.
 `config validate` checks file syntax and the same local settings rules as
 startup. It does **not** check network access, credentials, Telegram allowlist
 membership, sandbox dependencies, model availability, or service health.
+
+`config check` goes further without touching the network: it reports misused
+settings as errors (empty Telegram allowlists, missing/unreadable Telegram or
+provider credentials, missing ChatGPT OAuth, malformed `base_url`, a
+`state_dir` that is not a directory, sandbox image/helper readiness) and
+deprecated settings as warnings (`limits.max_tool_calls`, old `approved_*`
+allowlist keys, `thinking = "auto"`/`"default"`, ignored URL userinfo/query).
+Warnings keep a zero exit; errors print `error: ...` lines and fail with a
+non-zero status. With `--json` the report is
+`{"valid":bool,"errors":[...],"warnings":[...]}` on stdout.
 
 ## Saving and visibility
 

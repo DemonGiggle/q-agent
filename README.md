@@ -125,6 +125,7 @@ See the [command line overview](docs/cli.md) for what each command is for.
 | --- | --- |
 | [Command line overview](docs/cli.md) | Every `q-agent` command and where its details live |
 | [Configuration & operations](docs/operations.md) | Providers, credentials, host vs sandbox, tools, schedules, memory, companion, state, upgrades |
+| [Memory & context](docs/memory.md) | How discussions are remembered, retrieved, prompt order, cache guidance |
 | [systemd deployment](docs/systemd.md) | Install, start, sandbox rules, `/restart` & `/update`, removal |
 | [Console guide](docs/console.md) | Guided `models` / `config` menus and script-friendly actions |
 | [Example configuration](config.example.toml) | All settings in one place |

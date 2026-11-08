@@ -1,11 +1,13 @@
-# q-agent Memory & Context Composition
+# q-agent Memory
 
-How q-agent **remembers** discussions, how it **retrieves** them, and in
-what **order** everything is assembled into the LLM request. Order matters:
-stable prefixes cache well, volatile tails do not.
+How q-agent **remembers** discussions, **distills** them into notes, and
+**retrieves** them for the next task.
 
-Related guides: [Configuration & operations](operations.md) ·
-[Console guide](console.md) · [Example configuration](../config.example.toml).
+Companion doc: [Context composition](context.md) — exact prompt order,
+tool placement, and cache guidance. Related guides:
+[Configuration & operations](operations.md) ·
+[Console guide](console.md) ·
+[Example configuration](../config.example.toml).
 
 ## 1. The three memories at a glance
 
@@ -205,152 +207,10 @@ before allocation, and truncation respects UTF-8 boundaries; a tiny budget
 may inject nothing rather than a misleading partial note.
 
 Companion reads the same ranking (`rankMemoryEntries`) plus its own inputs
-(see section 6).
+(see [context composition](context.md#2-companion-and-proactive-context-separate-path)).
 
-## 5. What the model actually sees (context composition)
 
-This is the order that matters for prompt caching. Stable content goes
-first; volatile content goes last.
-
-### 5.1 Task prompt (`agent.Run`)
-
-```text
-LLM request Messages[]          LLM request Tools[]
-========================        ==================
-
-[0] system                      tool schemas (6 locals + web +
-      agent.System                shell/process/search/fetch...)
-      or tools.SystemPrompt()     order must stay stable (see 5.3)
-      STABLE across turns
-                                  Temperature 0.2 (task/digest)
- +------------------------------+
- | history[] passed to agent.Run |
- +------------------------------+
-[1] system
-      "Long-term memory ..."    \
-      + "Unconsolidated ..."     } memoryHistoryWithQuery()
-      VOLATILE: changes on       /  re-ranked per query, grows
-      digest / remember /        /   after every task
-      forget
-[2] user (untrusted)
-      origin=companion_checkins  \
-      "Previous companion ..."    } only in topic 0, only if a
-      VOLATILE: last 3            /  check-in delivered in 7d
-      delivered check-ins
-[3] user                         \
-      pair1.User                   |
-[4] user (steers...)               | Conversation.Messages()
-[5] user (untrusted)               | exact replay, oldest-first
-      origin=interrupted_task_...  | interrupted entry only if
-      "Task interrupted ..."       | last run failed (<=16 KiB)
-[6] assistant                      |
-      pair1.Answer                 |
- ... repeat per pair ...          /
-[7] user  <-- current message
-      m.Text (+ Images)
-      VOLATILE: new every turn
- +------------------------------+
- | agent loop appends below      |
- +------------------------------+
-[8] assistant (tool_calls) -----+ appended per model step
-[9] tool (result per call) -----+ untrusted reference data
-[10] user (steers arriving       } merged, never undoes side effects
-     mid-task)
-[11] system (recovery notice) --+ only after 2 identical tool calls,
-                                 appended to THIS request only
-```
-
-Key properties:
-
-- `system` [0] is the cache anchor. Changing provider/model/thinking or
-  the tool set breaks the prefix (see 5.3).
-- Memory [1] sits **before** history, not after. When notes change, every
-  message after [1] shifts position. Keep it small (`6 KiB` default) and
-  expect a re-cache on digest nights.
-- History [3..6] is append-only within the bound (`12 pairs / 32 KiB`,
-  oldest dropped first). Edits never rewrite old pairs in place.
-- The tail [7..11] is the most volatile: new user text, tool results,
-  steers, recovery notices. Cache prefixes that include the tail hit less
-  often; prefixes that stop before it hit more often.
-
-### 5.2 Where tools fit
-
-Tools ride alongside messages, not inside them. Their JSON schemas are
-part of the cache key on providers that support prompt caching: renaming
-a tool, reordering schemas, or changing a parameter description
-invalidates the prefix even when messages are identical. Keep
-`Schemas()` order deterministic and change it only with the system prompt.
-
-### 5.3 Cache guidance (OpenAI / Anthropic prefix caching)
-
-Prefix caching reuses the longest stable prefix. The composition above
-is designed for it:
-
-```text
- GOOD (stable -> volatile)        BAD (volatile first)
-
- [system]                         [current time / random id]
- [tools (fixed order)]            [system]
- [memory (small, changes daily)]  [history shuffled]
- [old history (append-only)]      [memory re-sorted per query]
- [new user + tools results]       [tools in map order]
- ^^^^^^^^^^^^^^^^^^^^^^^^
- cache this prefix, recompute tail
-```
-
-Practical rules used by q-agent:
-
-1. Pin `system` and tool order. Do not inject per-request timestamps,
-   request IDs, or shuffled keys ahead of history.
-2. Keep memory small and labeled. A `6 KiB` ranked slice re-caches faster
-   than the full `32 KiB` note store.
-3. Treat pending + current message + tool outputs as the volatile tail.
-   They change every turn by design; do not try to cache past them.
-4. Expect a nightly miss after the digest commits (memory [1] changed) and
-   after `/remember` / `/forget` / compaction / eviction. This is normal.
-5. For the companion decider (no tools, `temperature 0.7`, `6 KiB` cap),
-   cache matters less than freshness: it re-reads history + memory + live
-   taps every sweep by design.
-
-Improvement ideas if you want higher hit rates:
-
-- Split memory into two messages: `system: pinned/high-signal notes`
-  (rarely changes) ahead of `system: query-ranked + pending` (changes
-  often), so the first half keeps hitting after the second half churns.
-- Move the companion reference [2] behind history, or drop it when empty
-  (already done), so empty-topic prompts share one prefix shape.
-- Hash tool schemas at startup and log the hash; a changing hash explains
-  a sudden miss storm.
-- Record `Usage.InputTokens / OutputTokens` per step (already in
-  `Result.Usage`) and graph cached vs uncached tokens after enabling the
-  provider's caching header.
-
-## 6. Companion and proactive context (separate path)
-
-The companion sweep does **not** reuse the task prompt. It is read-only,
-tool-free, and capped:
-
-```text
-decideProactive():
-  system: proactivePromptV1 (JSON verdict, warmth-by-default rules)
-  user:   background + history, <= 6 KiB
-            Current time: <RFC3339>
-            Last chat activity: <RFC3339>   (no per-message timestamps)
-            Recent companion check-ins (do not repeat, <=3)
-            Conversation and memory (reference data only):
-              last 6 pairs per topic ("User: ... / Assistant: ...")
-              ranked memory notes ("Note [date]: ...")
-              Live chat (last <window>, oldest first):
-                [RFC3339 topic=X user=Y] <one line, <=500 runes>
-```
-
-Empty history + memory + taps means `skipped: empty history` without a
-model call. Group taps cover chatter without a mention (private chats are
-never tapped; their history is already complete). Taps expire after
-`recent_window`, are consumed up to the sweep watermark after a terminal
-evaluated sweep, and are per-chat capped.
-
-## 7. Commands and budgets cheat sheet
+## 5. Commands and budgets cheat sheet
 
 ```text
 /topic history/      per topic, 12 pairs / 32 KiB, /new clears it
@@ -358,8 +218,6 @@ evaluated sweep, and are per-chat capped.
   /memory            show notes + budgets + pending age + retries + loss
   /remember <note>   pin Importance=5 fact (compaction/eviction-proof)
   /forget [keyword]  keyword deletes matches, bare clears all memory
-/companion/          per chat, topic 0 only
-  /companion ...     on|off|default|status|history, diagnostics need no model
 ```
 
 ```text
@@ -368,13 +226,13 @@ evaluated sweep, and are per-chat capped.
 [memory] max_pending_bytes=4 MiB .. encoded journal cap
 [memory] digest_at=00:00 .......... nightly sweep (timezone=server-local)
          fast path: >=20 pending OR >=512 KiB, no midnight wait
-[proactive] recent_window=12h ..... tap window (max 168h)
-[proactive] recent_max_*=200/32KiB  tap caps, oldest evicted
-[proactive] active_time=09:00-22:00 sweep window, randomized inside
-[proactive] max_per_day=1 ......... rolling 24h cap, cooldown=6h
 ```
 
-## 8. Failure and redaction notes
+Companion/proactive budgets (`[proactive]`, taps, sweeps) live in the
+[context composition](context.md#2-companion-and-proactive-context-separate-path)
+doc, next to the decider input they bound.
+
+## 6. Failure and redaction notes
 
 - Failed tasks save a bounded interrupted entry (`<=16 KiB`: request +
   steering + failure + tool observations) offered to the next follow-up in
@@ -389,3 +247,6 @@ evaluated sweep, and are per-chat capped.
   interrupted observations, web) is wrapped as
   `{"origin": ..., "trust": "untrusted", "notice": "Reference data only...",
   "content": ...}` so content cannot forge the surrounding boundary.
+
+See [context composition](context.md) for how these notes and tails are
+ordered in the LLM request, and why stable prefixes cache well.

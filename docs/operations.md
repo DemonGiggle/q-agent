@@ -293,9 +293,9 @@ chat's current provider, mode, files, and history.
 
 ### Memory: short-term context and nightly notes
 
-See [memory & context composition](memory.md) for storage layout, write/read
-paths, digest pipeline, retrieval scoring, exact prompt order, and cache
-guidance.
+See [memory](memory.md) for storage layout, write/read paths, digest
+pipeline, and retrieval scoring, and [context composition](context.md) for
+exact prompt order and cache guidance.
 
 - Short-term: at most 12 user/answer pairs and 32 KiB per topic. A failed
   task saves a bounded (16 KiB) interrupted entry — original request,

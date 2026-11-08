@@ -200,6 +200,12 @@ func deprecatedWarnings(data []byte) []string {
 				seen[o.key] = true
 				out = append(out, fmt.Sprintf("%s is deprecated; use telegram.allowed_users and telegram.allowed_groups (auto-migrated on load)", o.key))
 			}
+		case "memory.model", "proactive.model":
+			if !seen[o.key] {
+				seen[o.key] = true
+				section := strings.TrimSuffix(o.key, ".model")
+				out = append(out, fmt.Sprintf("%s is deprecated; use [%s.override] with provider/model/thinking (auto-migrated on load)", o.key, section))
+			}
 		}
 	}
 	return out
@@ -215,10 +221,10 @@ func thinkingWarnings(data []byte) []string {
 	}
 	var out []string
 	for _, o := range occs {
-		if o.key != "provider.thinking" && !strings.HasPrefix(o.key, "providers.") {
-			continue
-		}
-		if !strings.HasSuffix(o.key, ".thinking") {
+		isProviderThinking := o.key == "provider.thinking" ||
+			(strings.HasPrefix(o.key, "providers.") && strings.HasSuffix(o.key, ".thinking"))
+		isOverrideThinking := o.key == "memory.override.thinking" || o.key == "proactive.override.thinking"
+		if !isProviderThinking && !isOverrideThinking {
 			continue
 		}
 		raw := data[o.start:o.end]

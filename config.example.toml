@@ -109,8 +109,15 @@ max_context_bytes = 6000
 # overflow, with a warning and counters. No age expiry; event cap is 256 KiB.
 # Cap is 67108864.
 max_pending_bytes = 4194304
-# Optional digest model override; empty uses each chat's own model.
-model = ""
+# Provider-specific digest override. Empty provider/model/thinking each fall
+# back to the chat's own provider, model, and thinking. Base URL and
+# credentials always follow the resolved provider's [provider]/[providers.*]
+# entry; never put base_url or credentials here. The old flat `model = "..."`
+# at this section root is deprecated; use [memory.override] instead.
+# [memory.override]
+# provider = ""
+# model = ""
+# thinking = ""
 
 [proactive]
 # Quiet companion check-ins. On by default; enabled=false is the kill switch
@@ -128,8 +135,16 @@ max_per_day = 1
 cooldown = "6h"
 # Skip chats with recent activity to avoid interrupting live conversation.
 skip_recent_activity = "60m"
-# Optional model override; empty uses each chat's own model.
-model = ""
+# Provider-specific companion-decider override. Empty provider/model/thinking
+# each fall back to the chat's own provider, model, and thinking. Base URL
+# and credentials always follow the resolved provider's
+# [provider]/[providers.*] entry; never put base_url or credentials here.
+# The old flat `model = "..."` at this section root is deprecated; use
+# [proactive.override] instead.
+# [proactive.override]
+# provider = ""
+# model = ""
+# thinking = ""
 # Allowed kinds; unknown kinds are rejected. Silence is always allowed.
 kinds = ["reminder", "warmth", "comfort", "suggestion"]
 # Group policy: conservative (groups only get reminders), off (skip groups), same (as private).

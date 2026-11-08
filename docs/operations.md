@@ -96,6 +96,29 @@ api_key_env = "OPENAI_API_KEY"
 Supported names: `ollama`, `openai`, `opencode-go`, `chatgpt`. Each needs a model and
 can set its own `base_url`, credentials, and `thinking`. Only the operator
 configures these; Telegram users can never supply endpoints or keys.
+`model`, `thinking`, `base_url`, and credentials live only under `[provider]`
+or `[providers.<name>]` — never at the document root or under
+`[memory]`/`[proactive]`/`[telegram]`/`[limits]`/`[sandbox]`. Misplaced keys
+are rejected with a hint; `q-agent config check` reports them as errors.
+
+Background tasks use provider-specific overrides instead of flat model strings:
+
+```toml
+[memory.override]
+provider = ""   # empty = the chat's own provider
+model = ""      # empty = the chat's own model
+thinking = ""   # empty = the chat's own thinking
+
+[proactive.override]
+provider = ""
+model = ""
+thinking = ""
+```
+
+Base URLs and credentials always follow the resolved provider's own
+`[provider]`/`[providers.*]` entry. The old flat `memory.model` and
+`proactive.model` at the section root are deprecated (auto-migrated on load,
+reported by `config check`); do not set both flat and override keys.
 
 Manage them without hand-editing TOML:
 

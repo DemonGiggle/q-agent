@@ -246,15 +246,13 @@ func (r *Runtime) proactiveChat(ctx context.Context, chat state.ChatRecordWithKe
 	if err != nil {
 		return fail("model unavailable", err)
 	}
-	model := selected.Model
-	if r.Config.Proactive.Model != "" {
-		model = r.Config.Proactive.Model
-	}
 	thinking := ""
 	if selected.Thinking != nil {
 		thinking = *selected.Thinking
 	}
-	provider, err := r.Providers(state.Conversation{Provider: selected.Provider, Model: model})
+	providerName, model, thinking := r.Config.ResolveModelOverride(
+		r.Config.Proactive.Override, selected.Provider, selected.Model, thinking)
+	provider, err := r.Providers(state.Conversation{Provider: providerName, Model: model})
 	if err != nil {
 		return fail("provider unavailable", err)
 	}

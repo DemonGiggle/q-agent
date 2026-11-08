@@ -130,9 +130,15 @@ q-agent config set telegram.allowed_groups '[-1001234567890]'
 String values are plain text; integers, booleans, and ID arrays use TOML literals.
 Shell-quote values containing spaces or brackets. Unknown keys, wrong types,
 invalid limits/durations, and conflicting credential sources are rejected.
+`model`, `thinking`, `base_url`, and credentials belong only under `[provider]`
+or `[providers.<name>]`; background tasks use `[memory.override]` and
+`[proactive.override]` with `provider`/`model`/`thinking` (for example
+`memory.override.model`). Misplaced keys are rejected with a placement hint.
 `config set` changes **only the named field** (including `providers.NAME.field` for extras); use `models set-default ...`
 when you want default provider-specific settings reset together, or `models add/update/remove` for extras. Switching Telegram
 credential sources via `config set` requires clearing the old reference first.
+The flat `memory.model` / `proactive.model` keys are deprecated; use the
+`override` tables instead.
 
 `config validate` checks file syntax and the same local settings rules as
 startup. It does **not** check network access, credentials, Telegram allowlist
@@ -140,10 +146,12 @@ membership, sandbox dependencies, model availability, or service health.
 
 `config check` goes further without touching the network: it reports misused
 settings as errors (empty Telegram allowlists, missing/unreadable Telegram or
-provider credentials, missing ChatGPT OAuth, malformed `base_url`, a
+provider credentials, missing ChatGPT OAuth, malformed `base_url` or unknown
+override provider, misplaced `model`/`thinking`/`base_url` keys, a
 `state_dir` that is not a directory, sandbox image/helper readiness) and
 deprecated settings as warnings (`limits.max_tool_calls`, old `approved_*`
-allowlist keys, `thinking = "auto"`/`"default"`, ignored URL userinfo/query).
+allowlist keys, flat `memory.model`/`proactive.model`,
+`thinking = "auto"`/`"default"`, ignored URL userinfo/query).
 Warnings keep a zero exit; errors print `error: ...` lines and fail with a
 non-zero status. With `--json` the report is
 `{"valid":bool,"errors":[...],"warnings":[...]}` on stdout.

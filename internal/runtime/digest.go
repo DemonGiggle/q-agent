@@ -288,18 +288,13 @@ func (r *Runtime) digestChat(ctx context.Context, key string, rec state.ChatReco
 	if err != nil {
 		return err
 	}
-	model := selected.Model
-	if r.Config.Memory.Model != "" {
-		model = r.Config.Memory.Model
-	}
-	provider, err := r.Providers(state.Conversation{Provider: selected.Provider, Model: model})
-	if err != nil {
-		return err
-	}
 	thinking := ""
 	if selected.Thinking != nil {
 		thinking = *selected.Thinking
 	}
+	providerName, model, thinking := r.Config.ResolveModelOverride(
+		r.Config.Memory.Override, selected.Provider, selected.Model, thinking)
+	provider, err := r.Providers(state.Conversation{Provider: providerName, Model: model})
 	var summaries []string
 	for _, transcript := range transcripts {
 		summary, err := r.distill(ctx, provider, model, thinking, transcript)

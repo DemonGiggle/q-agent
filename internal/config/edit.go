@@ -17,6 +17,8 @@ import (
 // Values returns the effective configuration using the documented TOML keys.
 // It contains credential references, never resolved credential values.
 // Deprecated approved_* keys are hidden; use allowed_users/allowed_groups.
+// Deprecated flat memory.model/proactive.model are hidden; use
+// memory.override.*/proactive.override.* (provider-specific).
 func Values(c Config) map[string]any {
 	result := map[string]any{}
 	var walk func(reflect.Value, string)
@@ -38,6 +40,8 @@ func Values(c Config) map[string]any {
 	walk(reflect.ValueOf(c), "")
 	delete(result, "telegram.approved_user_ids")
 	delete(result, "telegram.approved_chat_ids")
+	delete(result, "memory.model")
+	delete(result, "proactive.model")
 	return result
 }
 
@@ -46,10 +50,43 @@ func legacyKeyHint(key string) bool {
 	return key == "telegram.approved_user_ids" || key == "telegram.approved_chat_ids"
 }
 
+// legacyModelHint reports the provider-specific replacement for the
+// deprecated flat model overrides at section roots.
+func legacyModelHint(key string) (replacement string, ok bool) {
+	switch key {
+	case "memory.model":
+		return "memory.override.model (with memory.override.provider/thinking)", true
+	case "proactive.model":
+		return "proactive.override.model (with proactive.override.provider/thinking)", true
+	}
+	return "", false
+}
+
+// UnknownKeyHint explains an unknown console key when it looks like a
+// misplaced or deprecated setting. It returns "" when there is no hint.
+func UnknownKeyHint(key string) string {
+	if legacyKeyHint(key) {
+		return fmt.Sprintf("%q was replaced by telegram.allowed_users and telegram.allowed_groups; old configs migrate automatically on load", key)
+	}
+	if replacement, ok := legacyModelHint(key); ok {
+		return fmt.Sprintf("%q was replaced by %s; old configs migrate automatically on load", key, replacement)
+	}
+	if hint, ok := misplacedProviderHint(key); ok {
+		return hint
+	}
+	return ""
+}
+
 // ParseValue accepts plain strings and TOML literals for numeric/bool/array fields.
 func ParseValue(key, text string) (any, error) {
 	if legacyKeyHint(key) {
 		return nil, fmt.Errorf("%q was replaced by telegram.allowed_users and telegram.allowed_groups; old configs migrate automatically on load", key)
+	}
+	if replacement, ok := legacyModelHint(key); ok {
+		return nil, fmt.Errorf("%q was replaced by %s; old configs migrate automatically on load", key, replacement)
+	}
+	if hint, ok := misplacedProviderHint(key); ok {
+		return nil, fmt.Errorf("unknown configuration key %q; %s", key, hint)
 	}
 	if provider, field, ok := ParseProvidersKey(key); ok {
 		if !ValidProviderAdapter(provider) {
@@ -102,6 +139,12 @@ func patch(data []byte, changes map[string]any) ([]byte, error) {
 	for key, value := range changes {
 		if legacyKeyHint(key) {
 			return nil, fmt.Errorf("%q was replaced by telegram.allowed_users and telegram.allowed_groups; old configs migrate automatically on load", key)
+		}
+		if replacement, ok := legacyModelHint(key); ok {
+			return nil, fmt.Errorf("%q was replaced by %s; old configs migrate automatically on load", key, replacement)
+		}
+		if hint, ok := misplacedProviderHint(key); ok {
+			return nil, fmt.Errorf("invalid configuration key/type %q; %s", key, hint)
 		}
 		if provider, field, ok := ParseProvidersKey(key); ok {
 			if !ValidProviderAdapter(provider) {

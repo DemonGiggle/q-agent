@@ -310,6 +310,9 @@ func (c *console) action(group, action string, args []string) error {
 		values := safeValues(config.Values(cfg))
 		value, ok := values[args[0]]
 		if !ok {
+			if hint := config.UnknownKeyHint(args[0]); hint != "" {
+				return fmt.Errorf("unknown configuration key %q; %s", args[0], hint)
+			}
 			return fmt.Errorf("unknown configuration key %q", args[0])
 		}
 		if c.json {
@@ -797,6 +800,9 @@ func (c *console) editConfig() error {
 		return nil
 	}
 	if !config.IsValidKey(key) {
+		if hint := config.UnknownKeyHint(key); hint != "" {
+			return fmt.Errorf("unknown configuration key %q; %s", key, hint)
+		}
 		return fmt.Errorf("unknown configuration key %q", key)
 	}
 	text, err := c.prompt("New value (strings as text; other values as TOML): ")

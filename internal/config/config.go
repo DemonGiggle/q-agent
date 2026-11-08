@@ -86,13 +86,21 @@ type Limits struct {
 // text; MaxContextBytes caps the complete injected message; MaxPendingBytes
 // caps the encoded source journal independently of bounded prompt history.
 type Memory struct {
-	Enabled         bool   `toml:"enabled"`
-	Timezone        string `toml:"timezone"`
-	DigestAt        string `toml:"digest_at"`
-	MaxBytes        int    `toml:"max_bytes"`
-	MaxContextBytes int    `toml:"max_context_bytes"`
-	MaxPendingBytes int    `toml:"max_pending_bytes"`
-	Model           string `toml:"model"`
+	Enabled         bool          `toml:"enabled"`
+	Timezone        string        `toml:"timezone"`
+	DigestAt        string        `toml:"digest_at"`
+	MaxBytes        int           `toml:"max_bytes"`
+	MaxContextBytes int           `toml:"max_context_bytes"`
+	MaxPendingBytes int           `toml:"max_pending_bytes"`
+	// Deprecated: flat model override at the section root. Use Override
+	// (provider-specific) instead; e.g. [memory.override] with
+	// provider/model/thinking. When both are set the file is rejected.
+	Model string `toml:"model"`
+	// Override selects the provider-specific model used for the digest.
+	// Empty provider/model/thinking each fall back to the chat's own
+	// provider, model, and thinking. Base URL and credentials always follow
+	// the resolved provider's [provider]/[providers.*] entry.
+	Override ModelOverride `toml:"override"`
 }
 
 // Proactive configures the opt-out companion check-in sweep. Enabled by
@@ -108,18 +116,82 @@ type Memory struct {
 // terminal sweep, so disk stays bounded. RecentMaxMessages/RecentMaxBytes cap
 // each chat; oldest taps are evicted first.
 type Proactive struct {
-	Enabled            bool     `toml:"enabled"`
-	Timezone           string   `toml:"timezone"`
-	ActiveTime         string   `toml:"active_time"`
-	MaxPerDay          int      `toml:"max_per_day"`
-	Cooldown           string   `toml:"cooldown"`
-	SkipRecentActivity string   `toml:"skip_recent_activity"`
-	Model              string   `toml:"model"`
-	Kinds              []string `toml:"kinds"`
-	GroupPolicy        string   `toml:"group_policy"`
-	RecentWindow       string   `toml:"recent_window"`
-	RecentMaxMessages  int      `toml:"recent_max_messages"`
-	RecentMaxBytes     int      `toml:"recent_max_bytes"`
+	Enabled            bool          `toml:"enabled"`
+	Timezone           string        `toml:"timezone"`
+	ActiveTime         string        `toml:"active_time"`
+	MaxPerDay          int           `toml:"max_per_day"`
+	Cooldown           string        `toml:"cooldown"`
+	SkipRecentActivity string        `toml:"skip_recent_activity"`
+	// Deprecated: flat model override at the section root. Use Override
+	// (provider-specific) instead; e.g. [proactive.override] with
+	// provider/model/thinking. When both are set the file is rejected.
+	Model              string        `toml:"model"`
+	// Override selects the provider-specific model used for the companion
+	// decider. Empty provider/model/thinking each fall back to the chat's
+	// own provider, model, and thinking. Base URL and credentials always
+	// follow the resolved provider's [provider]/[providers.*] entry.
+	Override           ModelOverride `toml:"override"`
+	Kinds              []string      `toml:"kinds"`
+	GroupPolicy        string        `toml:"group_policy"`
+	RecentWindow       string        `toml:"recent_window"`
+	RecentMaxMessages  int           `toml:"recent_max_messages"`
+	RecentMaxBytes     int           `toml:"recent_max_bytes"`
+}
+
+// ModelOverride is a provider-specific model selection for background tasks
+// (memory digest, proactive decider). It never holds credentials or base URLs
+// at this section root: those always come from the resolved provider's own
+// [provider]/[providers.*] entry. Empty fields fall back to the chat's own
+// provider, model, and thinking respectively.
+type ModelOverride struct {
+	Provider string `toml:"provider"`
+	Model    string `toml:"model"`
+	Thinking string `toml:"thinking"`
+}
+
+// misplacedProviderHint explains where model/thinking/base_url and
+// credentials belong when a dotted key puts them outside provider settings.
+// It reports ok=false for keys that are not provider fields in the wrong place.
+func misplacedProviderHint(key string) (hint string, ok bool) {
+	providerFields := map[string]bool{
+		"model": true, "thinking": true, "base_url": true,
+		"api_key_env": true, "api_key_path": true, "name": true,
+	}
+	// Top-level fields without a section: model/thinking/... belong under
+	// [provider] or [providers.<name>].
+	if providerFields[key] {
+		return "model, thinking, base_url and credentials belong under [provider] or [providers.<name>], not at the document root", true
+	}
+	// Bare [providers] without a name.
+	if key == "providers" || strings.HasPrefix(key, "providers.") {
+		if _, _, pok := ParseProvidersKey(key); !pok {
+			return "use providers.<name>.model/thinking/base_url/api_key_env/api_key_path with a concrete provider name", true
+		}
+		return "", false
+	}
+	// Provider fields nested under non-provider sections.
+	if i := strings.Index(key, "."); i > 0 {
+		section, field := key[:i], key[i+1:]
+		// Allow the canonical provider tables and the new override tables.
+		if section == "provider" || section == "providers" {
+			return "", false
+		}
+		if (section == "memory" || section == "proactive") &&
+			strings.HasPrefix(field, "override.") {
+			return "", false
+		}
+		if providerFields[field] ||
+			strings.HasSuffix(field, ".model") || strings.HasSuffix(field, ".thinking") ||
+			strings.HasSuffix(field, ".base_url") || strings.HasSuffix(field, ".api_key_env") ||
+			strings.HasSuffix(field, ".api_key_path") {
+			return "model, thinking, base_url and credentials belong under [provider] or [providers.<name>]; background tasks use [memory.override]/[proactive.override] with provider/model/thinking", true
+		}
+		// memory.thinking / proactive.base_url style: field without override prefix.
+		if (section == "memory" || section == "proactive") && providerFields[strings.TrimPrefix(field, "override.")] {
+			return "use [memory.override]/[proactive.override] with provider/model/thinking; base URL and credentials follow the resolved provider entry", true
+		}
+	}
+	return "", false
 }
 
 func Defaults() Config {
@@ -150,6 +222,9 @@ func Load(path string) (Config, error) {
 	}
 	d := toml.NewDecoder(bytes.NewReader(data)).DisallowUnknownFields()
 	if err = d.Decode(&c); err != nil {
+		if hint := misplacedHintFromData(data); hint != "" {
+			return c, fmt.Errorf("%w; %s", err, hint)
+		}
 		return c, err
 	}
 	if err = normalizeProvider(&c.Provider, filepath.Dir(path)); err != nil {
@@ -283,6 +358,12 @@ func Load(path string) (Config, error) {
 	if c.Memory.MaxContextBytes > 200000 {
 		return c, fmt.Errorf("memory.max_context_bytes must not exceed 200000")
 	}
+	if err := migrateLegacyModelOverride("memory", &c.Memory.Model, &c.Memory.Override, c); err != nil {
+		return c, err
+	}
+	if err := validateModelOverride("memory.override", &c.Memory.Override, c); err != nil {
+		return c, err
+	}
 	if c.Proactive.ActiveTime == "" {
 		c.Proactive.ActiveTime = Defaults().Proactive.ActiveTime
 	}
@@ -344,6 +425,12 @@ func Load(path string) (Config, error) {
 	}
 	if c.Proactive.RecentMaxBytes < 1024 || c.Proactive.RecentMaxBytes > 1<<20 {
 		return c, fmt.Errorf("invalid proactive.recent_max_bytes %d: want 1024-1048576", c.Proactive.RecentMaxBytes)
+	}
+	if err := migrateLegacyModelOverride("proactive", &c.Proactive.Model, &c.Proactive.Override, c); err != nil {
+		return c, err
+	}
+	if err := validateModelOverride("proactive.override", &c.Proactive.Override, c); err != nil {
+		return c, err
 	}
 	c.StateDir, err = absolute(c.StateDir, filepath.Dir(path))
 	if err != nil {
@@ -681,6 +768,98 @@ func normalizeThinking(p *Provider) error {
 		return nil
 	}
 	return fmt.Errorf("unknown thinking level %q", p.Thinking)
+}
+
+// misplacedHintFromData scans raw TOML keys and returns a placement hint when
+// provider fields sit outside provider settings. It returns "" when the file
+// does not parse or nothing looks misplaced.
+func misplacedHintFromData(data []byte) string {
+	occs, _, err := scanKeys(data)
+	if err != nil {
+		return ""
+	}
+	for _, o := range occs {
+		if hint, ok := misplacedProviderHint(o.key); ok {
+			return hint + " (offending key: " + o.key + ")"
+		}
+	}
+	return ""
+}
+
+// migrateLegacyModelOverride folds the deprecated flat model string at a
+// section root into its provider-specific override table. When both are set
+// the file is rejected so the operator resolves the conflict explicitly.
+func migrateLegacyModelOverride(section string, legacy *string, override *ModelOverride, c Config) error {
+	if strings.TrimSpace(*legacy) == "" {
+		return nil
+	}
+	if override.Provider != "" || override.Model != "" || override.Thinking != "" {
+		return fmt.Errorf("%s.model and %s.override cannot both be set; use %s.override.provider/model/thinking", section, section, section)
+	}
+	override.Model = *legacy
+	*legacy = ""
+	_ = c
+	return nil
+}
+
+// validateModelOverride checks a background-task override. Empty means "use
+// the chat's own settings". A named provider must already be configured
+// (default [provider] or an extra [providers.*]); base URL and credentials
+// always follow that provider entry and are never set here.
+func validateModelOverride(label string, o *ModelOverride, c Config) error {
+	if o.Provider == "" && o.Model == "" && o.Thinking == "" {
+		return nil
+	}
+	if o.Provider != "" {
+		if _, ok := c.ProviderByName(o.Provider); !ok {
+			return fmt.Errorf("invalid %s.provider %q: provider is not configured (default [provider] or [providers.*])", label, o.Provider)
+		}
+	}
+	if o.Model != "" {
+		if len(o.Model) > 256 || strings.TrimSpace(o.Model) != o.Model {
+			return fmt.Errorf("invalid %s.model %q: want 1-256 chars without surrounding whitespace", label, o.Model)
+		}
+		for _, r := range o.Model {
+			if r < 0x20 || r == 0x7f {
+				return fmt.Errorf("invalid %s.model %q: must not contain control characters", label, o.Model)
+			}
+		}
+	}
+	raw := strings.TrimSpace(o.Thinking)
+	if raw == "" {
+		o.Thinking = ""
+		return nil
+	}
+	norm := strings.ToLower(raw)
+	if norm == "auto" || norm == "default" {
+		o.Thinking = ""
+		return nil
+	}
+	switch norm {
+	case "ultra", "persistent", "custom":
+		return fmt.Errorf("%s.thinking %q is not sendable in v1 (client-only)", label, o.Thinking)
+	case "off", "on", "none", "minimal", "low", "medium", "high", "xhigh", "max":
+		o.Thinking = norm
+		return nil
+	}
+	return fmt.Errorf("unknown thinking level %q", o.Thinking)
+}
+
+// ResolveModelOverride applies a provider-specific background-task override.
+// Empty override fields fall back to the chat's own provider, model, and
+// thinking. Base URL and credentials always follow the resolved provider's
+// [provider]/[providers.*] entry.
+func (c Config) ResolveModelOverride(o ModelOverride, provider, model, thinking string) (string, string, string) {
+	if o.Provider != "" {
+		provider = o.Provider
+	}
+	if o.Model != "" {
+		model = o.Model
+	}
+	if o.Thinking != "" {
+		thinking = o.Thinking
+	}
+	return provider, model, thinking
 }
 
 // InteractiveTaskDuration is the total budget from task start once a managed

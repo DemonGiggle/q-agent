@@ -86,12 +86,12 @@ type Limits struct {
 // text; MaxContextBytes caps the complete injected message; MaxPendingBytes
 // caps the encoded source journal independently of bounded prompt history.
 type Memory struct {
-	Enabled         bool          `toml:"enabled"`
-	Timezone        string        `toml:"timezone"`
-	DigestAt        string        `toml:"digest_at"`
-	MaxBytes        int           `toml:"max_bytes"`
-	MaxContextBytes int           `toml:"max_context_bytes"`
-	MaxPendingBytes int           `toml:"max_pending_bytes"`
+	Enabled         bool   `toml:"enabled"`
+	Timezone        string `toml:"timezone"`
+	DigestAt        string `toml:"digest_at"`
+	MaxBytes        int    `toml:"max_bytes"`
+	MaxContextBytes int    `toml:"max_context_bytes"`
+	MaxPendingBytes int    `toml:"max_pending_bytes"`
 	// Deprecated: flat model override at the section root. Use Override
 	// (provider-specific) instead; e.g. [memory.override] with
 	// provider/model/thinking. When both are set the file is rejected.
@@ -116,26 +116,26 @@ type Memory struct {
 // terminal sweep, so disk stays bounded. RecentMaxMessages/RecentMaxBytes cap
 // each chat; oldest taps are evicted first.
 type Proactive struct {
-	Enabled            bool          `toml:"enabled"`
-	Timezone           string        `toml:"timezone"`
-	ActiveTime         string        `toml:"active_time"`
-	MaxPerDay          int           `toml:"max_per_day"`
-	Cooldown           string        `toml:"cooldown"`
-	SkipRecentActivity string        `toml:"skip_recent_activity"`
+	Enabled            bool   `toml:"enabled"`
+	Timezone           string `toml:"timezone"`
+	ActiveTime         string `toml:"active_time"`
+	MaxPerDay          int    `toml:"max_per_day"`
+	Cooldown           string `toml:"cooldown"`
+	SkipRecentActivity string `toml:"skip_recent_activity"`
 	// Deprecated: flat model override at the section root. Use Override
 	// (provider-specific) instead; e.g. [proactive.override] with
 	// provider/model/thinking. When both are set the file is rejected.
-	Model              string        `toml:"model"`
+	Model string `toml:"model"`
 	// Override selects the provider-specific model used for the companion
 	// decider. Empty provider/model/thinking each fall back to the chat's
 	// own provider, model, and thinking. Base URL and credentials always
 	// follow the resolved provider's [provider]/[providers.*] entry.
-	Override           ModelOverride `toml:"override"`
-	Kinds              []string      `toml:"kinds"`
-	GroupPolicy        string        `toml:"group_policy"`
-	RecentWindow       string        `toml:"recent_window"`
-	RecentMaxMessages  int           `toml:"recent_max_messages"`
-	RecentMaxBytes     int           `toml:"recent_max_bytes"`
+	Override          ModelOverride `toml:"override"`
+	Kinds             []string      `toml:"kinds"`
+	GroupPolicy       string        `toml:"group_policy"`
+	RecentWindow      string        `toml:"recent_window"`
+	RecentMaxMessages int           `toml:"recent_max_messages"`
+	RecentMaxBytes    int           `toml:"recent_max_bytes"`
 }
 
 // ModelOverride is a provider-specific model selection for background tasks

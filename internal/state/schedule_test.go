@@ -196,7 +196,7 @@ func TestScheduleRecovery(t *testing.T) {
 	check(t, s.RecoverRuns())
 	_, runs := s.ListSchedules(owner)
 	for _, r := range runs {
-		if r.Kind == "agent" && (r.Status != "interrupted" || len(r.Parts) != 1) {
+		if r.Kind == "agent" && (r.Status != "pending" || r.Attempts != 1 || r.RetryAt.IsZero()) {
 			t.Fatalf("%+v", r)
 		}
 		if r.Kind == "reminder" && r.Status != "pending" {

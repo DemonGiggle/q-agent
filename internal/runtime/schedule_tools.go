@@ -26,7 +26,7 @@ func (t *scheduleTools) SystemPrompt() string {
 	if described, ok := t.base.(interface{ SystemPrompt() string }); ok {
 		system = described.SystemPrompt()
 	}
-	return system + fmt.Sprintf("\nCurrent time: %s. Use schedule_create/list/delete for persistent reminders and scheduled agent tasks, never background sleeps or OS cron. Schedule times must be explicit RFC3339 timestamps with UTC offset; use an IANA timezone for local daily/weekly recurrence. If the user's timezone cannot be inferred, ask. Choose reminder for a literal notification (no model call when due), agent for future work. Only claim a schedule was created after the tool succeeds. Schedule tools are host-managed in both execution modes and scoped to this user, chat, and topic. Deleting a schedule cancels pending occurrences but cannot stop an already running task; use /cancel for that. Scheduler scans every minute; normal scan lateness is up to 60 seconds plus queue delay. Missed occurrences have a five-minute grace window; interrupted agent tasks are not retried automatically.", time.Now().Format(time.RFC3339))
+	return system + fmt.Sprintf("\nCurrent time: %s. Use schedule_create/list/delete for persistent reminders and scheduled agent tasks, never background sleeps or OS cron. Schedule times must be explicit RFC3339 timestamps with UTC offset; use an IANA timezone for local daily/weekly recurrence. If the user's timezone cannot be inferred, ask. Choose reminder for a literal notification (no model call when due), agent for future work. Only claim a schedule was created after the tool succeeds. Schedule tools are host-managed in both execution modes and scoped to this user, chat, and topic. Deleting a schedule cancels pending occurrences but cannot stop an already running task; use /cancel for that. Scheduler scans every minute; normal scan lateness is up to 60 seconds plus queue delay. Missed occurrences have a five-minute grace window; failed agent tasks are retried up to 3 times with increasing delays (5m, 15m, 45m).", time.Now().Format(time.RFC3339))
 }
 func object(properties map[string]any, required ...string) map[string]any {
 	if required == nil {
@@ -125,7 +125,7 @@ func (t *scheduleTools) Execute(ctx context.Context, call llm.ToolCall) (string,
 		}
 		recent := []map[string]any{}
 		for _, run := range runs {
-			recent = append(recent, map[string]any{"id": run.ID, "schedule_id": run.ScheduleID, "scheduled_at": run.ScheduledAt, "status": run.Status, "delivered_chunks": run.Next, "total_chunks": len(run.Parts)})
+			recent = append(recent, map[string]any{"id": run.ID, "schedule_id": run.ScheduleID, "scheduled_at": run.ScheduledAt, "status": run.Status, "attempts": run.Attempts, "retry_at": run.RetryAt, "delivered_chunks": run.Next, "total_chunks": len(run.Parts)})
 		}
 		nextOffset := -1
 		if end < len(schedules) {

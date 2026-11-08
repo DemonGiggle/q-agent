@@ -85,6 +85,9 @@ func (r *Runtime) dispatchScheduled(ctx context.Context) error {
 		limit = 2
 	}
 	for _, run := range r.Store.PendingRuns() {
+		if !run.RetryAt.IsZero() && time.Now().Before(run.RetryAt) {
+			continue
+		}
 		if !r.allowed(run.Route) {
 			if err := r.Store.FinishRun(run.ID, "cancelled", nil); err != nil {
 				return err

@@ -147,8 +147,23 @@ func TestMaxStepsEnforcedForInteractiveAndScheduledTasks(t *testing.T) {
 				must(t, r.Handle(context.Background(), input(2, -10, 8, 1, "work")))
 			}
 			r.Wait()
-			if p.calls != tc.steps {
-				t.Fatalf("model calls=%d, want %d", p.calls, tc.steps)
+			if tc.scheduled {
+				for i := 0; i < 3; i++ {
+					_, runs := r.Store.ListSchedules(input(0, -10, 8, 1, ""))
+					if len(runs) == 0 || runs[0].Status != "pending" {
+						break
+					}
+					must(t, r.Store.ForceRetryReady(runs[0].ID))
+					must(t, r.dispatchScheduled(context.Background()))
+					r.Wait()
+				}
+			}
+			wantCalls := tc.steps
+			if tc.scheduled {
+				wantCalls = tc.steps * 4
+			}
+			if p.calls != wantCalls {
+				t.Fatalf("model calls=%d, want %d", p.calls, wantCalls)
 			}
 			found := false
 			for reply, ok := r.Store.Pending(); ok; reply, ok = r.Store.Pending() {

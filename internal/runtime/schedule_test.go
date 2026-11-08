@@ -219,21 +219,71 @@ func TestScheduleToolPaginationFitsOutputLimit(t *testing.T) {
 	}
 }
 
-func TestScheduledAgentFailureRecordedWithoutRetry(t *testing.T) {
+func TestScheduledAgentRetriesUpToThreeWithBackoff(t *testing.T) {
+	oldDelays := state.ScheduleRetryDelays
+	state.ScheduleRetryDelays = []time.Duration{0, 0, 0}
+	defer func() { state.ScheduleRetryDelays = oldDelays }()
 	r, w, _ := fixture(t)
 	w.fail = true
 	owner := input(0, -10, 0, 1, "")
 	enqueue(t, r, owner, "agent", time.Now())
+	for attempt := 1; attempt <= 3; attempt++ {
+		must(t, r.dispatchScheduled(context.Background()))
+		r.Wait()
+		_, runs := r.Store.ListSchedules(owner)
+		if len(runs) != 1 || runs[0].Status != "pending" || runs[0].Attempts != attempt || len(runs[0].Parts) != 0 {
+			t.Fatalf("attempt %d: %+v", attempt, runs)
+		}
+		if _, ok := r.Store.Pending(); ok {
+			t.Fatalf("attempt %d queued failure output before retries exhausted", attempt)
+		}
+	}
+	// Fourth failure exhausts retries: terminal failed with deliverable output.
 	must(t, r.dispatchScheduled(context.Background()))
 	r.Wait()
 	_, runs := r.Store.ListSchedules(owner)
-	if len(runs) != 1 || runs[0].Status != "failed" || len(runs[0].Parts) == 0 {
+	if len(runs) != 1 || runs[0].Status != "failed" || runs[0].Attempts != 3 || len(runs[0].Parts) == 0 {
 		t.Fatalf("%+v", runs)
 	}
+	if w.calls != 4 {
+		t.Fatalf("calls=%d want 4 (initial + 3 retries)", w.calls)
+	}
+	// No further retry after terminal failure.
 	must(t, r.dispatchScheduled(context.Background()))
 	r.Wait()
-	if w.calls != 1 {
-		t.Fatal("failed work automatically retried")
+	if w.calls != 4 {
+		t.Fatal("terminal failure retried")
+	}
+}
+
+func TestScheduledRetryBackoffIncreases(t *testing.T) {
+	oldDelays := state.ScheduleRetryDelays
+	state.ScheduleRetryDelays = []time.Duration{5 * time.Minute, 15 * time.Minute, 45 * time.Minute}
+	defer func() { state.ScheduleRetryDelays = oldDelays }()
+	r, w, _ := fixture(t)
+	w.fail = true
+	owner2 := input(0, -10, 0, 1, "")
+	enqueue(t, r, owner2, "agent", time.Now())
+	var prev time.Time
+	for i := 1; i <= 3; i++ {
+		must(t, r.dispatchScheduled(context.Background()))
+		r.Wait()
+		_, runs := r.Store.ListSchedules(owner2)
+		if len(runs) != 1 {
+			t.Fatalf("%+v", runs)
+		}
+		if runs[0].Status != "pending" || runs[0].Attempts != i {
+			t.Fatalf("attempt %d: %+v", i, runs[0])
+		}
+		if runs[0].RetryAt.IsZero() {
+			t.Fatal("missing RetryAt")
+		}
+		if !prev.IsZero() && !runs[0].RetryAt.After(prev) {
+			t.Fatalf("backoff did not increase: prev %v next %v", prev, runs[0].RetryAt)
+		}
+		prev = runs[0].RetryAt
+		// Fast-forward gate so the next dispatch is eligible.
+		must(t, r.Store.ForceRetryReady(runs[0].ID))
 	}
 }
 

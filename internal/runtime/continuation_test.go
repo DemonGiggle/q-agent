@@ -70,7 +70,21 @@ func TestFailedTaskContinuesAfterRestartWithoutReplayingTools(t *testing.T) {
 					must(t, r.Handle(ctx, input(2, -10, 7, 1, original)))
 				}
 				r.Wait()
-				if len(tools.calls) != 1 {
+				if scheduled {
+					for i := 0; i < 3; i++ {
+						_, runs := r.Store.ListSchedules(route)
+						if len(runs) == 0 || runs[0].Status != "pending" {
+							break
+						}
+						must(t, r.Store.ForceRetryReady(runs[0].ID))
+						must(t, r.dispatchScheduled(ctx))
+						r.Wait()
+					}
+					if len(tools.calls) != 4 {
+						t.Fatalf("scheduled tools=%v want 4 attempts", tools.calls)
+					}
+				}
+				if !scheduled && len(tools.calls) != 1 {
 					t.Fatalf("tools=%v", tools.calls)
 				}
 				// Failure itself is durable before its reply. It journals a
@@ -80,7 +94,11 @@ func TestFailedTaskContinuesAfterRestartWithoutReplayingTools(t *testing.T) {
 				r.Store = reopened
 				saved, err := r.Store.Load(route.ConversationKey())
 				must(t, err)
-				if len(saved.Pairs) != 1 || !saved.Pairs[0].Interrupted || !strings.Contains(saved.Pairs[0].User, "ORIGINAL_REQUEST") || !strings.Contains(saved.Pairs[0].Progress, "CONFIRMED_RESULT") {
+				wantPairs := 1
+				if scheduled {
+					wantPairs = 4
+				}
+				if len(saved.Pairs) != wantPairs || !saved.Pairs[0].Interrupted || !strings.Contains(saved.Pairs[0].User, "ORIGINAL_REQUEST") || !strings.Contains(saved.Pairs[0].Progress, "CONFIRMED_RESULT") {
 					t.Fatalf("failure not saved: %+v", saved)
 				}
 				mem, err := r.Store.LoadMemory(route.WorkspaceKey())
@@ -114,12 +132,16 @@ func TestFailedTaskContinuesAfterRestartWithoutReplayingTools(t *testing.T) {
 				must(t, r.Handle(ctx, input(3, -10, 7, 1, "/max_steps 32")))
 				must(t, r.Handle(ctx, input(4, -10, 7, 1, "continue")))
 				r.Wait()
-				if len(next.requests) != 1 || len(tools.calls) != 1 {
+				wantTools := 1
+				if scheduled {
+					wantTools = 4
+				}
+				if len(next.requests) != 1 || len(tools.calls) != wantTools {
 					t.Fatal("continuation replayed completed tool action")
 				}
 				saved, err = r.Store.Load(route.ConversationKey())
 				must(t, err)
-				if len(saved.Pairs) != 2 || saved.Pairs[1].Interrupted {
+				if len(saved.Pairs) != wantPairs+1 || saved.Pairs[wantPairs].Interrupted {
 					t.Fatal("continuation did not commit normal success")
 				}
 				// An unrelated topic in the same chat does not receive failed-task history.

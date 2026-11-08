@@ -19,6 +19,23 @@ const maxSchedules = 100
 const maxQueuedRuns = 1000
 const retainedRuns = 1000
 
+// Retry policy for scheduled agent tasks: at most 3 retries after the
+// initial failure, each with a longer delay than the last.
+const MaxScheduleRetries = 3
+
+// ScheduleRetryDelays controls backoff: index 0 is the delay before retry 1.
+var ScheduleRetryDelays = []time.Duration{5 * time.Minute, 15 * time.Minute, 45 * time.Minute}
+
+func scheduleRetryDelay(retry int) time.Duration {
+	if retry >= 1 && retry <= len(ScheduleRetryDelays) {
+		return ScheduleRetryDelays[retry-1]
+	}
+	if len(ScheduleRetryDelays) > 0 {
+		return ScheduleRetryDelays[len(ScheduleRetryDelays)-1]
+	}
+	return 45 * time.Minute
+}
+
 type Schedule struct {
 	ID        string           `json:"id"`
 	Route     platform.Message `json:"route"`
@@ -42,6 +59,10 @@ type ScheduledRun struct {
 	Parts       []string          `json:"parts,omitempty"`
 	Photos      []PhotoAttachment `json:"photos,omitempty"`
 	Next        int               `json:"next"`
+	// Attempts counts failed executions so far (0 = first try not yet failed).
+	// RetryAt gates a pending retry: dispatch must wait until now >= RetryAt.
+	Attempts int       `json:"attempts,omitempty"`
+	RetryAt  time.Time `json:"retry_at,omitempty"`
 }
 
 // Total counts deliverable items: photos first, then text parts.
@@ -309,13 +330,33 @@ func (s *Store) PendingRuns() []ScheduledRun {
 	sort.SliceStable(out, func(i, j int) bool { return out[i].ScheduledAt.Before(out[j].ScheduledAt) })
 	return out
 }
-func (s *Store) ClaimRun(id string) (bool, error) {
+
+// ForceRetryReady clears a pending retry's gate so tests can simulate time
+// passing without sleeping through backoff delays.
+func (s *Store) ForceRetryReady(id string) error {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	next := s.cloneSchedules()
 	for i := range next.Runs {
 		if next.Runs[i].ID == id && next.Runs[i].Status == "pending" {
+			next.Runs[i].RetryAt = time.Time{}
+			return s.saveSchedules(next)
+		}
+	}
+	return fmt.Errorf("run not found")
+}
+func (s *Store) ClaimRun(id string) (bool, error) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	next := s.cloneSchedules()
+	now := time.Now()
+	for i := range next.Runs {
+		if next.Runs[i].ID == id && next.Runs[i].Status == "pending" {
+			if !next.Runs[i].RetryAt.IsZero() && now.Before(next.Runs[i].RetryAt) {
+				return false, nil
+			}
 			next.Runs[i].Status = "running"
+			next.Runs[i].RetryAt = time.Time{}
 			if err := s.saveSchedules(next); err != nil {
 				return false, err
 			}
@@ -327,6 +368,9 @@ func (s *Store) ClaimRun(id string) (bool, error) {
 
 // FinishRun is also the scheduled outbox commit. Delivery progress lives in
 // this same record, so a delivered reply cannot cause a run to be replayed.
+// Failed/interrupted agent runs are retried up to MaxScheduleRetries times
+// with increasing delays; intermediate failures stay pending with no
+// deliverable output and only the final failure is committed.
 func (s *Store) FinishRun(id, status string, parts []string) error {
 	return s.FinishRunWithPhotos(id, status, parts, nil)
 }
@@ -346,7 +390,19 @@ func (s *Store) FinishRunWithPhotos(id, status string, parts []string, photos []
 			if !runActive(next.Runs[i]) {
 				return nil
 			}
+			// Retry failed/interrupted agent work with backoff. Cancelled,
+			// succeeded, and reminder runs commit immediately.
+			if (status == "failed" || status == "interrupted") && next.Runs[i].Kind == "agent" && next.Runs[i].Attempts < MaxScheduleRetries {
+				next.Runs[i].Attempts++
+				next.Runs[i].Status = "pending"
+				next.Runs[i].RetryAt = time.Now().Add(scheduleRetryDelay(next.Runs[i].Attempts))
+				next.Runs[i].Parts = nil
+				next.Runs[i].Photos = nil
+				next.Runs[i].Next = 0
+				return s.saveSchedules(next)
+			}
 			next.Runs[i].Status = status
+			next.Runs[i].RetryAt = time.Time{}
 			next.Runs[i].Parts = append([]string(nil), parts...)
 			for j := range next.Runs[i].Parts {
 				next.Runs[i].Parts[j] = s.policy.Text(redaction.Remote, next.Runs[i].Parts[j])
@@ -362,8 +418,9 @@ func (s *Store) FinishRunWithPhotos(id, status string, parts []string, photos []
 	return fmt.Errorf("run not found")
 }
 
-// RecoverRuns is called once before workers and delivery start. Unknown agent
-// side effects are never retried; reminder output can safely be reconstructed.
+// RecoverRuns is called once before workers and delivery start. Reminder
+// output can safely be reconstructed; agent work interrupted by a restart is
+// retried with the same backoff as other failures until MaxScheduleRetries.
 func (s *Store) RecoverRuns() error {
 	s.mu.Lock()
 	defer s.mu.Unlock()
@@ -375,9 +432,17 @@ func (s *Store) RecoverRuns() error {
 			changed = true
 			if r.Kind == "reminder" {
 				r.Status = "pending"
+			} else if r.Attempts < MaxScheduleRetries {
+				r.Attempts++
+				r.Status = "pending"
+				r.RetryAt = time.Now().Add(scheduleRetryDelay(r.Attempts))
+				r.Parts = nil
+				r.Photos = nil
+				r.Next = 0
 			} else {
 				r.Status = "interrupted"
-				r.Parts = []string{"Scheduled task interrupted by restart; not automatically retried: " + r.ScheduleID}
+				r.RetryAt = time.Time{}
+				r.Parts = []string{"Scheduled task interrupted by restart; retries exhausted: " + r.ScheduleID}
 			}
 		}
 	}
@@ -444,6 +509,12 @@ func (s *Store) validateSchedules() error {
 			}
 		}
 		ids[r.ID] = true
+		if r.Attempts < 0 || r.Attempts > MaxScheduleRetries {
+			return fmt.Errorf("invalid run attempts")
+		}
+		if !r.RetryAt.IsZero() && r.Status != "pending" {
+			return fmt.Errorf("invalid run retry state")
+		}
 		switch r.Status {
 		case "pending", "running", "succeeded", "failed", "interrupted", "missed", "cancelled":
 		default:

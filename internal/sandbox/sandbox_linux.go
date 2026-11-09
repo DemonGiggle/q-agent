@@ -233,6 +233,63 @@ func run(ctx context.Context, o Options, mounts []string, input any) ([]byte, er
 func toolMounts(o Options, rootfs, mode string) []string {
 	return []string{"--bind", rootfs, "/", "--proc", "/proc", "--dev", "/dev", "--tmpfs", "/tmp", "--chmod", "1777", "/tmp", "--tmpfs", "/run", "--ro-bind", o.Worker, workerPath, "--chdir", "/workspace", workerPath, "worker", mode}
 }
+
+// mcpStdioMounts binds the chat rootfs as / with the worker's MCP stdio
+// channel as the namespace init. The server sees /workspace as its working
+// directory; each chat's rootfs keeps filesystems isolated.
+func mcpStdioMounts(o Options, rootfs string) []string {
+	return toolMounts(o, rootfs, mcpStdioMode)
+}
+
+// StartMCPStdio launches command with args inside the chat sandbox and
+// returns its host-side endpoint with independent stdin/stdout/stderr
+// streams. Arguments are passed literally (no shell); the child inherits
+// only a credential-filtered environment and no env-secret injection
+// occurs.
+//
+// Setup and boundary failures are FatalError failures: they never fall
+// back to host execution. A server start failure (missing executable) is
+// an ordinary error. The caller must Close the process to reap the
+// namespace.
+func StartMCPStdio(ctx context.Context, o Options, rootfs, command string, args []string) (*MCPStdioProcess, error) {
+	if strings.TrimSpace(rootfs) == "" {
+		return nil, fmt.Errorf("mcp stdio sandbox rootfs is required")
+	}
+	if err := validateMCPCommand(command, args); err != nil {
+		return nil, err
+	}
+	if err := ctx.Err(); err != nil {
+		return nil, err
+	}
+	inputR, inputW, err := os.Pipe()
+	if err != nil {
+		return nil, err
+	}
+	defer inputR.Close()
+	outputR, outputW, err := os.Pipe()
+	if err != nil {
+		inputW.Close()
+		return nil, err
+	}
+	defer outputW.Close()
+	worker, err := startWorker(ctx, o, mcpStdioMounts(o, rootfs), inputR, outputW)
+	inputR.Close()
+	outputW.Close()
+	if err != nil {
+		inputW.Close()
+		outputR.Close()
+		return nil, FatalError{fmt.Errorf("sandbox setup: %w", err)}
+	}
+	proc, err := openMCPStdio(ctx, worker, inputW, outputR, command, args)
+	if err != nil {
+		inputW.Close()
+		outputR.Close()
+		worker.stop()
+		_ = worker.wait()
+		return nil, err
+	}
+	return proc, nil
+}
 func execute(ctx context.Context, o Options, rootfs string, call llm.ToolCall) (string, error) {
 	mounts := toolMounts(o, rootfs, "tool")
 	data, err := run(ctx, o, mounts, localtools.Request{Call: call, ShellTimeout: o.ShellTimeout})

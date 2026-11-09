@@ -158,3 +158,44 @@ recent_window = "12h"
 # Per-chat tap caps: oldest taps evicted first. Bounds disk when sweeps skip.
 recent_max_messages = 200
 recent_max_bytes = 32768
+
+[mcp]
+# Optional Model Context Protocol servers (configuration only; task
+# lifecycle, transports, discovery, execution, and runtime wiring arrive in
+# later issues). MCP stays fully inactive unless at least one server sets
+# enabled = true: no child process is spawned and no network connection is
+# opened otherwise. Configuration edits apply at the next start (restart
+# required); there is no live reload. Credential fields, custom headers,
+# OAuth, and environment-secret injection are excluded: servers are
+# credential-free stdio commands or Streamable HTTP endpoints.
+#
+# Each server is one named [mcp.servers.<name>] table. Names are 1-64 chars
+# of letters/digits/_/-, starting with a letter or digit (dots are
+# rejected). Validation errors identify the server and field.
+#
+# transport "stdio": spawns command with optional args. command is required;
+# url must be empty.
+# transport "http": Streamable HTTP endpoint at url. url is required;
+# command and args must be empty. HTTPS anywhere; plain HTTP only for
+# loopback (127.0.0.0/8, ::1, localhost). URLs must not contain credentials.
+#
+# Timeouts are positive durations up to 10m; empty means the default.
+# connect_timeout (default "10s") bounds setup per task; call_timeout
+# (default "60s") bounds each tool call.
+
+# Stdio example (disabled):
+# [mcp.servers.local-tools]
+# enabled = false
+# transport = "stdio"
+# command = "/usr/local/bin/mcp-server"
+# args = ["--stdio"]
+# connect_timeout = "10s"
+# call_timeout = "60s"
+
+# Streamable HTTP example (disabled):
+# [mcp.servers.docs]
+# enabled = false
+# transport = "http"
+# url = "https://mcp.example.com/mcp"
+# connect_timeout = "10s"
+# call_timeout = "60s"

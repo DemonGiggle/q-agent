@@ -22,6 +22,8 @@ func Worker(mode string, in io.Reader, out io.Writer) error {
 	switch mode {
 	case "session":
 		return streamWorker(in, out)
+	case mcpStdioMode:
+		return mcpStdioWorker(in, out)
 	case "tool":
 		var request localtools.Request
 		d := json.NewDecoder(io.LimitReader(in, 1<<20))

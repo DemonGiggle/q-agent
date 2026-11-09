@@ -6,6 +6,7 @@ import (
 	"q-agent/internal/agent"
 	"q-agent/internal/config"
 	"q-agent/internal/llm"
+	"q-agent/internal/mcpclient"
 	"q-agent/internal/platform"
 	"q-agent/internal/state"
 	"strings"
@@ -240,5 +241,73 @@ func TestCancelAndProvisioningFailure(t *testing.T) {
 	r.Wait()
 	if len(p.requests) != 1 {
 		t.Fatal("provisioning failure reached model")
+	}
+}
+
+// TestMCPComposesWithScheduleToolsForAllTasks (#52) proves the runtime's
+// task composition shape: unknown runners yield no stdio factory (no
+// cross-mode fallback), inactive MCP is a passthrough for both interactive
+// and scheduled runs (both flow through run()), and an active wrapper
+// keeps the owned schedule_* names while its lifecycle propagates through
+// scheduleTools even when every MCP server is unavailable.
+func TestMCPComposesWithScheduleToolsForAllTasks(t *testing.T) {
+	r, _, _ := fixture(t)
+	if mcpclient.Active(r.Config) {
+		t.Fatal("default config must leave MCP inactive")
+	}
+	if f := mcpStdioDial(noTools{}, nil); f != nil {
+		t.Fatal("unknown runner must not yield a stdio factory")
+	}
+	// Inactive MCP returns the built-in tools unchanged: no sessions, no
+	// setup, for scheduled runs exactly as for interactive ones.
+	base := noTools{}
+	if got := mcpclient.Wrap(base, r.Config, nil, nil, scheduleCreateName, scheduleListName, scheduleDeleteName); got != agent.Tools(base) {
+		t.Fatalf("inactive Wrap should return base unchanged, got %T", got)
+	}
+
+	// Active MCP with no usable transport: the task records one
+	// unavailable server and ordinary + schedule tools keep working.
+	cfg := r.Config
+	cfg.MCP = config.MCP{Servers: map[string]config.MCPServer{
+		"docs": {Enabled: true, Transport: "http", URL: "https://example.com/mcp", ConnectTimeout: "1s", CallTimeout: "1s"},
+	}}
+	wrapped := mcpclient.Wrap(base, cfg, nil, nil, scheduleCreateName, scheduleListName, scheduleDeleteName)
+	mcpTools, ok := wrapped.(interface {
+		Statuses() []mcpclient.ServerStatus
+		Summary() string
+	})
+	if !ok {
+		t.Fatalf("active Wrap should expose MCP diagnostics, got %T", wrapped)
+	}
+	owner := input(1, -10, 0, 1, "go")
+	tools := &scheduleTools{base: wrapped, runtime: r, owner: owner}
+	cancelled, stop := context.WithCancel(context.Background())
+	stop()
+	tools.StartTask(cancelled, nil) // must not hang, panic, or dial out
+	defer tools.CloseTask()
+	if statuses := mcpTools.Statuses(); len(statuses) != 1 || statuses[0].Available {
+		t.Fatalf("statuses = %+v, want one unavailable server", statuses)
+	}
+	// No adapted name may shadow the owned schedule tools.
+	seen := map[string]bool{}
+	for _, schema := range tools.Schemas() {
+		seen[schema.Name] = true
+		if strings.Contains(schema.Name, "__") {
+			t.Fatalf("unexpected adapted tool while servers are down: %q", schema.Name)
+		}
+	}
+	for _, name := range []string{scheduleCreateName, scheduleListName, scheduleDeleteName} {
+		if !seen[name] {
+			t.Fatalf("schedule tool %q missing from composed schemas", name)
+		}
+	}
+	// Schedule tools stay usable while MCP is down: listing returns an
+	// (empty) page rather than an MCP error.
+	out, err := tools.Execute(context.Background(), llm.ToolCall{Name: scheduleListName, Arguments: []byte(`{"offset":0}`)})
+	if err != nil || !strings.Contains(out, `"total":0`) {
+		t.Fatalf("schedule_list during MCP outage = %q, %v", out, err)
+	}
+	if summary := mcpTools.Summary(); !strings.Contains(summary, "0/1 servers available") {
+		t.Fatalf("summary = %q", summary)
 	}
 }

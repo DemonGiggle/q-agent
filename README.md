@@ -73,8 +73,46 @@ Full rules in [operations](docs/operations.md#3-talking-to-the-bot).
 - Photos & files: photos (up to 2 per message, 10 MB each) and documents, video, audio, voice saved to `inbox/` for vision + tools (5 files, 20 MB each, 100 MB per chat, cleared daily).
 - Interactive sessions: PTY/pipe process sessions (`shell` + `process`), incl. login flows.
 - Control: live `Working…` progress, steer running tasks with follow-up text, `/cancel`, `/new`.
+- MCP: optional external tool servers over stdio or Streamable HTTP (off by default) — [details](#mcp-servers-optional).
 - Console: guided `models` / `config` menus plus script-friendly `--json` actions.
 - Service: systemd user unit, `q-agent update`, Telegram `/update` + `/restart` (admin only).
+
+## MCP servers (optional)
+
+q-agent can call tools from external [Model Context Protocol](https://modelcontextprotocol.io)
+servers — as an MCP *client* (it never serves its own tools over MCP). Off by
+default; configure in `config.toml`, then **restart** the service (no live reload):
+
+```toml
+[mcp.servers.local-tools]
+enabled = true
+transport = "stdio"          # or "http"
+command = "/usr/local/bin/mcp-server"
+args = ["--stdio"]
+# url = "https://mcp.example.com/mcp"   # http only; https anywhere, http loopback-only
+```
+
+- **Install for the right mode.** `stdio` commands resolve in the task's
+  environment: on the host for host mode, *inside the chat's Debian image*
+  for sandbox mode (the sandbox cannot see host paths). A sandbox failure
+  never falls back to host execution — the server just shows unavailable.
+- **Shared everywhere.** Every authorized chat — and every scheduled agent
+  task — gets the same enabled servers, dialed fresh per task and released
+  on completion, cancellation, timeout, or shutdown. Enabling a server
+  trusts all authorized chats with its tools; there is no per-chat scoping
+  or per-call approval. Tools appear as `server__tool`; results are
+  untrusted third-party data.
+- **Troubleshooting.** The service log prints one line per task, e.g.
+  `mcp: 1/2 servers available, 5 tools, 0 quarantined`, and the chat
+  prompt lists unavailable servers with a one-line reason. Commands, URLs,
+  and environment never appear in logs or errors. If a server is
+  unavailable, check it is reachable from the task's mode and that you
+  restarted after saving the config.
+- **Not supported:** standalone resources/prompts, roots, sampling,
+  elicitation, OAuth/credential storage, custom headers, secret injection
+  into environments, legacy HTTP+SSE transport, and bundled server
+  binaries. See the `[mcp]` comments in
+  [config.example.toml](config.example.toml).
 
 ## Quick start
 

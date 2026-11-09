@@ -2,6 +2,7 @@ package runtime
 
 import (
 	"fmt"
+	"sort"
 	"strings"
 
 	"q-agent/internal/platform"
@@ -62,6 +63,20 @@ func (r *Runtime) statusLocked(m platform.Message) string {
 	if limit <= 0 {
 		limit = 2
 	}
+	mcp := "disabled (no enabled servers)"
+	if r.Config.MCPActive() {
+		servers := r.Config.EnabledMCPServers()
+		names := make([]string, 0, len(servers))
+		for name, server := range servers {
+			names = append(names, fmt.Sprintf("%s(%s)", name, server.Transport))
+		}
+		sort.Strings(names)
+		// Sanitized by construction: only validated server names and
+		// transport kinds. Commands, arguments, URLs, timeouts, and
+		// environments are never exposed. Per-task availability is
+		// negotiated at task start and reported in task logs.
+		mcp = fmt.Sprintf("%d server(s) configured (%s); availability is negotiated per task", len(names), strings.Join(names, ", "))
+	}
 	// Keep config strings on one line; apply the same remote redaction policy
 	// used for agent errors before the response reaches the durable outbox.
 	line := func(s string) string { return strings.Join(strings.Fields(s), " ") }
@@ -69,11 +84,11 @@ func (r *Runtime) statusLocked(m platform.Message) string {
 	if version == "" {
 		version = "dev"
 	}
-	text := fmt.Sprintf("**q-agent status**\n\nVersion: %s\nProvider: %s\nModel: %s\nThinking: %s\nExecution: %s\nMemory (RSS, q-agent): %s\n\nThis topic: %s\nActive tasks: %d/%d\nScheduler: %s\n\n**Limits per task**\nModel steps: %s\nTask timeout: %s\nInteractive task timeout: %s\nShell timeout: %s\n\n`/help` — Available commands",
+	text := fmt.Sprintf("**q-agent status**\n\nVersion: %s\nProvider: %s\nModel: %s\nThinking: %s\nExecution: %s\nMemory (RSS, q-agent): %s\n\nThis topic: %s\nActive tasks: %d/%d\nScheduler: %s\nMCP: %s\n\n**Limits per task**\nModel steps: %s\nTask timeout: %s\nInteractive task timeout: %s\nShell timeout: %s\n\n`/help` — Available commands",
 		version,
 		line(provider), line(model), line(thinking), mode,
 		formatRSS(currentRSS()),
-		activity, len(r.active), limit, scheduler,
+		activity, len(r.active), limit, scheduler, mcp,
 		maxSteps,
 		line(r.Config.Limits.TaskTimeout), r.Config.InteractiveTaskDuration().String(), line(r.Config.Limits.ShellTimeout))
 	text += companionStatusLine(r, m)

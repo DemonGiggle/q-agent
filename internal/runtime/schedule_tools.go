@@ -11,8 +11,17 @@ import (
 	"q-agent/internal/agent"
 	"q-agent/internal/llm"
 	"q-agent/internal/platform"
+	"q-agent/internal/process"
 	"q-agent/internal/redaction"
 	"q-agent/internal/state"
+)
+
+// Schedule tool names owned by scheduleTools. The MCP wrapper reserves
+// these so adapted remote names never collide with them.
+const (
+	scheduleCreateName = "schedule_create"
+	scheduleListName   = "schedule_list"
+	scheduleDeleteName = "schedule_delete"
 )
 
 type scheduleTools struct {
@@ -24,7 +33,9 @@ type scheduleTools struct {
 func (t *scheduleTools) SystemPrompt() string {
 	system := agent.System
 	if described, ok := t.base.(interface{ SystemPrompt() string }); ok {
-		system = described.SystemPrompt()
+		if s := described.SystemPrompt(); s != "" {
+			system = s
+		}
 	}
 	return system + fmt.Sprintf("\nCurrent time: %s. Use schedule_create/list/delete for persistent reminders and scheduled agent tasks, never background sleeps or OS cron. Schedule times must be explicit RFC3339 timestamps with UTC offset; use an IANA timezone for local daily/weekly recurrence. If the user's timezone cannot be inferred, ask. Choose reminder for a literal notification (no model call when due), agent for future work. Only claim a schedule was created after the tool succeeds. Schedule tools are host-managed in both execution modes and scoped to this user, chat, and topic. Deleting a schedule cancels pending occurrences but cannot stop an already running task; use /cancel for that. Scheduler scans every minute; normal scan lateness is up to 60 seconds plus queue delay. Missed occurrences have a five-minute grace window; failed agent tasks are retried up to 3 times with increasing delays (5m, 15m, 45m).", time.Now().Format(time.RFC3339))
 }
@@ -166,6 +177,23 @@ func (t *scheduleTools) StartTask(ctx context.Context, p *redaction.Policy) {
 func (t *scheduleTools) CloseTask() {
 	if scoped, ok := t.base.(interface{ CloseTask() }); ok {
 		scoped.CloseTask()
+	}
+}
+
+// SetProcessHooks forwards managed-process hooks through to the wrapped
+// tools (built-in runner, possibly composed with MCP tools).
+func (t *scheduleTools) SetProcessHooks(hooks process.Hooks) {
+	if setter, ok := t.base.(interface{ SetProcessHooks(process.Hooks) }); ok {
+		setter.SetProcessHooks(hooks)
+	}
+}
+
+// SetShellTimeoutHook forwards the interactive shell-timeout decision
+// callback through to the wrapped tools. Runners without the hook keep
+// their terminate-on-timeout behavior.
+func (t *scheduleTools) SetShellTimeoutHook(fn func(context.Context, string, []string) bool, maxExtends int) {
+	if setter, ok := t.base.(shellHookSetter); ok {
+		setter.SetShellTimeoutHook(fn, maxExtends)
 	}
 }
 

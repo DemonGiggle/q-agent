@@ -292,13 +292,20 @@ func TestMCPServeFiltersEnvironment(t *testing.T) {
 	// worker environment carries it.
 	t.Setenv("Q_AGENT_MCP_TEST_LEAK_TOKEN", "leak-value")
 	env, _ := redaction.FilterEnvironment(os.Environ())
-	write, read, wait := mcpServeWithEnv(t, dir, env, sh, "-c", "echo \"token=[${Q_AGENT_MCP_TEST_LEAK_TOKEN-unset}]\"; echo done")
+	// Keep the child alive with trailing `cat` (same stable pattern as
+	// TestMCPServeEchoSeparatesStreams): an immediately-exiting child races
+	// stdout delivery against worker exit on loaded CI runners, causing the
+	// stdout read below to time out. The env assertion is unchanged.
+	write, read, wait := mcpServeWithEnv(t, dir, env, sh, "-c", "echo \"token=[${Q_AGENT_MCP_TEST_LEAK_TOKEN-unset}]\"; echo done; cat")
 	if ready := read(); ready.Type != "ready" {
 		t.Fatalf("ready: %+v", ready)
 	}
 	var out []byte
 	for i := 0; i < 5; i++ {
 		f := read()
+		if f.Type == "exit" {
+			t.Fatalf("child exited before stdout arrived (exit=%d, out=%q)", f.Code, out)
+		}
 		if f.Type == "stdout" {
 			out = append(out, f.Data...)
 			if strings.Contains(string(out), "done") {

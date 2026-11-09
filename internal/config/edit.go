@@ -74,6 +74,26 @@ func UnknownKeyHint(key string) string {
 	if hint, ok := misplacedProviderHint(key); ok {
 		return hint
 	}
+	if hint := MCPKeyHint(key); hint != "" {
+		return hint
+	}
+	return ""
+}
+
+// MCPKeyHint explains mcp.servers keys with an invalid name or field. It
+// returns "" when the key is not MCP-shaped or is fully valid.
+func MCPKeyHint(key string) string {
+	if key == "mcp" || key == "mcp.servers" {
+		return "use mcp.servers.<name>.enabled/transport/command/args/url/connect_timeout/call_timeout with a concrete server name"
+	}
+	if server, field, ok := ParseMCPServersKey(key); ok {
+		if !validMCPServerName(server) {
+			return fmt.Sprintf("invalid MCP server name %q; want 1-64 chars of letters/digits/_/-, starting with a letter or digit", server)
+		}
+		if !validMCPField(field) {
+			return fmt.Sprintf("unknown MCP field %q; want enabled/transport/command/args/url/connect_timeout/call_timeout", field)
+		}
+	}
 	return ""
 }
 
@@ -99,6 +119,33 @@ func ParseValue(key, text string) (any, error) {
 			return nil, fmt.Errorf("unknown configuration key %q", key)
 		}
 		return text, nil
+	}
+	if server, field, ok := ParseMCPServersKey(key); ok {
+		if !validMCPServerName(server) {
+			return nil, fmt.Errorf("invalid MCP server name %q (want 1-64 chars of letters/digits/_/-, starting with a letter or digit)", server)
+		}
+		if !validMCPField(field) {
+			return nil, fmt.Errorf("unknown configuration key %q", key)
+		}
+		// String fields accept raw text; typed fields decode TOML literals.
+		if field == "transport" || field == "command" || field == "url" ||
+			field == "connect_timeout" || field == "call_timeout" {
+			return text, nil
+		}
+		var exemplar any
+		switch field {
+		case "enabled":
+			exemplar = false
+		case "args":
+			exemplar = []string{}
+		}
+		holder := reflect.New(reflect.TypeOf(exemplar))
+		typ := reflect.StructOf([]reflect.StructField{{Name: "Value", Type: holder.Elem().Type(), Tag: `toml:"value"`}})
+		target := reflect.New(typ)
+		if err := toml.NewDecoder(strings.NewReader("value = " + text)).DisallowUnknownFields().Decode(target.Interface()); err != nil {
+			return nil, fmt.Errorf("invalid value for %s (expected %s)", key, holder.Elem().Type())
+		}
+		return target.Elem().Field(0).Interface(), nil
 	}
 	exemplar, ok := Values(Defaults())[key]
 	if !ok {
@@ -161,6 +208,32 @@ func patch(data []byte, changes map[string]any) ([]byte, error) {
 				return nil, fmt.Errorf("invalid configuration key/type %q", key)
 			}
 			_ = s
+			encoded, err := toml.Marshal(map[string]any{"value": value})
+			if err != nil {
+				return nil, err
+			}
+			remaining[key] = strings.TrimSpace(strings.SplitN(string(encoded), "=", 2)[1])
+			continue
+		}
+		if server, field, ok := ParseMCPServersKey(key); ok {
+			if !validMCPServerName(server) {
+				return nil, fmt.Errorf("invalid MCP server name %q", server)
+			}
+			if !validMCPField(field) {
+				return nil, fmt.Errorf("invalid configuration key/type %q", key)
+			}
+			var want reflect.Type
+			switch field {
+			case "enabled":
+				want = reflect.TypeOf(false)
+			case "args":
+				want = reflect.TypeOf([]string{})
+			default:
+				want = reflect.TypeOf("")
+			}
+			if reflect.TypeOf(value) != want {
+				return nil, fmt.Errorf("invalid configuration key/type %q", key)
+			}
 			encoded, err := toml.Marshal(map[string]any{"value": value})
 			if err != nil {
 				return nil, err

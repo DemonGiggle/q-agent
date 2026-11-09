@@ -24,3 +24,9 @@ func PutInboxFile(context.Context, Options, string, string, []byte, int64) (stri
 func ClearInbox(context.Context, Options, string, time.Time) (int, int64, error) {
 	return 0, 0, fmt.Errorf("sandbox requires Linux")
 }
+
+// StartMCPStdio requires Linux sandbox support and never falls back to
+// host execution.
+func StartMCPStdio(context.Context, Options, string, string, []string) (*MCPStdioProcess, error) {
+	return nil, fmt.Errorf("sandbox requires Linux")
+}

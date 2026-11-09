@@ -9,10 +9,13 @@ import (
 
 	"q-agent/internal/agent"
 	"q-agent/internal/config"
+	"q-agent/internal/host"
 	"q-agent/internal/llm"
+	"q-agent/internal/mcpclient"
 	"q-agent/internal/platform"
 	"q-agent/internal/process"
 	"q-agent/internal/redaction"
+	"q-agent/internal/sandbox"
 	"q-agent/internal/state"
 	"q-agent/internal/telegram"
 	"sync"
@@ -324,6 +327,22 @@ func (r *Runtime) Handle(ctx context.Context, m platform.Message) error {
 	return err
 }
 
+// mcpStdioDial derives the mode-specific MCP stdio factory from the
+// task's built-in runner: host children for host mode, the chat sandbox
+// namespace for sandbox mode. Unknown runners (tests, future modes) yield
+// nil, which marks stdio servers unavailable while HTTP and ordinary
+// tools keep working. There is no cross-mode fallback.
+func mcpStdioDial(base agent.Tools, policy *redaction.Policy) mcpclient.TransportFactory {
+	switch b := base.(type) {
+	case *host.Runner:
+		return mcpclient.HostStdioFactory(b.Options.WorkingDir, b.Options.Environment, policy)
+	case *sandbox.Runner:
+		return mcpclient.SandboxStdioFactory(b.Options, b.RootFS, policy)
+	default:
+		return nil
+	}
+}
+
 func (r *Runtime) run(ctx context.Context, m platform.Message, runID string) bool {
 	stopTyping := func() {}
 	if r.Sink != nil {
@@ -382,7 +401,16 @@ func (r *Runtime) run(ctx context.Context, m platform.Message, runID string) boo
 					}
 					options.OnToolEnd = func(name string, toolErr error) { live.ToolEnd(name, toolCount, toolErr) }
 					baseTools := r.Tools(root)
-					if setter, ok := baseTools.(interface{ SetProcessHooks(process.Hooks) }); ok {
+					// Compose MCP tools with the built-in host/sandbox and
+					// schedule tools for this task only: one wrapper per
+					// task means concurrent chats never share MCP
+					// sessions, and agent.Run's deferred CloseTask
+					// releases them on completion, cancellation, timeout,
+					// setup failure, or shutdown. Inactive MCP returns
+					// baseTools unchanged (no setup, no sessions).
+					mcpTools := mcpclient.Wrap(baseTools, r.Config, r.Options.Redaction, mcpStdioDial(baseTools, r.Options.Redaction), scheduleCreateName, scheduleListName, scheduleDeleteName)
+					tools := &scheduleTools{base: mcpTools, runtime: r, owner: m}
+					if setter, ok := interface{}(tools).(interface{ SetProcessHooks(process.Hooks) }); ok {
 						interimSequence := 0
 						r.mu.Lock()
 						active := r.active[m.WorkspaceKey()]
@@ -396,7 +424,7 @@ func (r *Runtime) run(ctx context.Context, m platform.Message, runID string) boo
 							},
 						})
 					}
-					if setter, ok := baseTools.(shellHookSetter); ok {
+					if setter, ok := interface{}(tools).(shellHookSetter); ok {
 						hookOwner := m
 						hookRunID := runID
 						setter.SetShellTimeoutHook(func(hookCtx context.Context, command string, lastLines []string) bool {
@@ -415,7 +443,10 @@ func (r *Runtime) run(ctx context.Context, m platform.Message, runID string) boo
 						}
 						r.mu.Unlock()
 					}()
-					result, err := agent.Run(ctx, provider, &scheduleTools{base: baseTools, runtime: r, owner: m}, r.memoryHistoryWithQuery(m, conversation, m.Text), m.Text, options)
+					result, err := agent.Run(ctx, provider, tools, r.memoryHistoryWithQuery(m, conversation, m.Text), m.Text, options)
+					if summarizer, ok := mcpTools.(interface{ Summary() string }); ok {
+						r.logf("[MCP] Task tools | update=%d %s", m.UpdateID, r.Options.Redaction.Text(redaction.Terminal, summarizer.Summary()))
+					}
 					answer = result.Answer
 					runErr = err
 					if err == nil {

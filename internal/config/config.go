@@ -4,8 +4,11 @@ import (
 	"bytes"
 	"fmt"
 	"io"
+	"net"
+	"net/url"
 	"os"
 	"path/filepath"
+	"regexp"
 	"runtime"
 	"strings"
 	"syscall"
@@ -27,6 +30,7 @@ type Config struct {
 	Memory    Memory              `toml:"memory"`
 	Proactive Proactive           `toml:"proactive"`
 	ChatGPT   ChatGPT             `toml:"chatgpt"`
+	MCP       MCP                 `toml:"mcp"`
 }
 type Provider struct {
 	Name       string `toml:"name"`
@@ -149,6 +153,241 @@ type ModelOverride struct {
 	Thinking string `toml:"thinking"`
 }
 
+// MCP holds optional Model Context Protocol server configurations. Each entry
+// in Servers is one named [mcp.servers.<name>] table. MCP stays fully
+// inactive unless at least one server has enabled=true; no child process is
+// spawned and no network connection is opened otherwise. Configuration edits
+// apply at the next start (restart required); there is no live reload.
+//
+// This is the configuration-only foundation (issue #45). Task lifecycle,
+// transports, discovery, execution, and runtime wiring arrive in later issues
+// (#46 and up) and build on these types without changing their TOML shape.
+// Credential fields, custom headers, OAuth, and environment-secret injection
+// are intentionally excluded: servers are credential-free stdio commands or
+// Streamable HTTP endpoints (HTTPS anywhere, HTTP on loopback only).
+type MCP struct {
+	Servers map[string]MCPServer `toml:"servers"`
+}
+
+// MCPServer is one named [mcp.servers.<name>] table.
+//
+//   - transport "stdio": spawns command with optional args. command is
+//     required; url must be empty.
+//   - transport "http": Streamable HTTP endpoint at url. url is required;
+//     command and args must be empty.
+//
+// connect_timeout bounds initial setup per task (default "10s"); call_timeout
+// bounds each tool call (default "60s"). Both are positive durations up to
+// "10m". Empty values load as their defaults.
+type MCPServer struct {
+	Enabled        bool     `toml:"enabled"`
+	Transport      string   `toml:"transport"`
+	Command        string   `toml:"command"`
+	Args           []string `toml:"args"`
+	URL            string   `toml:"url"`
+	ConnectTimeout string   `toml:"connect_timeout"`
+	CallTimeout    string   `toml:"call_timeout"`
+}
+
+// Timeout defaults applied when connect_timeout/call_timeout are empty.
+// Documented in config.example.toml and internal/mcpclient.
+const (
+	// DefaultMCPConnectTimeout bounds MCP setup per task when
+	// mcp.servers.<name>.connect_timeout is empty.
+	DefaultMCPConnectTimeout = "10s"
+	// DefaultMCPCallTimeout bounds each MCP tool call when
+	// mcp.servers.<name>.call_timeout is empty.
+	DefaultMCPCallTimeout = "60s"
+)
+
+// maxMCPTimeout caps connect_timeout and call_timeout (both must be positive
+// durations not exceeding this bound).
+const maxMCPTimeout = 10 * time.Minute
+
+// mcpServerNameRe constrains server names so they round-trip through TOML
+// tables, console keys, and diagnostics without ambiguity.
+var mcpServerNameRe = regexp.MustCompile(`^[A-Za-z0-9][A-Za-z0-9_-]{0,63}$`)
+
+// validMCPServerName reports whether name may select an [mcp.servers.<name>]
+// table: 1-64 chars, letters/digits/_/-, starting with a letter or digit
+// (dots are rejected so table names never nest).
+func validMCPServerName(name string) bool {
+	return mcpServerNameRe.MatchString(name)
+}
+
+// validMCPField reports whether field is a settable mcp.servers.<name> field.
+func validMCPField(field string) bool {
+	switch field {
+	case "enabled", "transport", "command", "args", "url",
+		"connect_timeout", "call_timeout":
+		return true
+	}
+	return false
+}
+
+// ParseMCPServersKey splits mcp.servers.<name>.<field> into its parts. It
+// returns ok=false for non-MCP keys. Server names never contain dots, so the
+// last dot separates the field and the middle segment is the name.
+func ParseMCPServersKey(key string) (server, field string, ok bool) {
+	if !strings.HasPrefix(key, "mcp.servers.") {
+		return "", "", false
+	}
+	rest := strings.TrimPrefix(key, "mcp.servers.")
+	i := strings.LastIndex(rest, ".")
+	if i <= 0 || i == len(rest)-1 {
+		return "", "", false
+	}
+	server, field = rest[:i], rest[i+1:]
+	if server == "" || field == "" || strings.Contains(server, ".") {
+		return "", "", false
+	}
+	return server, field, true
+}
+
+// MCPActive reports whether at least one MCP server is enabled. With no
+// enabled servers MCP performs no startup, spawns no child process, and opens
+// no network connection.
+func (c Config) MCPActive() bool {
+	for _, s := range c.MCP.Servers {
+		if s.Enabled {
+			return true
+		}
+	}
+	return false
+}
+
+// EnabledMCPServers returns the enabled subset of [mcp.servers.*] entries.
+func (c Config) EnabledMCPServers() map[string]MCPServer {
+	out := map[string]MCPServer{}
+	for name, s := range c.MCP.Servers {
+		if s.Enabled {
+			out[name] = s
+		}
+	}
+	return out
+}
+
+// ConnectTimeoutDuration parses the effective connection/setup timeout,
+// falling back to DefaultMCPConnectTimeout when empty or invalid.
+func (s MCPServer) ConnectTimeoutDuration() time.Duration {
+	if d, err := time.ParseDuration(s.ConnectTimeout); err == nil && d > 0 {
+		return d
+	}
+	d, _ := time.ParseDuration(DefaultMCPConnectTimeout)
+	return d
+}
+
+// CallTimeoutDuration parses the effective per-call timeout, falling back to
+// DefaultMCPCallTimeout when empty or invalid.
+func (s MCPServer) CallTimeoutDuration() time.Duration {
+	if d, err := time.ParseDuration(s.CallTimeout); err == nil && d > 0 {
+		return d
+	}
+	d, _ := time.ParseDuration(DefaultMCPCallTimeout)
+	return d
+}
+
+// normalizeMCP validates every [mcp.servers.<name>] table and fills timeout
+// defaults. All errors identify the server and field.
+func normalizeMCP(c *Config) error {
+	for _, name := range sortedMCPServerNames(c.MCP.Servers) {
+		s := c.MCP.Servers[name]
+		if !validMCPServerName(name) {
+			return fmt.Errorf("mcp.servers.%q: invalid server name (want 1-64 chars of letters/digits/_/-, starting with a letter or digit)", name)
+		}
+		switch s.Transport {
+		case "stdio":
+			if strings.TrimSpace(s.Command) == "" {
+				return fmt.Errorf("mcp.servers.%q.command is required for stdio transport", name)
+			}
+			if s.URL != "" {
+				return fmt.Errorf("mcp.servers.%q.url must be empty for stdio transport", name)
+			}
+		case "http":
+			if strings.TrimSpace(s.URL) == "" {
+				return fmt.Errorf("mcp.servers.%q.url is required for http transport", name)
+			}
+			if s.Command != "" {
+				return fmt.Errorf("mcp.servers.%q.command must be empty for http transport", name)
+			}
+			if len(s.Args) != 0 {
+				return fmt.Errorf("mcp.servers.%q.args must be empty for http transport", name)
+			}
+			if err := validateMCPServerURL(name, s.URL); err != nil {
+				return err
+			}
+		case "":
+			return fmt.Errorf("mcp.servers.%q.transport is required (want stdio|http)", name)
+		default:
+			return fmt.Errorf("mcp.servers.%q.transport %q is invalid (want stdio|http)", name, s.Transport)
+		}
+		if s.ConnectTimeout == "" {
+			s.ConnectTimeout = DefaultMCPConnectTimeout
+		}
+		if d, err := time.ParseDuration(s.ConnectTimeout); err != nil || d <= 0 || d > maxMCPTimeout {
+			return fmt.Errorf("mcp.servers.%q.connect_timeout is invalid: want positive duration up to 10m (got %q)", name, s.ConnectTimeout)
+		}
+		if s.CallTimeout == "" {
+			s.CallTimeout = DefaultMCPCallTimeout
+		}
+		if d, err := time.ParseDuration(s.CallTimeout); err != nil || d <= 0 || d > maxMCPTimeout {
+			return fmt.Errorf("mcp.servers.%q.call_timeout is invalid: want positive duration up to 10m (got %q)", name, s.CallTimeout)
+		}
+		c.MCP.Servers[name] = s
+	}
+	return nil
+}
+
+// sortedMCPServerNames returns server names in sorted order so validation
+// errors are deterministic.
+func sortedMCPServerNames(servers map[string]MCPServer) []string {
+	names := make([]string, 0, len(servers))
+	for name := range servers {
+		names = append(names, name)
+	}
+	for i := 1; i < len(names); i++ {
+		for j := i; j > 0 && names[j] < names[j-1]; j-- {
+			names[j], names[j-1] = names[j-1], names[j]
+		}
+	}
+	return names
+}
+
+// validateMCPServerURL enforces the credential-free endpoint policy: HTTPS
+// anywhere, HTTP on loopback only, never with userinfo (credentials).
+func validateMCPServerURL(name, raw string) error {
+	u, err := url.Parse(raw)
+	if err != nil || u.Scheme == "" || u.Host == "" {
+		return fmt.Errorf("mcp.servers.%q.url is invalid: want http(s) URL with a host", name)
+	}
+	if u.User != nil {
+		return fmt.Errorf("mcp.servers.%q.url must not contain credentials", name)
+	}
+	switch u.Scheme {
+	case "https":
+		return nil
+	case "http":
+		if isMCPLoopbackHost(u.Hostname()) {
+			return nil
+		}
+		return fmt.Errorf("mcp.servers.%q.url: plain http is only allowed for loopback (127.0.0.0/8, ::1, localhost); use https", name)
+	default:
+		return fmt.Errorf("mcp.servers.%q.url is invalid: want http(s) URL with a host", name)
+	}
+}
+
+// isMCPLoopbackHost reports whether host is a loopback address for the
+// plain-http exception: 127.0.0.0/8, ::1, or localhost.
+func isMCPLoopbackHost(host string) bool {
+	if strings.EqualFold(host, "localhost") {
+		return true
+	}
+	if ip := net.ParseIP(host); ip != nil {
+		return ip.IsLoopback()
+	}
+	return false
+}
+
 // misplacedProviderHint explains where model/thinking/base_url and
 // credentials belong when a dotted key puts them outside provider settings.
 // It reports ok=false for keys that are not provider fields in the wrong place.
@@ -167,6 +406,11 @@ func misplacedProviderHint(key string) (hint string, ok bool) {
 		if _, _, pok := ParseProvidersKey(key); !pok {
 			return "use providers.<name>.model/thinking/base_url/api_key_env/api_key_path with a concrete provider name", true
 		}
+		return "", false
+	}
+	// MCP tables are dynamic like providers; unknown mcp.* keys are reported
+	// as unknown MCP keys, never as misplaced provider fields.
+	if key == "mcp" || strings.HasPrefix(key, "mcp.") {
 		return "", false
 	}
 	// Provider fields nested under non-provider sections.
@@ -223,6 +467,9 @@ func Load(path string) (Config, error) {
 	d := toml.NewDecoder(bytes.NewReader(data)).DisallowUnknownFields()
 	if err = d.Decode(&c); err != nil {
 		if hint := misplacedHintFromData(data); hint != "" {
+			return c, fmt.Errorf("%w; %s", err, hint)
+		}
+		if hint := mcpHintFromData(data); hint != "" {
 			return c, fmt.Errorf("%w; %s", err, hint)
 		}
 		return c, err
@@ -430,6 +677,9 @@ func Load(path string) (Config, error) {
 		return c, err
 	}
 	if err := validateModelOverride("proactive.override", &c.Proactive.Override, c); err != nil {
+		return c, err
+	}
+	if err := normalizeMCP(&c); err != nil {
 		return c, err
 	}
 	c.StateDir, err = absolute(c.StateDir, filepath.Dir(path))
@@ -707,6 +957,9 @@ func IsValidKey(key string) bool {
 	if provider, field, ok := ParseProvidersKey(key); ok {
 		return ValidProviderAdapter(provider) && validProviderField(field)
 	}
+	if server, field, ok := ParseMCPServersKey(key); ok {
+		return validMCPServerName(server) && validMCPField(field)
+	}
 	return false
 }
 
@@ -781,6 +1034,31 @@ func misplacedHintFromData(data []byte) string {
 	for _, o := range occs {
 		if hint, ok := misplacedProviderHint(o.key); ok {
 			return hint + " (offending key: " + o.key + ")"
+		}
+	}
+	return ""
+}
+
+// mcpHintFromData scans raw TOML keys and explains unknown or malformed
+// mcp.servers keys when strict decoding rejects them before validation runs.
+// It returns "" when nothing looks MCP-shaped.
+func mcpHintFromData(data []byte) string {
+	occs, _, err := scanKeys(data)
+	if err != nil {
+		return ""
+	}
+	for _, o := range occs {
+		if server, field, ok := ParseMCPServersKey(o.key); ok {
+			if !validMCPServerName(server) {
+				return fmt.Sprintf("invalid MCP server name %q (offending key: %s)", server, o.key)
+			}
+			if !validMCPField(field) {
+				return fmt.Sprintf("unknown configuration key %q; want mcp.servers.<name>.enabled/transport/command/args/url/connect_timeout/call_timeout", o.key)
+			}
+			continue
+		}
+		if o.key == "mcp" || strings.HasPrefix(o.key, "mcp.") {
+			return fmt.Sprintf("unknown configuration key %q; use mcp.servers.<name>.enabled/transport/command/args/url/connect_timeout/call_timeout with a concrete server name", o.key)
 		}
 	}
 	return ""

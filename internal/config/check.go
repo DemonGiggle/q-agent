@@ -31,6 +31,8 @@ type CheckReport struct {
 // Errors cover what `serve` would refuse plus what `validate` already
 // rejects:
 //   - unreadable/oversized file, TOML syntax, unknown fields, invalid values
+//   - invalid [mcp.servers.*] entries (transport/URL/timeout problems name
+//     the server and field)
 //   - empty telegram allowlists (nobody can talk to the bot)
 //   - missing/unreadable Telegram or provider credentials (file permission
 //     failures included; ollama may stay keyless, chatgpt uses OAuth)

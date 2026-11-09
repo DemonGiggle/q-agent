@@ -166,6 +166,18 @@ func safeValues(values map[string]any) map[string]any {
 				}
 			}
 		}
+		if strings.HasPrefix(key, "mcp.servers.") && strings.HasSuffix(key, ".url") {
+			// MCP endpoints are credential-free by validation; strip
+			// userinfo defensively so display never leaks credentials.
+			if raw, ok := value.(string); ok && raw != "" {
+				if u, err := url.Parse(raw); err != nil {
+					value = "[invalid URL]"
+				} else {
+					u.User = nil
+					value = u.String()
+				}
+			}
+		}
 		result[key] = value
 	}
 	return result

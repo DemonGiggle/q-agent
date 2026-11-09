@@ -158,3 +158,80 @@ recent_window = "12h"
 # Per-chat tap caps: oldest taps evicted first. Bounds disk when sweeps skip.
 recent_max_messages = 200
 recent_max_bytes = 32768
+
+[mcp]
+# Optional Model Context Protocol servers. q-agent acts as an MCP *client*:
+# it dials the servers below so every authorized chat can call their tools
+# (named server__tool) alongside local tools. There is no MCP server mode:
+# q-agent never serves its own tools over MCP.
+#
+# Inactive by default: with no `enabled = true` server, MCP does nothing
+# (no child process is spawned, no network connection is opened). Edits
+# here apply at the next start: restart the service after changing this
+# section (there is no live reload). One bad server never disables healthy
+# servers or ordinary tools: failures are recorded per server as sanitized
+# one-line availability.
+#
+# Availability is shared, not per-chat: every authorized chat (and every
+# scheduled agent task, which uses the same per-task composition) gets the
+# same enabled servers, dialed fresh for each task and released on
+# completion, cancellation, timeout, or shutdown. Per-chat access control
+# and per-call approval are not offered: enabling a server trusts all
+# authorized chats with its tools, in both host and sandbox execution
+# modes. MCP results are untrusted third-party data.
+#
+# Transport "stdio": spawns command with optional args on every task that
+# needs it. command is required; url must be empty. The command resolves
+# in the task's execution environment: in host mode it must be installed
+# on the host (PATH or absolute path); in sandbox mode it must exist
+# *inside* the chat's Debian image with any data files it needs, because
+# the sandbox cannot see host paths. A sandbox setup failure never falls
+# back to host execution: the server just reports unavailable. The child
+# inherits a filtered environment (credential-shaped variables are
+# stripped) and its stderr is captured to bounded, redacted diagnostics.
+#
+# Transport "http": Streamable HTTP endpoint at url (trailing path is
+# kept, e.g. https://mcp.example.com/mcp). url is required; command and
+# args must be empty. HTTPS anywhere; plain HTTP only for loopback
+# (127.0.0.0/8, ::1, localhost). URLs must not contain credentials
+# (user:pass@ is rejected). Both plain-JSON and SSE stream responses are
+# supported; the client sends no Authorization/Cookie headers.
+#
+# Timeouts are positive durations up to 10m; empty means the default.
+# connect_timeout (default "10s") bounds setup per task; call_timeout
+# (default "60s") bounds each tool call.
+#
+# Troubleshooting: the service log prints one line per task, e.g.
+# "mcp: 1/2 servers available, 5 tools, 0 quarantined". The chat's system
+# prompt lists available servers with tool counts and unavailable servers
+# with a one-line reason; server commands, arguments, URLs, and
+# environment never appear in logs, prompts, or errors. If a server shows
+# unavailable, check that its binary/endpoint is reachable from the
+# task's execution mode (host vs sandbox, see above) and that the config
+# was saved before the last restart.
+#
+# Deferred (not supported): standalone MCP resources/prompts, roots,
+# sampling, elicitation, OAuth/credential storage, custom headers,
+# environment-secret injection, legacy HTTP+SSE transport, optional
+# protocol extensions, and bundled binary delivery of servers.
+#
+# Each server is one named [mcp.servers.<name>] table. Names are 1-64 chars
+# of letters/digits/_/-, starting with a letter or digit (dots are
+# rejected). Validation errors identify the server and field.
+
+# Stdio example (disabled):
+# [mcp.servers.local-tools]
+# enabled = false
+# transport = "stdio"
+# command = "/usr/local/bin/mcp-server"
+# args = ["--stdio"]
+# connect_timeout = "10s"
+# call_timeout = "60s"
+
+# Streamable HTTP example (disabled):
+# [mcp.servers.docs]
+# enabled = false
+# transport = "http"
+# url = "https://mcp.example.com/mcp"
+# connect_timeout = "10s"
+# call_timeout = "60s"

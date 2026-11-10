@@ -112,7 +112,8 @@ args = ["--stdio"]
   elicitation, OAuth/credential storage, custom headers, secret injection
   into environments, legacy HTTP+SSE transport, and bundled server
   binaries. See the `[mcp]` comments in
-  [config.example.toml](config.example.toml).
+  [config.example.toml](config.example.toml) and the full
+  [MCP integration guide](docs/mcp.md).
 
 ## Quick start
 
@@ -167,6 +168,7 @@ See the [command line overview](docs/cli.md) for what each command is for.
 | [Context composition](docs/context.md) | Prompt order, tool placement, cache guidance |
 | [systemd deployment](docs/systemd.md) | Install, start, sandbox rules, `/restart` & `/update`, removal |
 | [Console guide](docs/console.md) | Guided `models` / `config` menus and script-friendly actions |
+| [MCP integration](docs/mcp.md) | Connect external MCP servers (stdio / Streamable HTTP) with examples |
 | [Example configuration](config.example.toml) | All settings in one place |
 | [Validation notes](docs/VALIDATION.md) | Test coverage and measured limitations |
 

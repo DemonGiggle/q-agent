@@ -2,14 +2,13 @@
 
 [← Overview](../README.md) · [Configuration & operations](operations.md) · [Console guide](console.md) · [Example configuration](../config.example.toml)
 
-q-agent is an MCP **client**. It can call tools from external
-[Model Context Protocol](https://modelcontextprotocol.io) servers and offer
-them to the model alongside its built-in tools (`read`, `shell`, `web_fetch`,
-…). It never *serves* its own tools over MCP.
+q-agent is an MCP **client**. It calls tools from external
+[Model Context Protocol](https://modelcontextprotocol.io) servers. It shows
+those tools to the model next to its built-in tools (`read`, `shell`,
+`web_fetch`, …). It never *serves* its own tools over MCP.
 
-MCP is **optional and off by default**: with no
-`[mcp.servers.*]` table with `enabled = true`, q-agent spawns no child
-process and opens no network connection for MCP.
+MCP is **optional and off by default**. If no server has `enabled = true`,
+q-agent starts no child process and opens no network connection for MCP.
 
 ## 1. How it fits together
 
@@ -17,41 +16,84 @@ process and opens no network connection for MCP.
 Telegram chat / scheduled task
         |
         v
-agent task starts ── dial every enabled server fresh for this task
-        |              stdio: spawn command · http: open Streamable HTTP session
-        v
-discover tools/list ── publish one snapshot: server__tool names
+agent task starts: dial every enabled server again from scratch
+  stdio: start a local program · http: open a Streamable HTTP session
         |
         v
-model calls server__tool ── routed to that server, result returned as text
+discover tools: publish one snapshot with names like server__tool
         |
         v
-task ends ── every MCP session closed (completion, cancel, timeout, shutdown)
+model calls server__tool: q-agent routes the call to that server
+        |
+        v
+task ends: close every MCP connection
 ```
 
-- **Shared everywhere.** Every authorized chat — and every scheduled agent
-  task — gets the same enabled servers. There is no per-chat scoping and no
-  per-call approval. Enabling a server trusts all authorized chats with its
-  tools.
-- **Isolated per task.** Servers are dialed fresh for each task and released
-  afterwards. One server failing never disables healthy servers or built-in
-  tools; it just shows as *unavailable* with a one-line reason.
-- **Tools appear as `server__tool`.** For example server `files` exposing
-  `read_file` becomes `files__read_file`. Collisions (across servers, or
-  with built-in / schedule tools) get a deterministic `_2`, `_3`, … suffix.
-  Invalid tools are *quarantined* with a sanitized reason instead of
-  poisoning the whole request.
-- **Results are untrusted third-party data.** They are redacted, bounded,
-  and wrapped like any other tool result before reaching the model.
+What this means for you:
+
+- **Same servers for everyone.** Every authorized chat and every scheduled
+  task uses the same enabled servers. There is no per-chat limit and no
+  approval prompt. Only enable servers you trust with all chats.
+- **Fresh connection per task.** A new task dials again. The last task
+  always closes its connections, even on cancel, timeout, or shutdown.
+- **One bad server does not stop the rest.** A failing server shows as
+  *unavailable* with a short reason. Healthy servers and built-in tools
+  keep working.
+- **Tools are named `server__tool`.** If server `demo` has a tool `greet`,
+  the model sees `demo__greet`. Name clashes get a suffix such as `_2`.
+  Broken tools are *quarantined* so one bad tool cannot break the request.
+- **Results are untrusted.** MCP output is treated like web content. It is
+  redacted and size-limited before the model sees it.
 
 ## 2. Quick start (5 minutes)
 
-Pick **one** transport to start with.
+Pick **one** transport.
 
-### Option A — stdio (local command)
+### Option A — stdio (a program on your machine)
 
-Runs a local MCP server binary as a child process. Good for filesystem,
-shell, or custom tools on the same machine.
+With stdio, q-agent starts a program and talks to it over stdin and stdout.
+That program must be an MCP server. A normal shell command such as `ls`
+does not speak MCP, so it will not work here.
+
+The simplest working setup is a small Python server with one tool.
+
+Create `~/mcp-demo/server.py`:
+
+```python
+from mcp.server.fastmcp import FastMCP
+
+mcp = FastMCP("demo")
+
+@mcp.tool()
+def greet(name: str) -> str:
+    """Say hello to someone."""
+    return f"Hello, {name}!"
+
+if __name__ == "__main__":
+    mcp.run()
+```
+
+Install the SDK once:
+
+```sh
+pip install mcp
+```
+
+Point q-agent at the file. The command stays simple: run `python3` with
+one file argument.
+
+```toml
+[mcp.servers.demo]
+enabled = true
+transport = "stdio"
+command = "python3"
+args = ["/home/you/mcp-demo/server.py"]
+```
+
+Replace `/home/you` with your real home path. Use an absolute path so
+q-agent finds the file from any working directory.
+
+Need a real-world server instead? Use the public filesystem server:
 
 ```toml
 [mcp.servers.files]
@@ -61,14 +103,13 @@ command = "npx"
 args = ["-y", "@modelcontextprotocol/server-filesystem", "/tmp/mcp-demo"]
 ```
 
-Prerequisites: `npx` (or your server binary) installed where the task runs
-(see [host vs sandbox](#5-host-vs-sandbox-stdio-caveat) — this is the step
-people get wrong), plus the directory it should serve (`mkdir -p
-/tmp/mcp-demo`).
+This needs `npx` and the `/tmp/mcp-demo` directory. The Python example
+above is easier for a first test.
 
-### Option B — Streamable HTTP (remote endpoint)
+### Option B — HTTP (a URL to call)
 
-Dials a URL over Streamable HTTP. Good for hosted services.
+With HTTP, q-agent calls a remote endpoint over Streamable HTTP. Use this
+for hosted services. No local program is needed.
 
 ```toml
 [mcp.servers.docs]
@@ -77,22 +118,27 @@ transport = "http"
 url = "https://mcp.example.com/mcp"
 ```
 
-Rules: `https://` anywhere; plain `http://` only for loopback
-(`127.0.0.0/8`, `::1`, `localhost`). No `user:pass@` credentials in the URL,
-no custom headers, no OAuth — credential endpoints are rejected.
+Your URL must follow these rules:
+
+- Use `https://` for remote servers.
+- Use `http://` only on the same machine. Allowed names are `localhost`,
+  `127.0.0.0/8`, and `::1`.
+- Do not put a login in the URL. `https://user:pass@example.com/mcp` is
+  rejected.
+- q-agent sends no login headers and runs no OAuth flow. Servers that need
+  a login will not work.
 
 ### Enable it
 
-1. Add the table above to `~/.config/q-agent/config.toml`
-   (default path; override with `--config FILE`).
-2. Validate without touching the network:
+1. Add one table from above to `~/.config/q-agent/config.toml`.
+2. Check the file without touching the network:
 
    ```sh
    ./bin/q-agent config check
    ```
 
-3. **Restart** the service — MCP edits apply at startup, there is no live
-   reload:
+3. **Restart.** MCP settings apply only at startup. There is no live
+   reload.
 
    ```sh
    # foreground
@@ -101,24 +147,23 @@ no custom headers, no OAuth — credential endpoints are rejected.
    systemctl --user restart q-agent
    ```
 
-4. Verify. The service log prints one line per task, e.g.:
+4. Verify. The service log prints one line per task, for example:
 
    ```text
    mcp: 1/2 servers available, 5 tools, 0 quarantined
    ```
 
-   and the chat's system prompt lists available servers with tool counts
-   plus unavailable servers with a one-line reason. Ask the bot something
-   that uses the new tool, e.g. for the filesystem example above:
-   *“List /tmp/mcp-demo with files__list_directory”*.
+   The model also sees which servers are up and which are down, with a
+   short reason for each down server. Then ask the bot to use the new
+   tool. For the Python example: *“Call demo__greet with name Ana”*.
 
-Same steps via the console (no hand-editing TOML):
+You can do the same steps without editing TOML by hand:
 
 ```sh
-q-agent config set mcp.servers.files.enabled true
-q-agent config set mcp.servers.files.transport stdio
-q-agent config set mcp.servers.files.command npx
-q-agent config set mcp.servers.files.args '["-y", "@modelcontextprotocol/server-filesystem", "/tmp/mcp-demo"]'
+q-agent config set mcp.servers.demo.enabled true
+q-agent config set mcp.servers.demo.transport stdio
+q-agent config set mcp.servers.demo.command python3
+q-agent config set mcp.servers.demo.args '["/home/you/mcp-demo/server.py"]'
 q-agent config check
 # then restart as above
 ```
@@ -134,37 +179,36 @@ q-agent config check
 
 ## 3. Configuration reference
 
-Each server is one named `[mcp.servers.<name>]` table.
+Each server is one `[mcp.servers.<name>]` table.
 
-| Field | Required for | Meaning / default |
+| Field | Needed for | Meaning |
 | --- | --- | --- |
-| `enabled` | both | `true` to use this server. Default `false`. |
+| `enabled` | both | Set `true` to use this server. Default is `false`. |
 | `transport` | both | `"stdio"` or `"http"`. Required. |
-| `command` | `stdio` | Binary to spawn (PATH or absolute path). `url` must be empty. |
-| `args` | `stdio` | Argument list, e.g. `["--stdio"]`. Must be empty for `http`. |
-| `url` | `http` | Streamable HTTP endpoint, e.g. `https://mcp.example.com/mcp`. `command`/`args` must be empty. |
-| `connect_timeout` | both | Setup bound per task. Default `"10s"`. |
-| `call_timeout` | both | Bound per tool call. Default `"60s"`. |
+| `command` | `stdio` | Program to start. Use a PATH name or an absolute path. Leave `url` empty. |
+| `args` | `stdio` | Arguments for the program, for example `["server.py"]`. Leave empty for `http`. |
+| `url` | `http` | Streamable HTTP endpoint. Leave `command` and `args` empty. |
+| `connect_timeout` | both | Time allowed to connect, per task. Default `"10s"`. |
+| `call_timeout` | both | Time allowed per tool call. Default `"60s"`. |
 
-Additional rules:
+Three more rules:
 
-- **Name:** 1–64 chars, letters/digits/`_`/`-`, starting with a letter or
-  digit. Dots are rejected so table names never nest.
-- **Timeouts:** positive durations up to `10m` (`"500ms"`, `"10s"`, `"2m"`).
-  Empty means the default.
-- **Validation** names the server and field, e.g.
-  `mcp.servers."files".command is required for stdio transport`.
-  `q-agent config check` reports the same rules without network access.
+- **Server name:** 1–64 characters. Letters, digits, `_`, `-`. It must
+  start with a letter or digit. Dots are not allowed.
+- **Timeouts:** a positive duration up to `10m`. Examples: `"500ms"`,
+  `"10s"`, `"2m"`. Empty means the default.
+- **Errors name the server and field.** Example:
+  `mcp.servers."demo".command is required for stdio transport`.
+  `q-agent config check` reports the same errors without using the network.
 
-Minimal complete file excerpt:
+Full example with defaults shown:
 
 ```toml
-# one stdio + one http server, everything else defaults
-[mcp.servers.files]
+[mcp.servers.demo]
 enabled = true
 transport = "stdio"
-command = "npx"
-args = ["-y", "@modelcontextprotocol/server-filesystem", "/tmp/mcp-demo"]
+command = "python3"
+args = ["/home/you/mcp-demo/server.py"]
 connect_timeout = "10s"
 call_timeout = "60s"
 
@@ -174,46 +218,42 @@ transport = "http"
 url = "https://mcp.example.com/mcp"
 ```
 
-Full commented reference lives in
+The complete commented reference is in
 [`config.example.toml`](../config.example.toml) under `[mcp]`.
 
 ## 4. Simple end-to-end example
 
-This is the smallest realistic setup: expose one host directory through the
-public filesystem server and call it from Telegram.
+This uses the Python `greet` server from section 2.
 
 ```sh
-# 1. prerequisites
-mkdir -p /tmp/mcp-demo
-echo hello > /tmp/mcp-demo/greeting.txt
-which npx   # must succeed in the task's environment (see below)
+# 1. Create the server file
+mkdir -p ~/mcp-demo
+# (save the server.py code from section 2 into ~/mcp-demo/server.py)
+pip install mcp
 
-# 2. configure (host mode default: [sandbox] enabled = false)
-q-agent config set mcp.servers.files.enabled true
-q-agent config set mcp.servers.files.transport stdio
-q-agent config set mcp.servers.files.command npx
-q-agent config set mcp.servers.files.args '["-y", "@modelcontextprotocol/server-filesystem", "/tmp/mcp-demo"]'
+# 2. Configure it (host mode is the default: [sandbox] enabled = false)
+q-agent config set mcp.servers.demo.enabled true
+q-agent config set mcp.servers.demo.transport stdio
+q-agent config set mcp.servers.demo.command python3
+q-agent config set mcp.servers.demo.args '["/home/you/mcp-demo/server.py"]'
 q-agent config check
 
-# 3. restart so the new table takes effect
+# 3. Restart so the new table takes effect
 systemctl --user restart q-agent   # or: ./bin/q-agent serve
 
-# 4. in Telegram, ask the bot:
-#    "What files are in /tmp/mcp-demo? Use files__list_directory."
-#    then: "Read /tmp/mcp-demo/greeting.txt with files__read_text_file."
+# 4. In Telegram, ask the bot:
+#    "Call demo__greet with name Ana."
 ```
 
 What you should see:
 
-- Log: `mcp: 1/1 servers available, N tools, 0 quarantined`.
-- The model calls `files__list_directory` / `files__read_text_file` (exact
-  tool names depend on the server version; the `files__` prefix is always
-  the server name).
-- If the server is down, the model is told it is unavailable with a
-  one-line reason — commands, arguments, URLs, and environment never appear
-  in logs, prompts, or errors.
+- Log line: `mcp: 1/1 servers available, 1 tool, 0 quarantined`.
+- The model calls `demo__greet` and replies with `Hello, Ana!`.
+- If the server is down, the model is told it is unavailable with a short
+  reason. Commands, arguments, URLs, and environment values never appear in
+  logs or errors. Check your config file directly when debugging.
 
-Prefer HTTP? Replace step 2 with:
+To try HTTP instead, replace step 2 with:
 
 ```sh
 q-agent config set mcp.servers.docs.enabled true
@@ -221,55 +261,53 @@ q-agent config set mcp.servers.docs.transport http
 q-agent config set mcp.servers.docs.url https://mcp.example.com/mcp
 ```
 
-then restart and ask the bot to use a `docs__<tool>` name.
+Then restart and ask the bot to use a `docs__<tool>` name.
 
-## 5. Host vs sandbox: stdio caveat
+## 5. Host vs sandbox: where the program runs
 
-This is the step people get wrong, so here it is in one place.
+This is the step people get wrong.
 
-- **Host mode** (`[sandbox] enabled = false`, the default): `command`
-  resolves on the **host** — `PATH` or an absolute path, run as the service
-  account, in the chat's working directory.
+- **Host mode** (`[sandbox] enabled = false`, the default): `command` runs
+  on the **host**. It must be on `PATH` or given as an absolute path. It
+  runs as the service account in the chat's working directory.
 - **Sandbox mode** (`enabled = true`): `command` must exist **inside the
-  chat's Debian image** (e.g. `/workspace`), because the sandbox cannot see
-  host paths. The child starts with `Dir /workspace` and a filtered
-  environment (credential-shaped variables stripped).
+  chat's Debian image**, for example under `/workspace`. The sandbox cannot
+  see host paths such as `/home/you`. The program starts in `/workspace`
+  with a cleaned environment.
 
-A sandbox setup or boundary failure **never falls back to host execution**:
-the server just reports unavailable. If your server shows unavailable,
-check it is reachable from the task's mode and that you restarted after
-saving the config. HTTP servers work in either mode (they need no local
-binary).
+A sandbox failure never falls back to the host. The server just shows as
+unavailable. If your server shows unavailable, check two things: is the
+program installed where the task runs, and did you restart after saving the
+config? HTTP servers work in both modes because they need no local program.
 
 ## 6. Security model (read before enabling)
 
 - Enabling a server trusts **all authorized chats and all scheduled tasks**
-  with its tools. There is no per-chat allowlist and no approval prompt.
-- MCP results are **untrusted**: treated like web content, redacted and
-  truncated before the model sees them.
-- Transports are **credential-free by design**: no userinfo in URLs, no
-  `Authorization`/`Cookie` headers, no OAuth flow, no secret injection into
-  environments. The child inherits a filtered environment only. API keys
+  with its tools. There is no per-chat limit and no approval prompt.
+- MCP results are **untrusted**. They are redacted and cut to a safe size
+  before the model sees them.
+- Transports are **credential-free by design**. URLs cannot contain a
+  login. q-agent sends no `Authorization` or `Cookie` headers, runs no
+  OAuth, and injects no secrets into the program's environment. API keys
   stay in host memory and never enter the sandbox.
-- Diagnostics are **sanitized end to end**: logs, status lines, and errors
-  carry only server names, transport kinds, versions, tool counts, and
-  truncated reasons. Commands, arguments, URLs, and host paths never leak
-  there — check your config file directly when debugging.
+- Logs and errors are **sanitized**. They carry only the server name,
+  transport type, version, tool count, and a short reason. They never
+  include commands, arguments, URLs, or host paths.
 
 ## 7. Troubleshooting
 
-| Symptom | Check |
+| Symptom | What to check |
 | --- | --- |
-| Server shows unavailable | `command` on `PATH` (host) or inside image (sandbox)? Endpoint reachable from task mode? `q-agent config check` clean? **Restarted** after edit? |
-| `mcp: 0/1 servers available` | Log one-liner + chat prompt reason name the server (not the secret). Fix that server; healthy ones keep working. |
-| Validation error naming server + field | `command` set for `stdio` and empty for `http` (and vice versa for `url`/`args`); `transport` is `stdio\|http`; timeouts positive ≤ `10m`; HTTP loopback rule. |
-| Tools missing / quarantined count > 0 | Server's `tools/list` schema invalid or over bounds; check server logs. One bad tool never blocks the rest. |
-| Config edit didn't apply | MCP has no live reload — restart. `config set` prints `{"saved":true,"restart_required":true}` as a reminder. |
+| Server shows unavailable | Is the program on `PATH` (host) or inside the image (sandbox)? Is the endpoint reachable from the task mode? Did you restart after saving? |
+| `mcp: 0/1 servers available` | Read the one-line reason in the log or chat. Fix that server. Healthy servers keep working. |
+| Validation error names a server and field | For `stdio`, set `command` and leave `url` empty. For `http`, set `url` and leave `command` and `args` empty. `transport` must be `stdio` or `http`. Timeouts must be positive and at most `10m`. |
+| Tools missing, quarantined count above 0 | The server sent a bad tool schema or hit a size limit. Check the server's own logs. One bad tool never blocks the rest. |
+| Edit did not apply | Restart the service. MCP has no live reload. `config set` reminds you with `{"saved":true,"restart_required":true}`. |
 
 Useful commands:
 
 ```sh
-q-agent config get mcp.servers.files.transport
+q-agent config get mcp.servers.demo.transport
 q-agent config show --json | grep -i mcp
 q-agent config check
 journalctl --user -u q-agent -f   # watch the per-task mcp: line
@@ -277,7 +315,7 @@ journalctl --user -u q-agent -f   # watch the per-task mcp: line
 
 ## 8. What is not supported
 
-Standalone resources/prompts, roots, sampling, elicitation, OAuth or stored
-credentials, custom headers, environment-secret injection, legacy HTTP+SSE
-transport, and bundled server binaries. q-agent dials `tools/list` +
-`tools/call` over stdio or Streamable HTTP only.
+Standalone resources and prompts, roots, sampling, elicitation, OAuth or
+stored credentials, custom headers, secret injection into environments,
+legacy HTTP+SSE transport, and bundled server binaries. q-agent calls
+`tools/list` and `tools/call` over stdio or Streamable HTTP only.

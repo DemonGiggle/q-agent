@@ -97,30 +97,49 @@ func TestTelegramSteerSameRunIsolationHistoryAndDedup(t *testing.T) {
 		t.Fatalf("steering: %v", got)
 	}
 	p.responses <- steerResponse{text: "revised final"}
+	// Non-steerable inputs queue instead of being rejected: other topic
+	// (different conversation) runs isolated, other owner (same topic,
+	// different user) runs after with shared history.
+	otherTopicReq := request(t, p)
+	if got := strings.Join(userTexts(otherTopicReq), "|"); got != "other topic" {
+		t.Fatalf("queued other topic isolated: %v", got)
+	}
+	p.responses <- steerResponse{text: "other topic final"}
+	otherOwnerReq := request(t, p)
+	otherOwnerTexts := strings.Join(userTexts(otherOwnerReq), "|")
+	if !strings.Contains(otherOwnerTexts, "other owner") || !strings.Contains(otherOwnerTexts, "original") {
+		t.Fatalf("queued other owner history: %v", userTexts(otherOwnerReq))
+	}
+	p.responses <- steerResponse{text: "other owner final"}
 	r.Wait()
-	if w.calls != 1 {
-		t.Fatalf("steer started a separate run: %d", w.calls)
+	if w.calls != 3 {
+		t.Fatalf("queued runs missing: %d", w.calls)
 	}
 	output := strings.Join(drainReplies(t, r.Store), "\n")
-	if strings.Contains(output, "superseded") || !strings.Contains(output, "revised final") || !strings.Contains(output, "2 follow-up(s) pending") {
+	if strings.Contains(output, "superseded") || !strings.Contains(output, "revised final") || !strings.Contains(output, "other topic final") || !strings.Contains(output, "other owner final") || !strings.Contains(output, "2 follow-up(s) pending") {
 		t.Fatalf("output: %s", output)
 	}
 	reopened, err := state.Open(r.Config.StateDir, nil)
 	must(t, err)
 	c, err := reopened.Load(followup.ConversationKey())
 	must(t, err)
-	if len(c.Pairs) != 1 || c.Pairs[0].Answer != "revised final" || strings.Join(c.Pairs[0].Steers, "|") != "correction\n\nadditional detail" {
+	if len(c.Pairs) != 2 || c.Pairs[0].Answer != "revised final" || strings.Join(c.Pairs[0].Steers, "|") != "correction\n\nadditional detail" || c.Pairs[1].Answer != "other owner final" {
 		t.Fatalf("saved: %+v", c)
+	}
+	otherTopicConv, err := reopened.Load(input(0, -10, 8, 1, "").ConversationKey())
+	must(t, err)
+	if len(otherTopicConv.Pairs) != 1 || otherTopicConv.Pairs[0].Answer != "other topic final" {
+		t.Fatalf("other topic history mixed: %+v", otherTopicConv)
 	}
 	mem, err := reopened.LoadMemory(followup.WorkspaceKey())
 	must(t, err)
-	if len(mem.Pending) != 1 || !strings.Contains(mem.Pending[0].Transcript, "user: original\nsteer: correction\n\nadditional detail\nassistant: revised final") {
+	if len(mem.Pending) != 3 || !strings.Contains(mem.Pending[0].Transcript, "user: original\nsteer: correction\n\nadditional detail\nassistant: revised final") {
 		t.Fatalf("steering missing from durable source: %+v", mem)
 	}
 	r.Store = reopened // No goroutines remain; exercise reopened history.
 	must(t, r.Handle(ctx, input(9, -10, 7, 1, "next task")))
 	got := request(t, p)
-	if strings.Join(userTexts(got), "|") != "original|correction\n\nadditional detail|next task" {
+	if strings.Join(userTexts(got), "|") != "original|correction\n\nadditional detail|other owner|next task" {
 		t.Fatalf("history: %+v", got.Messages)
 	}
 	p.responses <- steerResponse{text: "next final"}

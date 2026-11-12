@@ -49,6 +49,7 @@ func (r *Runtime) startLocked(ctx context.Context, m platform.Message, runID str
 					r.report(err)
 				}
 			}
+			r.drainQueuedLocked(ctx)
 			if r.digestWake != nil {
 				select {
 				case r.digestWake <- struct{}{}:

@@ -331,7 +331,7 @@ func (r *Runtime) proactiveChat(ctx context.Context, chat state.ChatRecordWithKe
 func (r *Runtime) proactiveBusyLocked(key string) bool {
 	_, busy := r.active[key]
 	_, prompt := r.shellPrompts[key]
-	return busy || prompt || r.Maintenance != nil && r.Maintenance.Busy()
+	return busy || r.hasQueuedForLocked(key) || prompt || r.Maintenance != nil && r.Maintenance.Busy()
 }
 
 func (r *Runtime) proactiveRecent(seen time.Time) bool {

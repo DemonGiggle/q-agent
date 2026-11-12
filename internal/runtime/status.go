@@ -34,6 +34,19 @@ func (r *Runtime) statusLocked(m platform.Message) string {
 			}
 		}
 	}
+	queuedHere := 0
+	for _, q := range r.queued {
+		if q.WorkspaceKey() == m.WorkspaceKey() {
+			queuedHere++
+		}
+	}
+	if queuedHere > 0 {
+		if activity == "Idle" {
+			activity = fmt.Sprintf("Queued (%d queued in this chat)", queuedHere)
+		} else {
+			activity += fmt.Sprintf(" [%d queued in this chat]", queuedHere)
+		}
+	}
 	mode := "Host"
 	if r.Config.Sandbox.Enabled {
 		mode = "Sandbox"
@@ -84,11 +97,15 @@ func (r *Runtime) statusLocked(m platform.Message) string {
 	if version == "" {
 		version = "dev"
 	}
-	text := fmt.Sprintf("**q-agent status**\n\nVersion: %s\nProvider: %s\nModel: %s\nThinking: %s\nExecution: %s\nMemory (RSS, q-agent): %s\n\nThis topic: %s\nActive tasks: %d/%d\nScheduler: %s\nMCP: %s\n\n**Limits per task**\nModel steps: %s\nTask timeout: %s\nInteractive task timeout: %s\nShell timeout: %s\n\n`/help` — Available commands",
+	activeLine := fmt.Sprintf("Active tasks: %d/%d", len(r.active), limit)
+	if len(r.queued) > 0 {
+		activeLine += fmt.Sprintf(" (%d queued)", len(r.queued))
+	}
+	text := fmt.Sprintf("**q-agent status**\n\nVersion: %s\nProvider: %s\nModel: %s\nThinking: %s\nExecution: %s\nMemory (RSS, q-agent): %s\n\nThis topic: %s\n%s\nScheduler: %s\nMCP: %s\n\n**Limits per task**\nModel steps: %s\nTask timeout: %s\nInteractive task timeout: %s\nShell timeout: %s\n\n`/help` — Available commands",
 		version,
 		line(provider), line(model), line(thinking), mode,
 		formatRSS(currentRSS()),
-		activity, len(r.active), limit, scheduler, mcp,
+		activity, activeLine, scheduler, mcp,
 		maxSteps,
 		line(r.Config.Limits.TaskTimeout), r.Config.InteractiveTaskDuration().String(), line(r.Config.Limits.ShellTimeout))
 	text += companionStatusLine(r, m)

@@ -120,6 +120,7 @@ func (r *Runtime) digestPass(ctx context.Context, sweep bool) (bool, error) {
 		r.mu.Lock()
 		local, hasLocal := r.digestRetries[chat.Key]
 		_, busy := r.active[chat.Key]
+		hasQueued := r.hasQueuedForLocked(chat.Key)
 		maintenance := r.Maintenance != nil && r.Maintenance.Busy()
 		r.mu.Unlock()
 		retry := mem.Retry
@@ -141,7 +142,7 @@ func (r *Runtime) digestPass(ctx context.Context, sweep bool) (bool, error) {
 		if mem.LegacyBaseline && !mem.MigrationReported {
 			r.report(r.Store.ReportMemoryMigration(chat.Key, chat.WorkspaceRoute()))
 		}
-		if sweep && (len(mem.Pending) > 0 || busy || maintenance) {
+		if sweep && (len(mem.Pending) > 0 || busy || hasQueued || maintenance) {
 			retry.Work = true
 		}
 		// Daytime fast path: a chat with lots of unconsolidated journal does
@@ -150,7 +151,7 @@ func (r *Runtime) digestPass(ctx context.Context, sweep bool) (bool, error) {
 			retry.Work = true
 		}
 		if len(mem.Pending) == 0 {
-			if busy || maintenance {
+			if busy || hasQueued || maintenance {
 				if retry.Work {
 					retry.Deferred = true
 					r.rememberDigestRetry(chat.Key, mem.Epoch, retry)
@@ -168,7 +169,7 @@ func (r *Runtime) digestPass(ctx context.Context, sweep bool) (bool, error) {
 		if !retry.Work || time.Now().Before(retry.NextAt) {
 			continue
 		}
-		if busy || maintenance {
+		if busy || hasQueued || maintenance {
 			retry.Deferred = true
 			r.rememberDigestRetry(chat.Key, mem.Epoch, retry)
 			continue

@@ -183,7 +183,7 @@ func TestInterruptedUpdateIsNotReplayedAfterRestart(t *testing.T) {
 func TestBusyIncludesProvisioningAndOtherTopics(t *testing.T) {
 	r, w, _ := fixture(t)
 	w.block = make(chan struct{})
-	w.started = make(chan struct{}, 2)
+	w.started = make(chan struct{}, 4)
 	if err := r.Handle(context.Background(), input(1, -10, 7, 1, "go")); err != nil {
 		t.Fatal(err)
 	}
@@ -199,7 +199,7 @@ func TestBusyIncludesProvisioningAndOtherTopics(t *testing.T) {
 		t.Fatal(err)
 	}
 	reply, ok := r.Store.Pending()
-	if !ok || reply.Route.UpdateID != 2 || reply.Parts[0] != "Busy. Try again when the active task finishes." {
+	if !ok || reply.Route.UpdateID != 2 || reply.Parts[0] != queuedAck {
 		t.Fatalf("%+v", reply)
 	}
 	w.mu.Lock()
@@ -210,6 +210,12 @@ func TestBusyIncludesProvisioningAndOtherTopics(t *testing.T) {
 	}
 	close(w.block)
 	r.Wait()
+	w.mu.Lock()
+	calls = w.calls
+	w.mu.Unlock()
+	if calls != 4 {
+		t.Fatalf("queued tasks did not run: calls=%d", calls)
+	}
 }
 func TestCancelAndProvisioningFailure(t *testing.T) {
 	r, w, p := fixture(t)

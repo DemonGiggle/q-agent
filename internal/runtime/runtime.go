@@ -58,6 +58,7 @@ type Runtime struct {
 	Version           string
 	mu                sync.Mutex
 	active            map[string]task
+	queued            []platform.Message
 	shellPrompts      map[string]*shellDecision
 	wg                sync.WaitGroup
 	closed            bool
@@ -265,7 +266,7 @@ func (r *Runtime) Handle(ctx context.Context, m platform.Message) error {
 		return r.reply(m, text)
 	case "/help":
 		r.mu.Unlock()
-		return r.reply(m, "**q-agent commands**\n`/update` — Install the latest stable Release and restart (private admin only).\n`/restart` — Restart the systemd user service (private admin only).\n`/status` — Show current runtime, process RSS memory, and safe settings (no model call).\n`/models` — Choose a model for this chat.\n`/provider` — Show providers or choose this chat's provider (`/provider <name|default>` also works).\n`/model` <id|default> — Set this chat’s model.\n`/think` <level|auto|default> — Set this chat’s thinking.\n`/max_steps` [number|default] — Show or set this chat’s model-step limit.\n`/settings` [reset] — Show settings or restore defaults.\n`/memory` — Show this chat’s long-term memory.\n`/remember <note>` — Pin one lasting fact so compaction never drops it.\n`/forget [keyword]` — Clear notes and pending memory sources across all topics (keyword deletes matches only); running tasks may add new sources when they finish.\n`/help` — Show this help.\n`/new` — Clear this topic's conversation; keep workspace.\n`/cancel` — Cancel this topic's active task.\n\nSend a message to start a task. Send follow-up text in the same topic to steer your running task. `/cancel` stops the task and pending follow-ups.\n\nIn groups, address commands to @your_bot (e.g. `/status@your_bot`), mention the bot, or reply to it.")
+		return r.reply(m, helpText())
 	case "/memory":
 		text := r.memoryShow(m)
 		r.mu.Unlock()
@@ -274,13 +275,22 @@ func (r *Runtime) Handle(ctx context.Context, m platform.Message) error {
 		r.mu.Unlock()
 		return r.forgetMemory(m)
 	case "/cancel":
+		removed := r.cancelQueuedLocked(m)
 		if busy && active.topic == m.TopicID {
 			active.userCancelled = true
 			r.active[key] = active
 			active.cancel()
-			r.logf("[RUN] Cancellation requested | update=%d", m.UpdateID)
+			r.logf("[RUN] Cancellation requested | update=%d queued_cancelled=%d", m.UpdateID, removed)
 			r.mu.Unlock()
 			return r.reply(m, "Cancellation requested.")
+		}
+		if removed > 0 {
+			r.logf("[RUN] Queued cancellation | update=%d queued_cancelled=%d", m.UpdateID, removed)
+			r.mu.Unlock()
+			if removed == 1 {
+				return r.reply(m, "Queued task cancelled.")
+			}
+			return r.reply(m, "Queued tasks cancelled.")
 		}
 		r.logf("[RUN] Cancellation skipped; no active task | update=%d", m.UpdateID)
 		r.mu.Unlock()
@@ -318,9 +328,9 @@ func (r *Runtime) Handle(ctx context.Context, m platform.Message) error {
 		return err
 	}
 	if busy || len(r.active) >= limit {
-		r.logf("[RUN] Task rejected; capacity busy | update=%d workspace_busy=%t active_tasks=%d max_tasks=%d", m.UpdateID, busy, len(r.active), limit)
+		err := r.queueTaskLocked(m)
 		r.mu.Unlock()
-		return r.reply(m, "Busy. Try again when the active task finishes.")
+		return err
 	}
 	err = r.startLocked(ctx, m, "")
 	r.mu.Unlock()
@@ -561,6 +571,7 @@ func (r *Runtime) run(ctx context.Context, m platform.Message, runID string) boo
 func (r *Runtime) Close() {
 	r.mu.Lock()
 	r.closed = true
+	r.queued = nil
 	if r.scheduleCancel != nil {
 		r.scheduleCancel()
 	}

@@ -315,7 +315,7 @@ func (r *Runtime) handleModelCallback(ctx context.Context, m platform.Message, p
 		if index >= len(menu.Models) {
 			return nil
 		}
-		if _, busy := r.active[m.WorkspaceKey()]; busy {
+		if _, busy := r.active[m.WorkspaceKey()]; busy || r.hasQueuedForLocked(m.WorkspaceKey()) {
 			answer = "Chat is busy. Finish or cancel the active task first."
 			return nil
 		}
@@ -390,7 +390,7 @@ func (r *Runtime) handleProviderCallback(ctx context.Context, m platform.Message
 	if index >= len(menu.Providers) {
 		return nil
 	}
-	if _, busy := r.active[m.WorkspaceKey()]; busy {
+	if _, busy := r.active[m.WorkspaceKey()]; busy || r.hasQueuedForLocked(m.WorkspaceKey()) {
 		answer = "Chat is busy. Finish or cancel the active task first."
 		return nil
 	}

@@ -311,9 +311,10 @@ func (r *Runtime) sweepInbox(ctx context.Context) error {
 		}
 		r.mu.Lock()
 		_, busy := r.active[chat.Key]
+		hasQueued := r.hasQueuedForLocked(chat.Key)
 		maintenance := r.Maintenance != nil && r.Maintenance.Busy()
 		r.mu.Unlock()
-		if busy || maintenance {
+		if busy || hasQueued || maintenance {
 			continue
 		}
 		route := platform.Message{Platform: chat.Record.Platform, ChatID: chat.Record.ChatID, UserID: chat.Record.Owner}

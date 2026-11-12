@@ -120,6 +120,18 @@ func TestProcessWaitSteeringAuthorizationAndTaskCleanup(t *testing.T) {
 	p.call("shell", map[string]any{"command": "(sleep 1; touch late) & wait", "background": true, "yield_ms": 1})
 	processRequest(t, p)
 	p.responses <- llm.Message{Content: "Authorization completed."}
+	// Non-steerable inputs queue instead of waking the wait: drain them after
+	// the authorized task finishes so Wait does not hang.
+	queuedWrongTopic := processRequest(t, p)
+	if !strings.Contains(strings.Join(userTexts(queuedWrongTopic), "\n"), "wrong topic") {
+		t.Fatalf("queued wrong topic lost: %+v", queuedWrongTopic.Messages)
+	}
+	p.responses <- llm.Message{Content: "wrong topic done."}
+	queuedWrongOwner := processRequest(t, p)
+	if !strings.Contains(strings.Join(userTexts(queuedWrongOwner), "\n"), "wrong owner") {
+		t.Fatalf("queued wrong owner lost: %+v", queuedWrongOwner.Messages)
+	}
+	p.responses <- llm.Message{Content: "wrong owner done."}
 	r.Wait()
 	time.Sleep(1100 * time.Millisecond)
 	if _, err := os.Stat(filepath.Join(dir, "late")); !os.IsNotExist(err) {

@@ -48,7 +48,7 @@ func (r *Runtime) companionCommand(m platform.Message, fields []string) error {
 		default:
 			return r.reply(m, "Use `/companion`, `/companion status|history`, `/companion on|off|default`.")
 		}
-		if _, busy := r.active[m.WorkspaceKey()]; busy {
+		if _, busy := r.active[m.WorkspaceKey()]; busy || r.hasQueuedForLocked(m.WorkspaceKey()) {
 			return r.reply(m, "Chat is busy. Finish or cancel the active task first.")
 		}
 		if err := r.Store.SetCompanion(m.WorkspaceKey(), state.CompanionPref{Mode: mode}); err != nil {
@@ -236,7 +236,7 @@ func (r *Runtime) handleCompanionCallback(ctx context.Context, m platform.Messag
 		answer = "Open your own menu with /companion."
 		return nil
 	}
-	if _, busy := r.active[m.WorkspaceKey()]; busy {
+	if _, busy := r.active[m.WorkspaceKey()]; busy || r.hasQueuedForLocked(m.WorkspaceKey()) {
 		answer = "Chat is busy. Finish or cancel the active task first."
 		return nil
 	}
@@ -263,5 +263,5 @@ func (r *Runtime) handleCompanionCallback(ctx context.Context, m platform.Messag
 }
 
 func helpText() string {
-	return "**q-agent commands**\n`/update` — Install the latest stable Release and restart (private admin only).\n`/restart` — Restart the systemd user service (private admin only).\n`/status` — Show current runtime, process RSS memory, and safe settings (no model call).\n`/models` — Choose a model for this chat.\n`/provider` — Show providers or choose this chat's provider.\n`/model` — Set this chat's model.\n`/think` — Set this chat's thinking.\n`/max_steps` — Show or set this chat's model-step limit.\n`/settings` — Show settings or restore defaults.\n`/companion` — Enable or disable quiet check-ins for this chat (`/companion on|off|default|status|history`).\n`/memory` — Show this chat's long-term memory.\n`/remember <note>` — Pin one lasting fact so compaction never drops it.\n`/forget [keyword]` — Clear notes and pending memory sources (keyword deletes matches only).\n`/help` — Show this help.\n`/new` — Clear this topic's conversation; keep workspace.\n`/cancel` — Cancel this topic's active task.\n\nSend a message to start a task. Send follow-up text in the same topic to steer your running task. `/cancel` stops the task and pending follow-ups.\n\nIn groups, address commands to @your_bot (e.g. `/status@your_bot`), mention the bot, or reply to it."
+	return "**q-agent commands**\n`/update` — Install the latest stable Release and restart (private admin only).\n`/restart` — Restart the systemd user service (private admin only).\n`/status` — Show current runtime, process RSS memory, and safe settings (no model call).\n`/models` — Choose a model for this chat.\n`/provider` — Show providers or choose this chat's provider.\n`/model` — Set this chat's model.\n`/think` — Set this chat's thinking.\n`/max_steps` — Show or set this chat's model-step limit.\n`/settings` — Show settings or restore defaults.\n`/companion` — Enable or disable quiet check-ins for this chat (`/companion on|off|default|status|history`).\n`/memory` — Show this chat's long-term memory.\n`/remember <note>` — Pin one lasting fact so compaction never drops it.\n`/forget [keyword]` — Clear notes and pending memory sources (keyword deletes matches only).\n`/help` — Show this help.\n`/new` — Clear this topic's conversation; keep workspace.\n`/cancel` — Cancel this topic's active and queued tasks.\n\nSend a message to start a task. Send follow-up text in the same topic to steer your running task. If another task is running or capacity is full, your message is queued and runs next. `/cancel` stops the task and queued follow-ups.\n\nIn groups, address commands to @your_bot (e.g. `/status@your_bot`), mention the bot, or reply to it."
 }

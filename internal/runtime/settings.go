@@ -50,7 +50,7 @@ func (r *Runtime) chatSettings(m platform.Message, fields []string) error {
 	if len(fields) != 2 {
 		return r.reply(m, "Use /provider <name|default>, /model <id|default>, /think <level|auto|default>, /max_steps <number|default>, or /settings reset.")
 	}
-	if _, busy := r.active[m.WorkspaceKey()]; busy {
+	if _, busy := r.active[m.WorkspaceKey()]; busy || r.hasQueuedForLocked(m.WorkspaceKey()) {
 		return r.reply(m, "Chat is busy. Finish or cancel the active task first.")
 	}
 	raw, err := r.Store.ChatModel(m.WorkspaceKey())

@@ -27,6 +27,14 @@ const fallbackMemoryContextBytes = 6000
 const smallDigestMinPending = 20
 const smallDigestMinBytes = 512 * 1024
 
+// maxDigestAttempts bounds per-chat digest retries. The prompt allows the
+// model to return [] when a batch has no durable facts (handled as a
+// successful no-op ack), so any remaining "empty digest summary" or provider
+// error that reaches the retry loop is either transient or a poison pill.
+// Retrying hourly forever (attempt 12+ observed) only spams logs; after a few
+// tries we park until the next nightly sweep re-enrolls the chat.
+const maxDigestAttempts = 4
+
 type digestRetry struct {
 	epoch uint64
 	retry state.MemoryRetry
@@ -134,6 +142,16 @@ func (r *Runtime) digestPass(ctx context.Context, sweep bool) (bool, error) {
 			}
 			retry.Work = true
 			retry.Attempts++
+			if retry.Attempts >= maxDigestAttempts {
+				// Park until the next nightly sweep re-enrolls; pending stays.
+				r.rememberDigestRetry(chat.Key, local.epoch, state.MemoryRetry{})
+				r.mu.Lock()
+				delete(r.digestRetries, chat.Key)
+				r.mu.Unlock()
+				r.report(loadErr)
+				r.logf("[MEMORY] Digest giving up after %d attempts | workspace=%s error=%q", retry.Attempts, chat.Key, r.Options.Redaction.Text(redaction.Terminal, loadErr.Error()))
+				continue
+			}
 			retry.NextAt = time.Now().Add(digestRetryDelay(retry.Attempts))
 			r.rememberDigestRetry(chat.Key, local.epoch, retry)
 			r.report(loadErr)
@@ -180,8 +198,17 @@ func (r *Runtime) digestPass(ctx context.Context, sweep bool) (bool, error) {
 			if err := r.rememberDigestRetry(chat.Key, mem.Epoch, retry); err != nil {
 				if !errors.Is(err, state.ErrStaleDigest) {
 					retry.Attempts++
-					retry.NextAt = time.Now().Add(digestRetryDelay(retry.Attempts))
-					r.rememberDigestRetry(chat.Key, mem.Epoch, retry)
+					if retry.Attempts >= maxDigestAttempts {
+						r.rememberDigestRetry(chat.Key, mem.Epoch, state.MemoryRetry{})
+						r.mu.Lock()
+						delete(r.digestRetries, chat.Key)
+						r.mu.Unlock()
+						r.report(err)
+						r.logf("[MEMORY] Digest giving up after %d attempts | workspace=%s error=%q", retry.Attempts, chat.Key, r.Options.Redaction.Text(redaction.Terminal, err.Error()))
+					} else {
+						retry.NextAt = time.Now().Add(digestRetryDelay(retry.Attempts))
+						r.rememberDigestRetry(chat.Key, mem.Epoch, retry)
+					}
 				}
 				continue
 			}
@@ -198,6 +225,18 @@ func (r *Runtime) digestPass(ctx context.Context, sweep bool) (bool, error) {
 			}
 			retry.Work, retry.Deferred = true, false
 			retry.Attempts++
+			if retry.Attempts >= maxDigestAttempts {
+				// Park until the next nightly sweep re-enrolls; pending stays.
+				// This bounds hourly retries to maxDigestAttempts per cycle
+				// instead of growing to attempt 12+ with hourly 1h backoff.
+				r.rememberDigestRetry(chat.Key, mem.Epoch, state.MemoryRetry{})
+				r.mu.Lock()
+				delete(r.digestRetries, chat.Key)
+				r.mu.Unlock()
+				r.report(err)
+				r.logf("[MEMORY] Digest giving up after %d attempts | workspace=%s error=%q", retry.Attempts, chat.Key, r.Options.Redaction.Text(redaction.Terminal, err.Error()))
+				continue
+			}
 			retry.NextAt = time.Now().Add(digestRetryDelay(retry.Attempts))
 			r.rememberDigestRetry(chat.Key, mem.Epoch, retry)
 			r.report(err)
@@ -304,9 +343,22 @@ func (r *Runtime) digestChat(ctx context.Context, key string, rec state.ChatReco
 		}
 		summary = strings.TrimSpace(r.Store.RedactMemoryText(r.Options.Redaction.Text(redaction.Remote, summary)))
 		if summary == "" {
+			// Empty model output is a prompt violation (the prompt asks for
+			// strict JSON, and [] is the valid "no facts" reply), so keep it
+			// retryable - the retry cap in digestPass bounds it. Skipping
+			// here would silently drop the batch on a transient glitch.
+			// Fragment-level empties are still tolerated below only when at
+			// least one fragment produced output; all-empty stays an error.
+			// Note: valid [] is handled later as a successful no-op ack.
+			if len(transcripts) > 1 {
+				continue
+			}
 			return fmt.Errorf("empty digest summary")
 		}
 		summaries = append(summaries, summary)
+	}
+	if len(summaries) == 0 {
+		return fmt.Errorf("empty digest summary")
 	}
 	date := time.Now().In(memoryLocation(r.Config.Memory.Timezone)).Format("2006-01-02")
 	var fresh []state.MemoryEntry
@@ -331,7 +383,13 @@ func (r *Runtime) digestChat(ctx context.Context, key string, rec state.ChatReco
 		fresh = append(fresh, state.MemoryEntry{Date: date, Text: joined, Kind: "fact", Keys: state.ExtractMemoryKeys(joined), Importance: 3})
 	}
 	if len(fresh) == 0 {
-		return fmt.Errorf("empty digest summary")
+		// The prompt allows "an array of 0-8 objects": [] validly means the
+		// batch had no lasting facts (small talk, one-off output). The
+		// provider is alive and normal chat works; retrying the same
+		// transcript would return [] again forever. Ack without new notes.
+		result := r.Store.PrepareMemory(mem, r.Config.Memory.MaxBytes)
+		r.logf("[MEMORY] Digest acknowledged without new notes | workspace=%s count=%d", key, count)
+		return r.Store.CommitDigest(key, mem, result, count, route, nil, time.Now(), r.Config.Memory.MaxBytes)
 	}
 	result := mem
 	result.Entries = mergeMemoryEntries(mem.Entries, fresh)

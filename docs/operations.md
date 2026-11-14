@@ -285,11 +285,39 @@ chat's current provider, mode, files, and history.
   daily/weekly use local wall time. One scan per minute (0–60s lateness).
 - Short outages (≤ 5 min) catch up once; longer ones coalesce to the latest
   occurrence and record the rest as `missed`. No overlap: one pending/run
-  per schedule. Interrupted agent runs notify but never auto-retry.
-- `schedules.json` holds everything atomically. Caps: 100 schedules per
-  conversation, 1000 outstanding runs/replies, 1000 retained terminal runs.
+  per schedule. Failed/interrupted agent runs retry up to 3 times with
+  5m/15m/45m backoff while their schedule still exists; deleting the
+  schedule cancels pending runs and suppresses further retries (an already
+  running attempt finishes once but is not retried). Use `/cancel` to stop
+  a running attempt.
+- `schedules.json` holds everything atomically (versioned, with backup on
+  first upgrade, newest 5 `.bak` kept). Caps: 100 live schedules per
+  conversation (done one-shots excluded), 1000 outstanding
+  runs/replies, 1000 retained terminal runs.
+- Scope is topic + creating user. `schedule_list` shows live schedules in
+  this topic only (done one-shots excluded, `total`/`live_total` are live
+  counts); when empty it reports `other_topic_count/other_topics` — name
+  that topic instead of claiming nothing exists. Saying “stop” never deletes
+  without a successful `schedule_delete`; the reply cites deleted IDs,
+  `not_found_ids`, `live_remaining` plus `schedule_list` proof.
+- Stop is deterministic: the harness injects a live-ledger block before
+  every task in that topic (`Live schedules in this topic (N): …` with IDs
+  plus 40-char sanitized previews, plus sibling-topic hints and
+  recently-deleted guard, each capped at 20 lines). One “stop X” removes
+  near-duplicates via `ids` or fuzzy `text` matching (combinable) — no N
+  round trips. Partial deletes report `not_found_ids` instead of hiding
+  failures.
+- Anti-resurrection (best-effort guard, not a hard guarantee): deleting a
+  daily/weekly agent task also removes exactly/substring-matching long-term
+  notes and pending journal sources (reminder/once deletes do not scrub),
+  and tombstones the exact text hash for 24h (`Recently deleted … do not
+  recreate unless the current message explicitly asks`). Exact-text
+  recreation within 24h is blocked at create time unless
+  `confirm_recreate:true` is passed with an explicit user request. Past
+  discussion alone must not recreate it.
 - Busy chats queue; `/cancel` in the schedule's topic stops its run.
-  `/new` does not delete schedules.
+  `/new` does not delete schedules. `/forget` alone does not delete
+  schedules either — use `schedule_delete`.
 
 ### Memory: short-term context and nightly notes
 

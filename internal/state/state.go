@@ -145,6 +145,9 @@ func Open(dir string, policy *redaction.Policy, limits ...MemoryLimits) (*Store,
 	if err := s.validateSchedules(); err != nil {
 		return nil, fmt.Errorf("invalid schedules: %w", err)
 	}
+	if err := s.migrateSchedules(); err != nil {
+		return nil, fmt.Errorf("invalid schedules: %w", err)
+	}
 	if err := s.recoverMemory(); err != nil {
 		return nil, err
 	}

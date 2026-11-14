@@ -759,8 +759,15 @@ func (r *Runtime) memoryHistory(m platform.Message, conv state.Conversation) []l
 // readable before the nightly digest, explicitly marked as not yet digested.
 func (r *Runtime) memoryHistoryWithQuery(m platform.Message, conv state.Conversation, query string) []llm.Message {
 	history := append(r.companionConversationContext(m), conv.Messages()...)
+	// Harness-owned live schedule ledger (issue #64): tiny, position-stable,
+	// survives the 12-turn/32KB eviction because it lives in schedules.json,
+	// not in Pairs. Empty ledger = block omitted, like check-in reference.
+	scheduleMsg := r.scheduleLedgerMessage(m)
 	if !r.Config.Memory.Enabled {
-		return history
+		if scheduleMsg == nil {
+			return history
+		}
+		return append([]llm.Message{*scheduleMsg}, history...)
 	}
 	limit := r.Config.Memory.MaxContextBytes
 	if limit <= 0 {
@@ -826,10 +833,56 @@ func (r *Runtime) memoryHistoryWithQuery(m platform.Message, conv state.Conversa
 		}
 	}
 	text = filtered
-	if strings.TrimSpace(text) == "" {
+	var prefix []llm.Message
+	if scheduleMsg != nil {
+		prefix = append(prefix, *scheduleMsg)
+	}
+	if strings.TrimSpace(text) != "" {
+		prefix = append(prefix, llm.Message{Role: "system", Content: text})
+	}
+	if len(prefix) == 0 {
 		return history
 	}
-	return append([]llm.Message{{Role: "system", Content: text}}, history...)
+	return append(prefix, history...)
+}
+
+// scheduleLedgerMessage renders the harness-owned live schedule ledger for
+// issue #64 as a stable, clearly labeled system block. It carries IDs plus
+// one-line summaries so the model never has to guess after the turn closes,
+// names sibling topics when this topic is empty, and warns against
+// recreating recently deleted texts from past discussion or long-term
+// memory. Empty returns nil so the caller omits the block.
+func (r *Runtime) scheduleLedgerMessage(m platform.Message) *llm.Message {
+	if r.Store == nil {
+		return nil
+	}
+	raw := r.Store.ScheduleLedgerText(m)
+	if strings.TrimSpace(raw) == "" {
+		return nil
+	}
+	filtered := raw
+	if r.Options.Redaction != nil {
+		filtered = r.Options.Redaction.Text(redaction.Remote, raw)
+	}
+	if strings.TrimSpace(filtered) == "" {
+		return nil
+	}
+	// Bound the injected block so a full topic cannot blow the prompt: the
+	// ledger already caps at 20 live + 20 recent lines, this is defense.
+	filtered = truncateLedgerBlock(filtered, 4000)
+	return &llm.Message{Role: "system", Content: filtered}
+}
+
+// truncateLedgerBlock caps s to limit bytes on a UTF-8 boundary.
+func truncateLedgerBlock(s string, limit int) string {
+	if limit <= 0 || len(s) <= limit {
+		return s
+	}
+	cut := s[:limit]
+	for len(cut) > 0 && !utf8.ValidString(cut) {
+		cut = cut[:len(cut)-1]
+	}
+	return cut + "\n… (truncated; use schedule_list for full list)"
 }
 
 const memoryHeading = "Long-term memory for this chat (distilled nightly, newest last):\n"

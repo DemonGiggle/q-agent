@@ -8,8 +8,8 @@ summarized, and picked back out. Related guides:
 [Configuration & operations](operations.md) · [Console guide](console.md).
 
 Memory notes are one input to this order, not the order itself.
-This doc shows where the picked notes land ([1]), where past turns land
-([3..6]), and what must stay changeable at the end ([7..11]).
+This doc shows where the live ledger + picked notes land ([1..2]), where past
+turns land ([4..7]), and what must stay changeable at the end ([8..12]).
 
 ## 0. Words we use here (read this first if memory doc was skipped)
 
@@ -53,37 +53,44 @@ Messages sent to the model       Toolbox sent alongside
 +--------------------------------+
 | past plus current question     |
 +--------------------------------+
-[1] memory notes
+[1] live schedule ledger (if any)
+    "Live schedules in this topic (N): ..."
+    + sibling-topic hint + recently-deleted guard
+    CHANGES when: schedule create/delete in this chat
+    OMITTED when: no live, no siblings, no recent deletes
+    (same omission rule as check-in reference)
+
+[2] memory notes
     "Long-term memory ..." +
     "Unconsolidated ..."
     CHANGES when: nightly summary runs,
     you pin / clear, journal grows
 
-[2] check-in reference (if any)
+[3] check-in reference (if any)
     "Previous companion ..."
     only in topic 0,
     only if a hello was sent in 7 days
     last 3 at most
 
-[3] past turn 1, your question
-[4] follow-ups attached to it
-[5] interruption note (if last run failed)
+[4] past turn 1, your question
+[5] follow-ups attached to it
+[6] interruption note (if last run failed)
     "Task was interrupted ..."
     only if last run in this topic failed
-[6] past turn 1, bot's final reply
+[7] past turn 1, bot's final reply
  ... repeat per turn, oldest first ...
 
-[7] current message  <-- what you just sent
+[8] current message  <-- what you just sent
     text (+ photos)
     NEW every time
 +--------------------------------+
-| work added while handling [7]  |
+| work added while handling [8]  |
 +--------------------------------+
-[8] model's tool calls, step by step
-[9] tool results per call, labeled reference-only
-[10] follow-ups arriving mid-task,
+[9] model's tool calls, step by step
+[10] tool results per call, labeled reference-only
+[11] follow-ups arriving mid-task,
      merged in, never undo side effects
-[11] recovery hint, only after 2 identical
+[12] recovery hint, only after 2 identical
      tool calls, this request only
 ```
 
@@ -91,12 +98,15 @@ Key properties:
 
 - [0] is the cache anchor. Changing model, way of thinking, or the
   toolbox breaks reuse from here on.
-- Memory [1] sits **before** history, not after. When notes change, every
-  line after it shifts position. Keep it small (6 KB default) and expect
-  one cache miss on summary nights.
-- History [3..6] only grows at the end within its cap (12 turns / 32 KB,
+- Ledger [1] and memory [2] sit **before** history, not after. When notes
+  change, every line after shifts position. Keep both small (ledger ~4 KB
+  hard cap: 20 live + 20 recent lines, memory 6 KB default) and expect one
+  cache miss on summary nights or schedule create/delete. Empty ledger is
+  omitted like the check-in reference, so empty topics share one prefix
+  shape.
+- History [4..7] only grows at the end within its cap (12 turns / 32 KB,
   oldest dropped first). Old turns are never rewritten in place.
-- The end [7..11] is the most changeable: new question, tool results,
+- The end [8..12] is the most changeable: new question, tool results,
   follow-ups, recovery hints. Cache prefixes that include the end hit
   less often; prefixes that stop before it hit more often.
 
@@ -134,7 +144,7 @@ Practical rules used by q-agent:
    than the full 32 KB note store.
 3. Treat raw journal + current message + tool outputs as the changeable
    end. They change every turn by design; do not try to cache past them.
-4. Expect a nightly miss after the summary lands (memory [1] changed) and
+4. Expect a nightly miss after the summary lands (memory [2] changed) and
    after pin / clear / compress / trim. This is normal, not a bug.
 5. For the check-in decider (no tools, more creative, 6 KB cap), freshness
    matters more than cache: it re-reads history + memory + live chatter
@@ -145,7 +155,7 @@ Ideas if you want higher hit rates:
 - Split memory into two notes: rarely-changed pinned facts first, then
   often-changed ranked + raw journal, so the first half keeps hitting
   after the second half churns.
-- Move the check-in reference [2] behind history, or drop it when empty
+- Move the check-in reference [3] behind history, or drop it when empty
   (already dropped when empty), so empty topics share one prefix shape.
 - Record toolbox order at startup and log it; a changing order explains
   a sudden miss storm.
@@ -201,9 +211,9 @@ Full save and cleaning rules live in
 
 - Failed tasks save one bounded interruption note (up to 16 KB) offered
   to the next follow-up in the **same topic** as reference, never as a
-  replay queue. It lands in history [3..6], oldest first.
+  replay queue. It lands in history [4..7], oldest first.
 - Follow-ups merge up to 16 messages / 64 KB into the next request at the
-  end [10]. Other topics or users cannot inject. Unsent follow-ups live
+  end [11]. Other topics or users cannot inject. Unsent follow-ups live
   only in memory; a restart drops them.
 - Safety labeling: tool results, check-in context, interruption notes,
   and web pages are wrapped as reference-only so content cannot pretend

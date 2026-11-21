@@ -134,6 +134,7 @@ type Checkpoint struct {
 	ResearchEvidence      *Evidence           `json:"research_evidence,omitempty"`
 	ResearchSummary       string              `json:"research_summary,omitempty"`
 	ResearchSummaryStatus string              `json:"research_summary_status,omitempty"`
+	ResearchClaim         *Claim              `json:"research_claim,omitempty"`
 	Version               uint64              `json:"version"`
 	OpenQuestions         []string            `json:"open_questions"`
 	Fingerprints          []string            `json:"fingerprints"`

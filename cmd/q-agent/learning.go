@@ -30,13 +30,14 @@ func runLearning(ctx context.Context, args []string, input io.Reader, output io.
 
 	flags := flag.NewFlagSet("learning "+args[0], flag.ContinueOnError)
 	path := flags.String("config", config.DefaultPath, "q-agent TOML configuration")
-	var summarize bool
+	var summarize, claims bool
 	var sources int
 	if args[0] == "enqueue" {
 		flags.IntVar(&sources, "sources", 1, "verified source target (1 or 2)")
 	}
 	if args[0] == "work" {
 		flags.BoolVar(&summarize, "summarize", false, "summarize a public excerpt through local Ollama")
+		flags.BoolVar(&claims, "claims", false, "draft a claim from verified excerpts through local Ollama")
 	}
 	var chatID, topicID int64
 	var selectFrontier bool
@@ -50,6 +51,9 @@ func runLearning(ctx context.Context, args []string, input io.Reader, output io.
 	}
 	if flags.NArg() != 0 {
 		return fmt.Errorf("unexpected positional arguments")
+	}
+	if summarize && claims {
+		return fmt.Errorf("choose either --summarize or --claims")
 	}
 
 	app, err := config.Load(*path)
@@ -171,9 +175,9 @@ func runLearning(ctx context.Context, args []string, input io.Reader, output io.
 			}{RunID: id})
 		case "work":
 			var model learning.ModelProvider
-			if summarize {
+			if summarize || claims {
 				if app.Provider.Name != "ollama" {
-					return fmt.Errorf("work --summarize requires the configured default provider to be Ollama")
+					return fmt.Errorf("work --summarize and --claims require the configured default provider to be Ollama")
 				}
 				model, err = llm.NewLearningOllama(app.Provider.BaseURL, app.Provider.Model)
 				if err != nil {
@@ -181,7 +185,11 @@ func runLearning(ctx context.Context, args []string, input io.Reader, output io.
 				}
 			}
 			fetch := localtools.LearningFetch{Permissions: cfg.Permissions}
-			result, err := coordinator.WorkResearch(ctx, cfg, strings.TrimSpace(string(data)), func(s string) bool {
+			work := coordinator.WorkResearch
+			if claims {
+				work = coordinator.WorkResearchWithClaims
+			}
+			result, err := work(ctx, cfg, strings.TrimSpace(string(data)), func(s string) bool {
 				return !policy.ContainsSecret(s) &&
 					!cfg.Permissions.Excludes(learning.ConversationTurn{Transcript: s})
 			}, search, fetch, localtools.LearningDocumentReader{}, model)

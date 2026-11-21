@@ -16,7 +16,7 @@ const multiSourceMaxAttempts = 3
 
 func (c *LearningCoordinator) advanceMultiSource(ctx context.Context, lease learning.Lease, cfg learning.Config,
 	plan learning.Plan, allow func(string) bool, search learning.SearchProvider, fetch learning.DocumentFetcher,
-	reader learning.DocumentReader, current learning.RunSnapshot) error {
+	reader learning.DocumentReader, current learning.RunSnapshot, draftClaims bool) error {
 	run := current.Run
 	cp := run.Checkpoint
 	stop := func(reason string) error {
@@ -88,12 +88,17 @@ func (c *LearningCoordinator) advanceMultiSource(ctx context.Context, lease lear
 			ref := learning.ResearchReference{Source: *source, Evidence: evidence}
 			if independentResearchReference(ref, cp.ResearchReferences) {
 				cp.ResearchReferences = append(cp.ResearchReferences, ref)
+				cp.Fingerprints = append(cp.Fingerprints, source.ContentHash)
 			}
 		}
 		target := plan.EvidenceRequirements.MinIndependentSources
 		run.CoverageScore = float64(len(cp.ResearchReferences)) / float64(target)
 		if plan.EvidenceRequirements.HasRequiredSources(cp.ResearchReferences) {
-			run.State, cp.NextIntent = learning.RunValidating, "validate"
+			if draftClaims {
+				cp.NextIntent = "draft_claim"
+			} else {
+				run.State, cp.NextIntent = learning.RunValidating, "validate"
+			}
 		} else if cp.ResearchAttempt == len(cp.ResearchCandidates) {
 			run.State, run.StopReason, cp.NextIntent = learning.RunUnresolved, "insufficient_independent_sources", ""
 		}

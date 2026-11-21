@@ -25,7 +25,7 @@ func SelectSourceExcerpt(doc FetchedDocument, spans []DocumentSpan, question str
 	if len(doc.Body) == 0 || !utf8.Valid(doc.Body) || doc.Source.ContentHash != hex.EncodeToString(hash[:]) {
 		return nil, ErrInvalidSourceContent
 	}
-	terms := excerptTerms(question)
+	terms := learningTerms(question)
 	var selected DocumentSpan
 	best := 0
 	for _, span := range spans[:min(len(spans), MaxDocumentSpans)] {
@@ -76,7 +76,7 @@ func sourceExcerptID(source Source, loc Locator, quote string) string {
 	return hex.EncodeToString(sum[:])
 }
 
-func excerptTerms(question string) []string {
+func learningTerms(question string) []string {
 	const limit = 24
 	terms := make([]string, 0, limit)
 	add := func(term string) {

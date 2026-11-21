@@ -338,7 +338,12 @@ func (c *LearningCoordinator) hasCommit(record storedLearningRun) (bool, error) 
 		return false, err
 	}
 	receipt, ok := data.Receipts[record.Run.Checkpoint.OperationID]
-	return ok && receipt.RunID == record.Run.ID, nil
+	if !ok || receipt.RunID != record.Run.ID {
+		return false, nil
+	}
+	// The previous attempt may have renamed the partition before returning
+	// a directory-sync error. Make the receipt durable before finishing.
+	return true, SyncDir(c.repo.dir)
 }
 
 func terminalLearningRun(state learning.RunState) bool {

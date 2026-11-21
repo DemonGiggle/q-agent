@@ -150,6 +150,29 @@ func TestLearningWorker(t *testing.T) {
 				result.Transitions[len(result.Transitions)-1].State != tc.want {
 				t.Fatalf("fetch=%d, history: %+v", fetchCalls, result.Transitions)
 			}
+			wantCoverage := 0.0
+			if tc.wantsQuote {
+				wantCoverage = 1
+			}
+			if result.CoverageScore != wantCoverage {
+				t.Fatalf("coverage = %v, want %v", result.CoverageScore, wantCoverage)
+			}
+			status, statusErr := NewLearningCoordinator(dir).ResearchStatus(ctx, cfg, id, allow)
+			if statusErr != nil || status.State != result.State || status.CoverageScore != wantCoverage ||
+				len(status.Transitions) != len(result.Transitions) {
+				t.Fatalf("run status: %+v, %v", status, statusErr)
+			}
+			ids := make(map[string]bool)
+			for i, event := range status.Transitions {
+				if !auditID.MatchString(event.EventID) || event.EventID != result.Transitions[i].EventID ||
+					ids[event.EventID] || event.Usage == nil {
+					t.Fatalf("bad transition event: %+v", event)
+				}
+				ids[event.EventID] = true
+			}
+			if *status.Transitions[len(status.Transitions)-1].Usage != result.Spent {
+				t.Fatalf("terminal event lost budget: %+v", status.Transitions)
+			}
 			snapshot, err := c.Repository().Snapshot(ctx, partition)
 			if err != nil || len(snapshot.Claims) != 0 {
 				t.Fatalf("snapshot: %+v, err=%v", snapshot, err)
@@ -220,12 +243,17 @@ func TestLearningWorker(t *testing.T) {
 			record.Run.State, record.Run.StopReason, record.Run.EndedAt = learning.RunCommitting, "", nil
 			record.Run.Checkpoint.NextIntent = "commit"
 			record.Transitions = record.Transitions[:len(record.Transitions)-1]
+			record.Transitions[len(record.Transitions)-1].EventID = ""
 			if err := c.save(record); err != nil {
 				t.Fatal(err)
 			}
 			c = NewLearningCoordinator(dir)
 			result, err = c.WorkResearch(ctx, cfg, id, allow, search, fetch, localtools.LearningDocumentReader{}, nil)
 			latest, snapErr := c.Repository().Snapshot(ctx, partition)
+			if len(result.Transitions) != len(status.Transitions) ||
+				result.Transitions[len(result.Transitions)-2].EventID != status.Transitions[len(status.Transitions)-2].EventID {
+				t.Fatalf("legacy transition IDs changed after restart: %+v", result.Transitions)
+			}
 			if err != nil || snapErr != nil || result.State != learning.RunCompleted || latest.Version != 1 ||
 				len(latest.Notes) != 1 || len(latest.Evidence) != 1 || result.EvidenceID != e.ID || searchCalls != 1 || fetchCalls != 1 {
 				t.Fatalf("restart: %+v, snapshot: %+v, err=%v/%v", result, latest, err, snapErr)

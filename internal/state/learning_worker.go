@@ -3,6 +3,8 @@ package state
 import (
 	"context"
 	"crypto/rand"
+	"crypto/sha256"
+	"encoding/base32"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -17,9 +19,11 @@ import (
 const learningDocumentLimit = 128 << 10
 
 type LearningWorkerTransition struct {
-	State  learning.RunState `json:"state"`
-	At     time.Time         `json:"at"`
-	Reason string            `json:"reason,omitempty"`
+	EventID string            `json:"event_id,omitempty"`
+	Usage   *learning.Budget  `json:"spent_budget,omitempty"`
+	State   learning.RunState `json:"state"`
+	At      time.Time         `json:"at"`
+	Reason  string            `json:"reason,omitempty"`
 }
 
 type LearningWorkerResult struct {
@@ -27,9 +31,55 @@ type LearningWorkerResult struct {
 	State         learning.RunState          `json:"state"`
 	StopReason    string                     `json:"stop_reason,omitempty"`
 	SummaryStatus string                     `json:"summary_status,omitempty"`
+	CoverageScore float64                    `json:"coverage_score"`
 	EvidenceID    string                     `json:"evidence_id,omitempty"`
 	Spent         learning.Budget            `json:"spent_budget"`
 	Transitions   []LearningWorkerTransition `json:"transitions"`
+}
+
+// ResearchStatus reads an operator-owned public run without acquiring a
+// lease. Neither the question nor the fetched content is returned.
+func (c *LearningCoordinator) ResearchStatus(ctx context.Context, cfg learning.Config, id string, allow func(string) bool) (LearningWorkerResult, error) {
+	if err := ctx.Err(); err != nil {
+		return LearningWorkerResult{}, err
+	}
+	if !cfg.Enabled || allow == nil {
+		return LearningWorkerResult{}, learning.ErrDenied
+	}
+	record, err := c.load(id)
+	if err != nil {
+		return LearningWorkerResult{}, err
+	}
+	if record.PartitionKey != "public" || record.Question == "" || !allow(record.Question) ||
+		cfg.Permissions.Excludes(learning.ConversationTurn{Transcript: record.Question}) {
+		return LearningWorkerResult{}, learning.ErrDenied
+	}
+	return researchWorkerResult(record), nil
+}
+
+func researchWorkerResult(record storedLearningRun) LearningWorkerResult {
+	run := record.Run
+	result := LearningWorkerResult{RunID: run.ID, State: run.State, StopReason: run.StopReason,
+		CoverageScore: run.CoverageScore, Spent: run.Spent, Transitions: record.Transitions}
+	// Older checkpoints have a transition list without explicit event IDs.
+	// Derive the same ID on each read without rewriting the history.
+	for i := range result.Transitions {
+		if result.Transitions[i].EventID == "" {
+			result.Transitions[i].EventID = researchTransitionID(run.ID, i)
+		}
+	}
+	if cp := run.Checkpoint; cp != nil {
+		result.SummaryStatus = cp.ResearchSummaryStatus
+		if run.State == learning.RunCompleted && cp.ResearchEvidence != nil {
+			result.EvidenceID = cp.ResearchEvidence.ID
+		}
+	}
+	return result
+}
+
+func researchTransitionID(runID string, index int) string {
+	sum := sha256.Sum256(fmt.Appendf(nil, "%s:%d", runID, index))
+	return base32.StdEncoding.WithPadding(base32.NoPadding).EncodeToString(sum[:16])
 }
 
 func (c *LearningCoordinator) EnqueueResearch(ctx context.Context, cfg learning.Config, query string) (string, error) {
@@ -70,20 +120,9 @@ func (c *LearningCoordinator) WorkResearch(ctx context.Context, cfg learning.Con
 		cfg.Permissions.Excludes(learning.ConversationTurn{Transcript: question}) {
 		return result, learning.ErrDenied
 	}
-	readResult := func(run storedLearningRun) LearningWorkerResult {
-		result := LearningWorkerResult{RunID: id, State: run.Run.State, StopReason: run.Run.StopReason,
-			Spent: run.Run.Spent, Transitions: run.Transitions}
-		cp := run.Run.Checkpoint
-		if cp != nil {
-			result.SummaryStatus = cp.ResearchSummaryStatus
-		}
-		if run.Run.State == learning.RunCompleted && cp != nil && cp.ResearchEvidence != nil {
-			result.EvidenceID = cp.ResearchEvidence.ID
-		}
-		return result
-	}
+
 	if terminalLearningRun(record.Run.State) {
-		return readResult(record), nil
+		return researchWorkerResult(record), nil
 	}
 	lease, err := c.Acquire(ctx, id, time.Minute)
 	if err != nil {
@@ -104,7 +143,7 @@ func (c *LearningCoordinator) WorkResearch(ctx context.Context, cfg learning.Con
 		latest, err := c.load(id)
 		retErr = errors.Join(retErr, err)
 		if err == nil {
-			result = readResult(latest)
+			result = researchWorkerResult(latest)
 		}
 	}()
 
@@ -232,6 +271,11 @@ func (c *LearningCoordinator) WorkResearch(ctx context.Context, cfg learning.Con
 			if !researchCitationAllowed(cfg, allow, run) {
 				run.State, run.StopReason = learning.RunUnresolved, "policy_changed"
 				break
+			}
+			// The manual worker validates at most one excerpt from one
+			// source. Coverage is evidence collection, not factual confidence.
+			if cp.ResearchEvidence != nil {
+				run.CoverageScore = 1 / float64(plan.EvidenceRequirements.MinIndependentSources)
 			}
 			run.State, cp.NextIntent, cp.OperationID = learning.RunCommitting, "commit", rand.Text()
 		case learning.RunCommitting:

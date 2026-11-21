@@ -90,6 +90,23 @@ charged call with no saved outcome stops as `UNRESOLVED`. The worker
 does not repeat that uncertain call. This manual entry point starts no
 scheduler or idle task.
 
+## Inspect a research run
+
+```sh
+printf '%s\n' "$run_id" | q-agent learning status --config ./config.toml
+```
+
+The command reads a public research run without taking a lease or calling a
+provider. It returns the stop reason, reserved usage and ordered transition
+metadata. Transition event IDs stay stable across reads and worker restarts.
+New transitions record usage in the same atomic checkpoint as the state
+change, including budget exhaustion and cancellation.
+
+Coverage is the number of sources with verified excerpts divided by the
+plan's required source count. The current single-source worker reports zero
+until an excerpt is verified and one when it meets that collection target.
+Coverage measures collection and does not rate claim confidence.
+
 ## Summarize a public excerpt
 
 Use the normal research run ID with

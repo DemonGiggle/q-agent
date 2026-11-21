@@ -124,6 +124,22 @@ plan's required source count. A two-source run with one verified excerpt
 reports 0.5 until it can verify the second.
 Coverage measures collection and does not rate claim confidence.
 
+## Export research transition audit
+
+```sh
+printf '%s\n' "$run_id" | q-agent learning audit --config ./config.toml
+```
+
+`enqueue`, `work`, `pause` and `resume` publish checkpointed transitions to
+`<state_dir>/learning/audit/<event_id>.json` after updating run state.
+`audit` replays a durable snapshot and prints its transitions in order. It
+also backfills older runs and repairs missing files after an interruption.
+Repeated exports use the same immutable event IDs. The event contains run
+and plan IDs, timestamps, state, a known reason code and any recorded budget
+usage. If automatic export fails, the command reports it on stderr and
+preserves the checkpoint and its normal result. Run `audit` again after
+resolving the storage error.
+
 ## Pause between worker invocations
 
 ```sh
@@ -300,8 +316,8 @@ multi-source synthesis are follow-up work.
 - #72 has durable leases, cancellation, checkpoints and a tested commit
   fence. Provider dispatch now enforces budget reservations, cancellation,
   and deadlines. The manual worker adds checkpointed collection and a
-  fenced reference-note commit. Evidence synthesis and centralized audit
-  integration stay open.
+  fenced reference-note commit and replays durable transitions into the
+  shared audit log. Evidence synthesis stays open.
 - #73 owns chat recall and its share of the context budget. Recall uses
   authorized evidence and a separate failure path from normal chat.
 - #74 owns Claim lifecycle and atomic Revision history. Use evidence links

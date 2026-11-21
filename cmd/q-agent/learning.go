@@ -24,8 +24,8 @@ import (
 )
 
 func runLearning(ctx context.Context, args []string, input io.Reader, output io.Writer) error {
-	if len(args) == 0 || (args[0] != "configure" && args[0] != "trigger" && args[0] != "search" && args[0] != "enqueue" && args[0] != "work" && args[0] != "recall" && args[0] != "frontier" && args[0] != "status" && args[0] != "pause" && args[0] != "resume") {
-		return fmt.Errorf("usage: q-agent learning configure|trigger|search|enqueue|work|recall|frontier|status|pause|resume [--config FILE]; pass input on stdin")
+	if len(args) == 0 || !slices.Contains([]string{"configure", "trigger", "search", "enqueue", "work", "recall", "frontier", "status", "pause", "resume", "audit"}, args[0]) {
+		return fmt.Errorf("usage: q-agent learning configure|trigger|search|enqueue|work|recall|frontier|status|pause|resume|audit [--config FILE]; pass input on stdin")
 	}
 
 	flags := flag.NewFlagSet("learning "+args[0], flag.ContinueOnError)
@@ -94,7 +94,7 @@ func runLearning(ctx context.Context, args []string, input io.Reader, output io.
 	}
 	// Check against the caller's raw text before redaction and apply the
 	// same exclusion policy again to the sanitized planning input.
-	runIDInput := slices.Contains([]string{"work", "status", "pause", "resume"}, args[0])
+	runIDInput := slices.Contains([]string{"work", "status", "pause", "resume", "audit"}, args[0])
 	if !runIDInput && cfg.Permissions.Excludes(learning.ConversationTurn{Transcript: string(data)}) {
 		return learning.ErrDenied
 	}
@@ -102,13 +102,29 @@ func runLearning(ctx context.Context, args []string, input io.Reader, output io.
 	if err != nil {
 		return err
 	}
+	coordinator := state.NewLearningCoordinator(app.StateDir)
+	allow := func(s string) bool { return !policy.ContainsSecret(s) }
+	writeResearchResult := func(id string, result any) error {
+		// Checkpoints already committed at this boundary. Cancellation and
+		// audit I/O errors must not change the reported research outcome.
+		if _, err := coordinator.ExportResearchAudit(context.WithoutCancel(ctx), cfg, id, allow); err != nil {
+			log.Printf("learning audit pending for run %s (replay with q-agent learning audit)", id)
+		}
+		return enc.Encode(result)
+	}
 	if args[0] == "status" {
-		result, err := state.NewLearningCoordinator(app.StateDir).ResearchStatus(
-			ctx, cfg, strings.TrimSpace(string(data)), func(s string) bool { return !policy.ContainsSecret(s) })
+		result, err := coordinator.ResearchStatus(ctx, cfg, strings.TrimSpace(string(data)), allow)
 		if err != nil {
 			return err
 		}
 		return enc.Encode(result)
+	}
+	if args[0] == "audit" {
+		events, err := coordinator.ExportResearchAudit(ctx, cfg, strings.TrimSpace(string(data)), allow)
+		if err != nil {
+			return err
+		}
+		return enc.Encode(events)
 	}
 
 	if args[0] == "pause" || args[0] == "resume" {
@@ -117,12 +133,12 @@ func runLearning(ctx context.Context, args []string, input io.Reader, output io.
 			return err
 		}
 		defer unlock()
-		result, err := state.NewLearningCoordinator(app.StateDir).SetResearchPaused(
-			ctx, cfg, strings.TrimSpace(string(data)), func(s string) bool { return !policy.ContainsSecret(s) }, args[0] == "pause")
+		result, err := coordinator.SetResearchPaused(
+			ctx, cfg, strings.TrimSpace(string(data)), allow, args[0] == "pause")
 		if err != nil {
 			return err
 		}
-		return enc.Encode(result)
+		return writeResearchResult(result.RunID, result)
 	}
 
 	if args[0] == "recall" {
@@ -143,7 +159,6 @@ func runLearning(ctx context.Context, args []string, input io.Reader, output io.
 			return err
 		}
 		defer unlock()
-		coordinator := state.NewLearningCoordinator(app.StateDir)
 		search := localtools.LearningSearch{Permissions: cfg.Permissions}
 		switch args[0] {
 		case "enqueue":
@@ -151,7 +166,7 @@ func runLearning(ctx context.Context, args []string, input io.Reader, output io.
 			if err != nil {
 				return err
 			}
-			return enc.Encode(struct {
+			return writeResearchResult(id, struct {
 				RunID string `json:"run_id"`
 			}{RunID: id})
 		case "work":
@@ -171,7 +186,7 @@ func runLearning(ctx context.Context, args []string, input io.Reader, output io.
 					!cfg.Permissions.Excludes(learning.ConversationTurn{Transcript: s})
 			}, search, fetch, localtools.LearningDocumentReader{}, model)
 			if result.RunID != "" {
-				err = errors.Join(err, enc.Encode(result))
+				err = errors.Join(err, writeResearchResult(result.RunID, result))
 			}
 			return err
 		}

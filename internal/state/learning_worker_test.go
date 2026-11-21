@@ -173,6 +173,15 @@ func TestLearningWorker(t *testing.T) {
 			if *status.Transitions[len(status.Transitions)-1].Usage != result.Spent {
 				t.Fatalf("terminal event lost budget: %+v", status.Transitions)
 			}
+			events, err := NewLearningCoordinator(dir).ExportResearchAudit(ctx, cfg, id, allow)
+			if err != nil || len(events) != len(status.Transitions) {
+				t.Fatalf("transition audit: %+v, %v", events, err)
+			}
+			last := events[len(events)-1]
+			if last.Outcome != string(tc.want) || last.Reason != result.StopReason ||
+				last.Spent == nil || *last.Spent != result.Spent {
+				t.Fatalf("terminal audit lost state, reason or usage: %+v", last)
+			}
 			snapshot, err := c.Repository().Snapshot(ctx, partition)
 			if err != nil || len(snapshot.Claims) != 0 {
 				t.Fatalf("snapshot: %+v, err=%v", snapshot, err)
@@ -205,17 +214,24 @@ func TestLearningWorker(t *testing.T) {
 			}
 			if model != nil {
 				auditDir := filepath.Join(dir, "learning", "audit")
-				events, err := os.ReadDir(auditDir)
-				if err != nil || len(events) != 2 {
-					t.Fatalf("model audit entries: %v, %v", events, err)
+				entries, err := os.ReadDir(auditDir)
+				if err != nil || len(entries) != len(events)+2 {
+					t.Fatalf("audit entries: %v, %v", entries, err)
 				}
-				for _, entry := range events {
+				modelEvents := 0
+				for _, entry := range entries {
 					raw, err := os.ReadFile(filepath.Join(auditDir, entry.Name()))
 					var event learning.Event
 					if err != nil || json.Unmarshal(raw, &event) != nil || event.RunID != id ||
-						event.Type != learning.ModelCallReserved || strings.Contains(string(raw), quote) {
-						t.Fatalf("invalid model audit: %s, %v", raw, err)
+						strings.Contains(string(raw), quote) || strings.Contains(string(raw), uri) {
+						t.Fatalf("invalid audit: %s, %v", raw, err)
 					}
+					if event.Type == learning.ModelCallReserved {
+						modelEvents++
+					}
+				}
+				if modelEvents != 2 {
+					t.Fatalf("model audit count = %d", modelEvents)
 				}
 			}
 			if !tc.wantsQuote {
@@ -248,6 +264,10 @@ func TestLearningWorker(t *testing.T) {
 				t.Fatal(err)
 			}
 			c = NewLearningCoordinator(dir)
+			replayed, err := c.ExportResearchAudit(ctx, cfg, id, allow)
+			if err != nil || len(replayed) != len(events)-1 || replayed[len(replayed)-1].ID != events[len(events)-2].ID {
+				t.Fatalf("legacy audit replay: %+v, %v", replayed, err)
+			}
 			result, err = c.WorkResearch(ctx, cfg, id, allow, search, fetch, localtools.LearningDocumentReader{}, nil)
 			latest, snapErr := c.Repository().Snapshot(ctx, partition)
 			if len(result.Transitions) != len(status.Transitions) ||

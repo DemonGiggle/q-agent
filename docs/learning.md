@@ -245,12 +245,38 @@ fingerprints for future research.
 printf '%s\n' '藤原氏 關白' | q-agent learning recall --config ./config.toml
 ```
 
-Recall ranks matching public notes by keywords in titles, summaries and
-verified excerpts. It returns up to five matches with their source URLs,
-fetch dates and excerpt locators, applying the current domain and text
-policies before ranking. No matches produces an empty array. The command
-reads the current snapshot on demand and uses no model or auxiliary index
-files. Telegram recall is a separate integration.
+Recall ranks matching public notes by keywords in titles, summaries,
+verified excerpts and cited claims. It returns up to five matches with
+sources, dates, byte locators and available claim statuses, applying
+domain and text policies before ranking. An unrelated query yields an
+empty array. Retrieval reads the local snapshot and uses no model or
+auxiliary index files.
+
+Ask “what did you research?” or “你最近研究了什麼？” for the latest
+authorized notes. The CLI and chat accept `site:example.org`,
+`after:2026-01-01` and `before:2027-01-01` filters. The first date is
+inclusive and the second exclusive. Filters use the published UTC date
+when available and fall back to the UTC fetch date.
+
+For automatic recall in interactive Telegram chat, add the following
+object to the learning policy, keep learning and memory enabled, and
+restart the service.
+
+```json
+{"recall":{"chat_enabled":true,"audit_enabled":true}}
+```
+
+Recall uses only the public knowledge partition. Private chats must
+be authorized and groups also need `permissions.include_group_chats`.
+The active chat provider receives up to two matching notes as untrusted
+prior research, with instructions to cite the supplied URLs and dates
+and distinguish prior research from dialogue memory and live checks.
+Unreviewed or unresolved claims retain their status. Sources outside a
+configured publication-age rule carry an age warning.
+
+Both options default to off. Optional `RecallUsed` events record the
+note and claim IDs included in an answered turn. The audit contains IDs
+and timestamps only. Retrieval and audit errors allow chat to continue.
 
 ## Collect local research candidates
 
@@ -390,8 +416,9 @@ multi-source synthesis are follow-up work.
   shared audit log. The planner applies publication age, exact-host
   overrides, and an opt-in single-authority rule. Optional claim drafting
   associates verified evidence with a hypothesis or unresolved draft.
-- #73 owns chat recall and its share of the context budget. Recall uses
-  authorized evidence and a separate failure path from normal chat.
+- #73 owns note and claim recall. Telegram and the CLI can retrieve
+  authorized cited notes with keywords and date/domain filters. Chat
+  applies a shared context budget and can emit metadata-only recall events.
 - #74 owns Claim lifecycle and atomic Revision history. Use evidence links
   to record support/refutation per Claim, and keep prior versions queryable.
 - #76 owns provider egress, ACL for any remote controls, and deletion across

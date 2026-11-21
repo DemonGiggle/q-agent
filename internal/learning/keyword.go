@@ -28,6 +28,10 @@ func RankNoteKeywords(ctx context.Context, snapshot KnowledgeSnapshot, query str
 	for _, item := range snapshot.Evidence {
 		evidence[item.ID] = strings.ToLower(item.ExcerptOrSummary)
 	}
+	claims := make(map[string]string, len(snapshot.Claims))
+	for _, item := range snapshot.Claims {
+		claims[item.ID] = strings.ToLower(item.Subject + " " + item.Predicate + " " + item.Object)
+	}
 	type match struct {
 		index int
 		score int
@@ -47,9 +51,16 @@ func RankNoteKeywords(ctx context.Context, snapshot KnowledgeSnapshot, query str
 			return nil, err
 		}
 		title := termMask(strings.ToLower(note.Title))
-		body := termMask(strings.ToLower(note.Summary))
+		var body uint32
+		summary := strings.ToLower(note.Summary)
+		if !strings.HasPrefix(summary, "public source retrieved") && !strings.HasPrefix(summary, "public sources retrieved") {
+			body = termMask(summary)
+		}
 		for _, id := range note.EvidenceIDs {
 			body |= termMask(evidence[id])
+		}
+		for _, id := range note.ClaimIDs {
+			body |= termMask(claims[id])
 		}
 		score := 2*bits.OnesCount32(title) + bits.OnesCount32(body&^title)
 		if score == 0 {
@@ -60,6 +71,9 @@ func RankNoteKeywords(ctx context.Context, snapshot KnowledgeSnapshot, query str
 			older := snapshot.Notes[current.index]
 			if current.score != score {
 				return current.score < score
+			}
+			if (len(note.EvidenceIDs) > 0) != (len(older.EvidenceIDs) > 0) {
+				return len(note.EvidenceIDs) > 0
 			}
 			if !note.UpdatedAt.Equal(older.UpdatedAt) {
 				return note.UpdatedAt.After(older.UpdatedAt)

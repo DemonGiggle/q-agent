@@ -259,7 +259,8 @@ func serveWithMaintenance(ctx context.Context, c config.Config, policy *redactio
 		workspaces = &workspace.Manager{Dir: filepath.Join(c.StateDir, "workspaces"), Image: c.Sandbox.BaseImage, Sandbox: options}
 		tools = func(root string) agent.Tools { return &sandbox.Runner{Options: options, RootFS: root} }
 	}
-	store, err := state.Open(c.StateDir, policy, learningMemoryLimits(c))
+	learningConfig := startupLearningConfig(c)
+	store, err := state.Open(c.StateDir, policy, learningMemoryLimits(c, learningConfig))
 	if err != nil {
 		return err
 	}
@@ -286,7 +287,7 @@ func serveWithMaintenance(ctx context.Context, c config.Config, policy *redactio
 	// Every provider instance has its own routing identity and state, while all
 	// completions reuse this transport's connection pool.
 	httpClient := &http.Client{Transport: http.DefaultTransport.(*http.Transport).Clone()}
-	rt := &run.Runtime{Config: c, Store: store, Workspaces: workspaces, Tools: tools, Sink: bot, Version: version, Options: agent.Options{Model: c.Provider.Model, Thinking: c.Provider.Thinking, MaxSteps: c.Limits.MaxSteps, Redaction: policy, Logger: log.Default()}, Report: func(err error) {
+	rt := &run.Runtime{Config: c, Learning: learningConfig, Store: store, Workspaces: workspaces, Tools: tools, Sink: bot, Version: version, Options: agent.Options{Model: c.Provider.Model, Thinking: c.Provider.Thinking, MaxSteps: c.Limits.MaxSteps, Redaction: policy, Logger: log.Default()}, Report: func(err error) {
 		log.Printf("[SERVICE] Runtime error reported | error=%q", policy.Text(redaction.Terminal, err.Error()))
 	}}
 	management.StateDir, management.Version, management.Notify = c.StateDir, version, bot.Send

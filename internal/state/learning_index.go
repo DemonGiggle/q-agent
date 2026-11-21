@@ -41,6 +41,7 @@ type LearningRecall struct {
 	Note     learning.Note       `json:"note"`
 	Sources  []learning.Source   `json:"sources"`
 	Evidence []learning.Evidence `json:"evidence,omitempty"`
+	Claims   []learning.Claim    `json:"claims,omitempty"`
 }
 
 // RecallPublic rechecks the current egress/retention policy before ranking
@@ -48,6 +49,13 @@ type LearningRecall struct {
 func (r *LearningRepository) RecallPublic(ctx context.Context, cfg learning.Config, query string, allow func(string) bool, limit int) ([]LearningRecall, error) {
 	if !cfg.Enabled || allow == nil || !allow(query) || cfg.Permissions.Excludes(learning.ConversationTurn{Transcript: query}) {
 		return nil, learning.ErrDenied
+	}
+	intent, err := learning.ParseRecallQuery(query)
+	if err != nil || limit < 1 || limit > 20 {
+		return nil, learning.ErrRecallQuery
+	}
+	if intent.Text == "" && !intent.Recent {
+		return []LearningRecall{}, nil
 	}
 	partition := learning.Partition{Public: true}
 	snapshot, err := r.Snapshot(ctx, partition)
@@ -72,37 +80,91 @@ func (r *LearningRepository) RecallPublic(ctx context.Context, cfg learning.Conf
 			current.Evidence = append(current.Evidence, e)
 		}
 	}
+	claims := make(map[string]learning.Claim, len(snapshot.Claims))
+	for _, claim := range snapshot.Claims {
+		if claim.Validate() != nil || len(claim.Evidence) == 0 ||
+			!allowed(claim.Subject+" "+claim.Predicate+" "+claim.Object) {
+			continue
+		}
+		valid := true
+		for key, value := range claim.Qualifiers {
+			if !allowed(key) || !allowed(value) {
+				valid = false
+				break
+			}
+		}
+		if !valid {
+			continue
+		}
+		if slices.ContainsFunc(claim.Evidence, func(link learning.EvidenceLink) bool {
+			_, ok := evidence[link.EvidenceID]
+			return !ok
+		}) {
+			continue
+		}
+		claims[claim.ID] = claim
+		current.Claims = append(current.Claims, claim)
+	}
 	notes := make(map[string]learning.Note, len(snapshot.Notes))
 	for _, note := range snapshot.Notes {
 		if len(note.SourceIDs) == 0 || !allowed(note.Title) || !allowed(note.Summary) {
 			continue
 		}
-		valid := true
+		valid, matches := true, false
 		for _, id := range note.SourceIDs {
-			_, ok := sources[id]
+			source, ok := sources[id]
 			valid = valid && ok
+			matches = matches || (ok && intent.MatchesSource(source))
 		}
 		for _, id := range note.EvidenceIDs {
 			_, ok := evidence[id]
 			valid = valid && ok
 		}
-		if valid {
-			current.Notes = append(current.Notes, note)
-			notes[note.ID] = note
+		if !valid || !matches {
+			continue
 		}
+		noteClaims := note.ClaimIDs
+		note.ClaimIDs = nil
+		for _, id := range noteClaims {
+			if claim, ok := claims[id]; ok && !slices.ContainsFunc(claim.Evidence, func(link learning.EvidenceLink) bool {
+				return !slices.Contains(note.EvidenceIDs, link.EvidenceID)
+			}) {
+				note.ClaimIDs = append(note.ClaimIDs, id)
+			}
+		}
+		current.Notes = append(current.Notes, note)
+		notes[note.ID] = note
 	}
-	var index LearningKeywordIndex
-	if err := index.Rebuild(ctx, partition, current); err != nil {
-		return nil, err
-	}
-	ids, err := index.Lookup(ctx, partition, query, limit)
-	if err != nil {
-		return nil, err
+	var ids []string
+	if intent.Recent {
+		slices.SortFunc(current.Notes, func(a, b learning.Note) int {
+			if order := b.UpdatedAt.Compare(a.UpdatedAt); order != 0 {
+				return order
+			}
+			if a.ID < b.ID {
+				return -1
+			}
+			if a.ID > b.ID {
+				return 1
+			}
+			return 0
+		})
+		for _, note := range current.Notes[:min(len(current.Notes), limit)] {
+			ids = append(ids, note.ID)
+		}
+	} else {
+		ids, err = learning.RankNoteKeywords(ctx, current, intent.Text, limit)
+		if err != nil {
+			return nil, err
+		}
 	}
 	results := make([]LearningRecall, 0, len(ids))
 	for _, id := range ids {
 		note := notes[id]
 		result := LearningRecall{Note: note}
+		for _, id := range note.ClaimIDs {
+			result.Claims = append(result.Claims, claims[id])
+		}
 		for _, id := range note.SourceIDs {
 			result.Sources = append(result.Sources, sources[id])
 		}

@@ -85,7 +85,7 @@ func TestLearningCapturePolicy(t *testing.T) {
 	app.StateDir = t.TempDir()
 	check := func(want bool) {
 		t.Helper()
-		got := learningMemoryLimits(app)
+		got := learningMemoryLimits(app, startupLearningConfig(app))
 		if got.LearnFromDMs != want || got.LearnFromGroups {
 			t.Fatalf("unexpected capture policy: %+v", got)
 		}

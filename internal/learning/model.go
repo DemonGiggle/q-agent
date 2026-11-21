@@ -122,6 +122,7 @@ type Checkpoint struct {
 	OpenQuestions []string `json:"open_questions"`
 	Fingerprints  []string `json:"fingerprints"`
 	Spent         Budget   `json:"spent_budget"`
+	OperationID   string   `json:"operation_id,omitempty"`
 	NextIntent    string   `json:"next_intent"`
 }
 

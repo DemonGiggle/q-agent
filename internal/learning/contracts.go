@@ -93,7 +93,14 @@ type Lease struct {
 	ExpiresAt time.Time
 }
 
+type RunSnapshot struct {
+	Version uint64
+	Run     Run
+}
+
 type RunCoordinator interface {
+	Create(ctx context.Context, partition Partition, runID, planID string) error
+	Get(ctx context.Context, runID string) (RunSnapshot, error)
 	Acquire(ctx context.Context, runID string, ttl time.Duration) (Lease, error)
 	Checkpoint(ctx context.Context, lease Lease, expectedVersion uint64, run Run) error
 	Cancel(ctx context.Context, runID string) error

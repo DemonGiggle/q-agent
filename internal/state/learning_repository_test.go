@@ -18,7 +18,7 @@ func TestLearningRepositoryCommit(t *testing.T) {
 	ctx := context.Background()
 	dir := t.TempDir()
 	allowed := true
-	guard := func(_ context.Context, _ learning.Partition, _ learning.Lease, fn func() error) error {
+	guard := func(_ context.Context, _ learning.Partition, _ learning.Lease, _ string, fn func() error) error {
 		if !allowed {
 			return learning.ErrDenied
 		}
@@ -86,7 +86,7 @@ func TestLearningRepositoryCommit(t *testing.T) {
 
 func TestLearningRepositoryConcurrentWritersAndLimit(t *testing.T) {
 	ctx := context.Background()
-	r := NewLearningRepository(t.TempDir(), func(_ context.Context, _ learning.Partition, _ learning.Lease, fn func() error) error {
+	r := NewLearningRepository(t.TempDir(), func(_ context.Context, _ learning.Partition, _ learning.Lease, _ string, fn func() error) error {
 		return fn()
 	})
 	public := learning.Partition{Public: true}

@@ -36,6 +36,7 @@ type LearningWorkerResult struct {
 	CoverageScore float64                    `json:"coverage_score"`
 	EvidenceIDs   []string                   `json:"evidence_ids,omitempty"`
 	EvidenceID    string                     `json:"evidence_id,omitempty"`
+	ClaimID       string                     `json:"claim_id,omitempty"`
 	Spent         learning.Budget            `json:"spent_budget"`
 	Transitions   []LearningWorkerTransition `json:"transitions"`
 }
@@ -83,6 +84,9 @@ func researchWorkerResult(record storedLearningRun) LearningWorkerResult {
 	if cp := run.Checkpoint; cp != nil {
 		result.SummaryStatus = cp.ResearchSummaryStatus
 		if run.State == learning.RunCompleted {
+			if cp.ResearchClaim != nil {
+				result.ClaimID = cp.ResearchClaim.ID
+			}
 			if cp.ResearchEvidence != nil {
 				result.EvidenceID = cp.ResearchEvidence.ID
 			}
@@ -126,7 +130,21 @@ func (c *LearningCoordinator) EnqueueResearch(ctx context.Context, cfg learning.
 // caller holds the learning directory lock and checks secrets under its
 // current policy. Search results never become evidence or claims.
 func (c *LearningCoordinator) WorkResearch(ctx context.Context, cfg learning.Config, id string, allow func(string) bool,
-	search learning.SearchProvider, fetch learning.DocumentFetcher, reader learning.DocumentReader, model learning.ModelProvider) (result LearningWorkerResult, retErr error) {
+	search learning.SearchProvider, fetch learning.DocumentFetcher, reader learning.DocumentReader, model learning.ModelProvider) (LearningWorkerResult, error) {
+	return c.workResearch(ctx, cfg, id, allow, search, fetch, reader, model, false)
+}
+
+func (c *LearningCoordinator) WorkResearchWithClaims(ctx context.Context, cfg learning.Config, id string, allow func(string) bool,
+	search learning.SearchProvider, fetch learning.DocumentFetcher, reader learning.DocumentReader, model learning.ModelProvider) (LearningWorkerResult, error) {
+	if model == nil {
+		return LearningWorkerResult{}, fmt.Errorf("learning claims require a model")
+	}
+	return c.workResearch(ctx, cfg, id, allow, search, fetch, reader, model, true)
+}
+
+func (c *LearningCoordinator) workResearch(ctx context.Context, cfg learning.Config, id string, allow func(string) bool,
+	search learning.SearchProvider, fetch learning.DocumentFetcher, reader learning.DocumentReader, model learning.ModelProvider,
+	draftClaims bool) (result LearningWorkerResult, retErr error) {
 	if err := cfg.Validate(); err != nil {
 		return result, err
 	}
@@ -143,7 +161,7 @@ func (c *LearningCoordinator) WorkResearch(ctx context.Context, cfg learning.Con
 		return researchWorkerResult(record), nil
 	}
 	sourceTarget := max(1, record.SourceTarget)
-	if sourceTarget == 2 && model != nil {
+	if sourceTarget == 2 && model != nil && !draftClaims {
 		return result, fmt.Errorf("two-source research does not support single-excerpt summarization")
 	}
 	lease, err := c.Acquire(ctx, id, time.Minute)
@@ -175,8 +193,11 @@ func (c *LearningCoordinator) WorkResearch(ctx context.Context, cfg learning.Con
 		Version:    1, Budget: cfg.PerQuestion, Subquestions: []string{question},
 		Steps: []string{"discover", "fetch", "select_excerpt", "record_source"}, AllowedSourceClasses: []string{"public"},
 		StopConditions: []string{"source_recorded", "independent_excerpts_recorded", "authority_source_recorded",
-			"no_qualified_source", "insufficient_independent_sources", "budget_exhausted", "cancelled"},
+			"no_qualified_source", "insufficient_independent_sources", "insufficient_claim_evidence", "budget_exhausted", "cancelled"},
 		EvidenceRequirements: cfg.ResearchRequirements(sourceTarget),
+	}
+	if draftClaims {
+		plan.Steps = []string{"discover", "fetch", "select_excerpt", "draft_claim", "validate", "record_source"}
 	}
 	if record.PlanBudget != nil {
 		plan.Budget = *record.PlanBudget
@@ -199,12 +220,24 @@ func (c *LearningCoordinator) WorkResearch(ctx context.Context, cfg learning.Con
 		switch run.State {
 		case learning.RunQueued:
 			run.State, cp.NextIntent = learning.RunPlanned, "search"
+			cp.OpenQuestions = []string{plan.QuestionID}
 		case learning.RunPlanned:
 			run.State = learning.RunRunning
 		case learning.RunRunning:
+			if cp.NextIntent == "draft_claim" {
+				current.Run = run
+				var claimModel learning.ModelProvider
+				if draftClaims {
+					claimModel = model
+				}
+				if err := c.advanceResearchClaim(ctx, lease, cfg, plan, allow, current, claimModel); err != nil {
+					return result, err
+				}
+				continue
+			}
 			if sourceTarget == 2 {
 				current.Run = run
-				if err := c.advanceMultiSource(ctx, lease, cfg, plan, allow, search, fetch, reader, current); err != nil {
+				if err := c.advanceMultiSource(ctx, lease, cfg, plan, allow, search, fetch, reader, current, draftClaims); err != nil {
 					return result, err
 				}
 				continue
@@ -291,9 +324,15 @@ func (c *LearningCoordinator) WorkResearch(ctx context.Context, cfg learning.Con
 				}
 			} else if source != nil {
 				cp.ResearchSource, cp.ResearchEvidence, cp.NextIntent = source, evidence, "validate"
-				if model != nil && evidence != nil {
+				cp.Fingerprints = append(cp.Fingerprints, source.ContentHash)
+				switch {
+				case draftClaims && evidence == nil:
+					run.State, run.StopReason = learning.RunUnresolved, "insufficient_claim_evidence"
+				case draftClaims:
+					cp.NextIntent = "draft_claim"
+				case model != nil && evidence != nil:
 					cp.NextIntent = "summarize"
-				} else {
+				default:
 					if model != nil {
 						cp.ResearchSummaryStatus = "no_excerpt"
 					}
@@ -502,6 +541,10 @@ func (c *LearningCoordinator) commitResearch(ctx context.Context, cfg learning.C
 	if cp.ResearchSummary != "" {
 		note.Summary = "Unreviewed model summary of the cited excerpt: " + cp.ResearchSummary
 	}
+	if cp.ResearchClaim != nil {
+		note.ClaimIDs = []string{cp.ResearchClaim.ID}
+		next.Claims = append(next.Claims, *cp.ResearchClaim)
+	}
 	next.Notes = append(next.Notes, note)
 	_, err = c.repo.Commit(ctx, partition, next.Version, lease, cp.OperationID, next)
 	if errors.Is(err, ErrLearningPartitionFull) {
@@ -536,6 +579,9 @@ func (c *LearningCoordinator) researchCitationAllowed(cfg learning.Config, allow
 			cfg.Permissions.Excludes(learning.ConversationTurn{Transcript: evidence.ExcerptOrSummary})) {
 			return false
 		}
+	}
+	if cp.ResearchClaim != nil && !researchClaimAllowed(cfg, allow, run.ID, refs, *cp.ResearchClaim) {
+		return false
 	}
 	return cp.ResearchSummary == "" || (cp.ResearchEvidence != nil && allow(cp.ResearchSummary) &&
 		!cfg.Permissions.Excludes(learning.ConversationTurn{Transcript: cp.ResearchSummary}))

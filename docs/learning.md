@@ -217,6 +217,28 @@ linked to the existing excerpt, with no Claim created. Model failures
 leave the ordinary source note available. Budget exhaustion stops the
 run. A resumed run never replays an uncertain model request.
 
+## Draft a claim from verified excerpts
+
+```sh
+printf '%s\n' "$run_id" | q-agent learning work --claims --config ./config.toml
+```
+
+`--claims` uses the configured local Ollama model and the same token,
+deadline, retry, and audit limits as excerpt summaries. It accepts one or
+two verified excerpts and sends their text in order. The host maps the
+returned `supports`, `refutes` and `context` labels to the existing
+Evidence IDs and source locators. A draft with support is stored as a
+`hypothesis`. A draft with refutation remains `unresolved` and keeps
+the cited evidence on both sides. If there is no direct evidence or the
+model abstains, the run ends `UNRESOLVED` with its checkpoint and audit.
+
+A successful commit writes the draft, evidence and reference note
+together. Work and status report the `claim_id` after the commit.
+Use the same `--claims` flag when resuming before the model stage. A
+saved draft can finish committing without another model call. The
+checkpoint also carries the open question ID and accepted source
+fingerprints for future research.
+
 ## Find previously read sources
 
 ```sh
@@ -366,8 +388,8 @@ multi-source synthesis are follow-up work.
   adds checkpointed collection and a
   fenced reference-note commit and replays durable transitions into the
   shared audit log. The planner applies publication age, exact-host
-  overrides, and an opt-in single-authority rule. Evidence synthesis
-  stays open.
+  overrides, and an opt-in single-authority rule. Optional claim drafting
+  associates verified evidence with a hypothesis or unresolved draft.
 - #73 owns chat recall and its share of the context budget. Recall uses
   authorized evidence and a separate failure path from normal chat.
 - #74 owns Claim lifecycle and atomic Revision history. Use evidence links

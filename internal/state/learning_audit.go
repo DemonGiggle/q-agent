@@ -23,8 +23,10 @@ func (a LearningAudit) Append(ctx context.Context, event learning.Event) error {
 	if err := event.Validate(); err != nil {
 		return err
 	}
+	validOutcome := (event.Type == learning.ResearchPlanned && event.Outcome == "dry_run") ||
+		(event.Type == learning.ModelCallReserved && event.Outcome == "reserved")
 	if !auditID.MatchString(event.ID) || !auditID.MatchString(event.RunID) ||
-		event.Type != learning.ResearchPlanned || event.Outcome != "dry_run" {
+		!validOutcome {
 		return fmt.Errorf("invalid learning audit event metadata")
 	}
 	for _, ref := range event.ObjectRefs {

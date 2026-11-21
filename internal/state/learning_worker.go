@@ -3,6 +3,7 @@ package state
 import (
 	"context"
 	"crypto/rand"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"slices"
@@ -22,12 +23,13 @@ type LearningWorkerTransition struct {
 }
 
 type LearningWorkerResult struct {
-	RunID       string                     `json:"run_id"`
-	State       learning.RunState          `json:"state"`
-	StopReason  string                     `json:"stop_reason,omitempty"`
-	EvidenceID  string                     `json:"evidence_id,omitempty"`
-	Spent       learning.Budget            `json:"spent_budget"`
-	Transitions []LearningWorkerTransition `json:"transitions"`
+	RunID         string                     `json:"run_id"`
+	State         learning.RunState          `json:"state"`
+	StopReason    string                     `json:"stop_reason,omitempty"`
+	SummaryStatus string                     `json:"summary_status,omitempty"`
+	EvidenceID    string                     `json:"evidence_id,omitempty"`
+	Spent         learning.Budget            `json:"spent_budget"`
+	Transitions   []LearningWorkerTransition `json:"transitions"`
 }
 
 func (c *LearningCoordinator) EnqueueResearch(ctx context.Context, cfg learning.Config, query string) (string, error) {
@@ -52,7 +54,7 @@ func (c *LearningCoordinator) EnqueueResearch(ctx context.Context, cfg learning.
 // caller holds the learning directory lock and checks secrets under its
 // current policy. Search results never become evidence or claims.
 func (c *LearningCoordinator) WorkResearch(ctx context.Context, cfg learning.Config, id string, allow func(string) bool,
-	search learning.SearchProvider, fetch learning.DocumentFetcher, reader learning.DocumentReader) (result LearningWorkerResult, retErr error) {
+	search learning.SearchProvider, fetch learning.DocumentFetcher, reader learning.DocumentReader, model learning.ModelProvider) (result LearningWorkerResult, retErr error) {
 	if err := cfg.Validate(); err != nil {
 		return result, err
 	}
@@ -72,6 +74,9 @@ func (c *LearningCoordinator) WorkResearch(ctx context.Context, cfg learning.Con
 		result := LearningWorkerResult{RunID: id, State: run.Run.State, StopReason: run.Run.StopReason,
 			Spent: run.Run.Spent, Transitions: run.Transitions}
 		cp := run.Run.Checkpoint
+		if cp != nil {
+			result.SummaryStatus = cp.ResearchSummaryStatus
+		}
 		if run.Run.State == learning.RunCompleted && cp != nil && cp.ResearchEvidence != nil {
 			result.EvidenceID = cp.ResearchEvidence.ID
 		}
@@ -135,6 +140,44 @@ func (c *LearningCoordinator) WorkResearch(ctx context.Context, cfg learning.Con
 		case learning.RunPlanned:
 			run.State = learning.RunRunning
 		case learning.RunRunning:
+			if cp.NextIntent == "summarize" {
+				if run.Spent.Requests > 3 {
+					// The previous model call may have completed. Keep the
+					// source without repeating an uncheckpointed call.
+					cp.ResearchSummaryStatus = "interrupted"
+					run.State, cp.NextIntent = learning.RunValidating, "validate"
+					break
+				}
+				if model == nil {
+					return result, fmt.Errorf("resume this run with learning work --summarize")
+				}
+				if cp.ResearchEvidence == nil || !researchCitationAllowed(cfg, allow, run) {
+					run.State, run.StopReason = learning.RunUnresolved, "policy_changed"
+					break
+				}
+				summary, modelErr := c.researchSummary(ctx, lease, cfg, plan, model, *cp.ResearchEvidence)
+				if errors.Is(modelErr, ErrLearningBudget) || ctx.Err() != nil {
+					return result, modelErr
+				}
+				current, err = c.Get(ctx, id)
+				if err != nil {
+					return result, err
+				}
+				run, cp = current.Run, current.Run.Checkpoint
+				if terminalLearningRun(run.State) {
+					return result, nil
+				}
+				switch {
+				case modelErr != nil || summary == "":
+					cp.ResearchSummaryStatus = "unavailable"
+				case !allow(summary) || cfg.Permissions.Excludes(learning.ConversationTurn{Transcript: summary}):
+					cp.ResearchSummaryStatus = "excluded"
+				default:
+					cp.ResearchSummary, cp.ResearchSummaryStatus = summary, "generated"
+				}
+				run.State, cp.NextIntent = learning.RunValidating, "validate"
+				break
+			}
 			// Calls reserve before dispatch. If the process stopped before
 			// checkpointing an output, its call outcome is unknown.
 			if (cp.NextIntent == "search" && run.Spent.Requests != 0) ||
@@ -174,7 +217,14 @@ func (c *LearningCoordinator) WorkResearch(ctx context.Context, cfg learning.Con
 				}
 			} else if source != nil {
 				cp.ResearchSource, cp.ResearchEvidence, cp.NextIntent = source, evidence, "validate"
-				run.State = learning.RunValidating
+				if model != nil && evidence != nil {
+					cp.NextIntent = "summarize"
+				} else {
+					if model != nil {
+						cp.ResearchSummaryStatus = "no_excerpt"
+					}
+					run.State = learning.RunValidating
+				}
 			} else {
 				cp.ResearchURI, cp.NextIntent = uri, "fetch"
 			}
@@ -273,6 +323,26 @@ func (c *LearningCoordinator) researchFetch(ctx context.Context, lease learning.
 	return &source, evidence, nil
 }
 
+func (c *LearningCoordinator) researchSummary(ctx context.Context, lease learning.Lease, cfg learning.Config, plan learning.Plan,
+	model learning.ModelProvider, evidence learning.Evidence) (string, error) {
+	const tokenLimit = 2432
+	ms := min(int64(15_000), cfg.PerQuestion.WallTimeMillis)
+	charge := learning.Budget{Requests: 1, Tokens: tokenLimit, WallTimeMillis: ms}
+	raw, err := c.GenerateStructured(ctx, lease, cfg, plan, model, learning.StructuredRequest{
+		Operation: "summarize_excerpt", TokenLimit: tokenLimit,
+		SchemaJSON: []byte(`{"type":"object","properties":{"summary":{"type":"string","minLength":1,"maxLength":200}},"required":["summary"],"additionalProperties":false}`),
+		References: []learning.DocumentSpan{{Locator: evidence.Locator, Text: evidence.ExcerptOrSummary}},
+	}, charge, time.Duration(ms)*time.Millisecond)
+	if err != nil {
+		return "", err
+	}
+	var output struct{ Summary string }
+	if err := json.Unmarshal(raw, &output); err != nil {
+		return "", err
+	}
+	return strings.TrimSpace(output.Summary), nil
+}
+
 func (c *LearningCoordinator) commitResearch(ctx context.Context, cfg learning.Config, lease learning.Lease,
 	allow func(string) bool, question string, run learning.Run) error {
 	record, err := c.load(run.ID)
@@ -319,6 +389,9 @@ func (c *LearningCoordinator) commitResearch(ctx context.Context, cfg learning.C
 		}
 		note.EvidenceIDs = []string{evidence.ID}
 		note.Summary = "Public source retrieved with a matching excerpt. Factual claims have not been reviewed."
+		if cp.ResearchSummary != "" {
+			note.Summary = "Unreviewed model summary of the cited excerpt: " + cp.ResearchSummary
+		}
 	}
 	next.Notes = append(next.Notes, note)
 	_, err = c.repo.Commit(ctx, partition, next.Version, lease, cp.OperationID, next)
@@ -339,6 +412,10 @@ func researchCitationAllowed(cfg learning.Config, allow func(string) bool, run l
 		return false
 	}
 	evidence := cp.ResearchEvidence
+	if cp.ResearchSummary != "" && (evidence == nil || !allow(cp.ResearchSummary) ||
+		cfg.Permissions.Excludes(learning.ConversationTurn{Transcript: cp.ResearchSummary})) {
+		return false
+	}
 	return evidence == nil || (evidence.MatchesSourceExcerpt(*source) && allow(evidence.ExcerptOrSummary) &&
 		!cfg.Permissions.Excludes(learning.ConversationTurn{Transcript: evidence.ExcerptOrSummary}))
 }

@@ -11,7 +11,8 @@ import (
 type EventType string
 
 const (
-	ResearchPlanned EventType = "ResearchPlanned"
+	ResearchPlanned   EventType = "ResearchPlanned"
+	ModelCallReserved EventType = "ModelCallReserved"
 )
 
 type Event struct {

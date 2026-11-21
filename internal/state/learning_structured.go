@@ -2,8 +2,10 @@ package state
 
 import (
 	"context"
+	"crypto/rand"
 	"encoding/json"
 	"errors"
+	"path/filepath"
 	"time"
 
 	"github.com/google/jsonschema-go/jsonschema"
@@ -30,9 +32,16 @@ func (c *LearningCoordinator) GenerateStructured(ctx context.Context, lease lear
 	if err != nil {
 		return nil, errors.New("cannot resolve learning output schema")
 	}
+	audit := LearningAudit{Dir: filepath.Join(filepath.Dir(c.dir), "audit")}
 	for range 2 {
 		var raw []byte
 		err := c.CallProvider(ctx, lease, cfg, plan, charge, timeout, func(ctx context.Context) (learning.Budget, error) {
+			if err := audit.Append(ctx, learning.Event{
+				SchemaVersion: learning.SchemaVersion, ID: rand.Text(), Type: learning.ModelCallReserved,
+				At: c.now().UTC(), RunID: lease.RunID, ObjectRefs: []string{plan.ID}, Outcome: "reserved",
+			}); err != nil {
+				return learning.Budget{}, err
+			}
 			var usage learning.Budget
 			var err error
 			raw, usage, err = model.Generate(ctx, req)

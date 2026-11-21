@@ -16,6 +16,7 @@ import (
 
 	"q-agent/internal/config"
 	"q-agent/internal/learning"
+	"q-agent/internal/llm"
 	"q-agent/internal/localtools"
 	"q-agent/internal/redaction"
 	"q-agent/internal/state"
@@ -28,6 +29,10 @@ func runLearning(ctx context.Context, args []string, input io.Reader, output io.
 
 	flags := flag.NewFlagSet("learning "+args[0], flag.ContinueOnError)
 	path := flags.String("config", config.DefaultPath, "q-agent TOML configuration")
+	var summarize bool
+	if args[0] == "work" {
+		flags.BoolVar(&summarize, "summarize", false, "summarize a public excerpt through local Ollama")
+	}
 	if err := flags.Parse(args[1:]); err != nil {
 		return err
 	}
@@ -106,11 +111,21 @@ func runLearning(ctx context.Context, args []string, input io.Reader, output io.
 				RunID string `json:"run_id"`
 			}{RunID: id})
 		case "work":
+			var model learning.ModelProvider
+			if summarize {
+				if app.Provider.Name != "ollama" {
+					return fmt.Errorf("work --summarize requires the configured default provider to be Ollama")
+				}
+				model, err = llm.NewLearningOllama(app.Provider.BaseURL, app.Provider.Model)
+				if err != nil {
+					return err
+				}
+			}
 			fetch := localtools.LearningFetch{Permissions: cfg.Permissions}
 			result, err := coordinator.WorkResearch(ctx, cfg, strings.TrimSpace(string(data)), func(s string) bool {
 				return !policy.ContainsSecret(s) &&
 					!cfg.Permissions.Excludes(learning.ConversationTurn{Transcript: s})
-			}, search, fetch, localtools.LearningDocumentReader{})
+			}, search, fetch, localtools.LearningDocumentReader{}, model)
 			if result.RunID != "" {
 				err = errors.Join(err, enc.Encode(result))
 			}

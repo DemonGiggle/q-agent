@@ -272,25 +272,28 @@ func loadLearningConfig(path string) (learning.Config, error) {
 	return cfg, err
 }
 
-// Read the opt-in once at startup. Chat never polls the learning policy, and
-// a missing or invalid learning policy leaves history capture disabled.
-func learningMemoryLimits(app config.Config) state.MemoryLimits {
-	limits := state.MemoryLimits{
-		MaxBytes: app.Memory.MaxBytes, MaxPendingBytes: app.Memory.MaxPendingBytes,
-	}
+// Load the policy once at startup. Missing or invalid policy disables
+// automatic learning features until the service is restarted.
+func startupLearningConfig(app config.Config) learning.Config {
 	if !app.Memory.Enabled {
-		return limits
+		return learning.Config{}
 	}
 	cfg, err := loadLearningConfig(learningPolicyPath(app.StateDir))
 	if err != nil {
 		if !errors.Is(err, os.ErrNotExist) {
-			log.Print("[LEARNING] Invalid or unreadable policy; conversation history capture disabled")
+			log.Print("[LEARNING] Invalid or unreadable policy; automatic learning disabled")
 		}
-		return limits
+		return learning.Config{}
 	}
-	limits.LearnFromDMs = cfg.Enabled && cfg.Permissions.IncludePrivateChats
-	limits.LearnFromGroups = cfg.Enabled && cfg.Permissions.IncludeGroupChats
-	return limits
+	return cfg
+}
+
+func learningMemoryLimits(app config.Config, cfg learning.Config) state.MemoryLimits {
+	return state.MemoryLimits{
+		MaxBytes: app.Memory.MaxBytes, MaxPendingBytes: app.Memory.MaxPendingBytes,
+		LearnFromDMs:    app.Memory.Enabled && cfg.Enabled && cfg.Permissions.IncludePrivateChats,
+		LearnFromGroups: app.Memory.Enabled && cfg.Enabled && cfg.Permissions.IncludeGroupChats,
+	}
 }
 
 func decodeLearningConfig(input io.Reader, cfg *learning.Config) error {

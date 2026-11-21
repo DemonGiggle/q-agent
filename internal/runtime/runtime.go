@@ -10,6 +10,7 @@ import (
 	"q-agent/internal/agent"
 	"q-agent/internal/config"
 	"q-agent/internal/host"
+	"q-agent/internal/learning"
 	"q-agent/internal/llm"
 	"q-agent/internal/mcpclient"
 	"q-agent/internal/platform"
@@ -47,6 +48,7 @@ type task struct {
 }
 type Runtime struct {
 	Config            config.Config
+	Learning          learning.Config
 	Store             *state.Store
 	Workspaces        Workspaces
 	Providers         ProviderFactory
@@ -453,13 +455,15 @@ func (r *Runtime) run(ctx context.Context, m platform.Message, runID string) boo
 						}
 						r.mu.Unlock()
 					}()
-					result, err := agent.Run(ctx, provider, tools, r.memoryHistoryWithQuery(m, conversation, m.Text), m.Text, options)
+					history, recall := r.taskHistory(ctx, m, conversation, runID == "")
+					result, err := agent.Run(ctx, provider, tools, history, m.Text, options)
 					if summarizer, ok := mcpTools.(interface{ Summary() string }); ok {
 						r.logf("[MCP] Task tools | update=%d %s", m.UpdateID, r.Options.Redaction.Text(redaction.Terminal, summarizer.Summary()))
 					}
 					answer = result.Answer
 					runErr = err
 					if err == nil {
+						r.auditResearchRecall(ctx, recall)
 						r.logf("[RUN] Agent result received | update=%d elapsed=%s steps=%d tool_calls=%d", m.UpdateID, time.Since(runStart).Truncate(time.Millisecond), result.ModelSteps, result.ToolCalls)
 						conversation.Pairs = append(conversation.Pairs, state.Pair{User: m.Text, Answer: answer, Steers: result.Steers})
 						sourceID := fmt.Sprintf("update:%s:%d", m.Platform, m.UpdateID)

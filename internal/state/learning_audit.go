@@ -54,6 +54,11 @@ func (a LearningAudit) writeEvent(ctx context.Context, event learning.Event) err
 			return fmt.Errorf("invalid learning audit object reference")
 		}
 	}
+	for _, ref := range event.ClaimRefs {
+		if !auditID.MatchString(ref) {
+			return fmt.Errorf("invalid learning audit claim reference")
+		}
+	}
 	data, err := json.Marshal(event)
 	if err != nil {
 		return err
@@ -107,6 +112,13 @@ func checkAuditEvent(path string, expected []byte) error {
 }
 
 func validAuditMetadata(event learning.Event) bool {
+	if event.Type == learning.RecallUsed {
+		return event.Outcome == "included" && event.Reason == "" && event.Spent == nil &&
+			len(event.ObjectRefs) <= 2 && len(event.ClaimRefs) <= 20
+	}
+	if len(event.ClaimRefs) != 0 {
+		return false
+	}
 	if event.Type == learning.ResearchTransition {
 		return knownResearchState(learning.RunState(event.Outcome)) && safeResearchReason(event.Reason) == event.Reason
 	}

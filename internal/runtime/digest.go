@@ -758,6 +758,17 @@ func (r *Runtime) memoryHistory(m platform.Message, conv state.Conversation) []l
 // unconsolidated journal (issue #34 Phase 0): same-day preferences are
 // readable before the nightly digest, explicitly marked as not yet digested.
 func (r *Runtime) memoryHistoryWithQuery(m platform.Message, conv state.Conversation, query string) []llm.Message {
+	return r.memoryHistoryWithin(m, conv, query, r.memoryContextBytes())
+}
+
+func (r *Runtime) memoryContextBytes() int {
+	if r.Config.Memory.MaxContextBytes > 0 {
+		return r.Config.Memory.MaxContextBytes
+	}
+	return fallbackMemoryContextBytes
+}
+
+func (r *Runtime) memoryHistoryWithin(m platform.Message, conv state.Conversation, query string, limit int) []llm.Message {
 	history := append(r.companionConversationContext(m), conv.Messages()...)
 	// Harness-owned live schedule ledger (issue #64): tiny, position-stable,
 	// survives the 12-turn/32KB eviction because it lives in schedules.json,
@@ -768,10 +779,6 @@ func (r *Runtime) memoryHistoryWithQuery(m platform.Message, conv state.Conversa
 			return history
 		}
 		return append([]llm.Message{*scheduleMsg}, history...)
-	}
-	limit := r.Config.Memory.MaxContextBytes
-	if limit <= 0 {
-		limit = fallbackMemoryContextBytes
 	}
 	mem, err := r.Store.LoadMemory(m.WorkspaceKey())
 	if err != nil {

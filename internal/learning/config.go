@@ -96,9 +96,15 @@ type Config struct {
 	Permissions   PermissionConfig      `json:"permissions"`
 	SourcePolicy  *ResearchSourcePolicy `json:"source_policy,omitempty"`
 	Selection     SelectionConfig       `json:"selection"`
+	Recall        RecallConfig          `json:"recall,omitzero"`
 	GlobalDaily   Budget                `json:"global_daily"`
 	PerRun        Budget                `json:"per_run"`
 	PerQuestion   Budget                `json:"per_question"`
+}
+
+type RecallConfig struct {
+	ChatEnabled  bool `json:"chat_enabled,omitempty"`
+	AuditEnabled bool `json:"audit_enabled,omitempty"`
 }
 
 // Defaults keep both learning and scheduling opt-in. Budget figures are

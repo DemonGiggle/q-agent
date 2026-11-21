@@ -14,6 +14,7 @@ const (
 	ResearchPlanned    EventType = "ResearchPlanned"
 	ResearchTransition EventType = "ResearchTransition"
 	ModelCallReserved  EventType = "ModelCallReserved"
+	RecallUsed         EventType = "RecallUsed"
 )
 
 type Event struct {
@@ -23,6 +24,7 @@ type Event struct {
 	At            time.Time `json:"ts"`
 	RunID         string    `json:"run_id"`
 	ObjectRefs    []string  `json:"object_refs"`
+	ClaimRefs     []string  `json:"claim_refs,omitempty"`
 	Outcome       string    `json:"outcome"`
 	Reason        string    `json:"reason,omitempty"`
 	Spent         *Budget   `json:"spent_budget,omitempty"`

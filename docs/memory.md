@@ -298,6 +298,14 @@ exist yet, journal may use the whole budget. Cleaning runs before
 budgeting, cuts respect character boundaries, and a tiny budget may send
 nothing rather than a misleading half note.
 
+With [automatic research recall](learning.md#find-previously-read-sources)
+enabled, interactive chat can use up to one third of this same budget,
+with a 2,000-byte cap, for relevant public research notes and complete
+citations. Retrieved research is ranked separately and enters the prompt
+as reference data. Only notes that fit with their citations reduce the
+available memory budget. Distilled notes and journal use the remaining
+space with the existing priority and freshness rules.
+
 The check-in decider uses the same ranking plus its own inputs (see
 [context composition](context.md#2-companion-and-proactive-context-separate-path)).
 

@@ -237,6 +237,10 @@ func (s *Store) CommitExchange(route platform.Message, sourceID string, c Conver
 		original = orig
 	}
 	event := SourceEvent{Sequence: mem.NextSequence, ID: sourceID, Topic: route.TopicID, At: at, Transcript: stored}
+	if len(cleaned.Pairs) > 0 && interactiveSource(route, sourceID) {
+		cleaned.Pairs[len(cleaned.Pairs)-1].Learning = &ExchangeOrigin{ID: sourceID, At: at, Epoch: mem.Epoch}
+		cleaned.Bound()
+	}
 	if original > MaxSourceBytes {
 		mem.Loss.TruncatedEvents++
 		// Count gross encoded bytes removed, not net saved: the retained

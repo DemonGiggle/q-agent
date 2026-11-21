@@ -183,6 +183,9 @@ Notes:
 - Turned-off memory keeps old notes visible for /memory and /forget but
   stops new journaling and background summaries.
 
+The optional [ACA integration](learning.md) uses completed exchange origins
+for scoped research input.
+
 Manual pins skip the journal entirely:
 
 ```text

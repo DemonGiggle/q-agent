@@ -96,6 +96,15 @@ func mainRun() error {
 		}
 		return err
 	}
+	if len(args) > 0 && args[0] == "learning" {
+		ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
+		defer stop()
+		err := runLearning(ctx, args[1:], os.Stdin, os.Stdout)
+		if errors.Is(err, flag.ErrHelp) {
+			return nil
+		}
+		return err
+	}
 	if handled, err := console.Run(args, os.Stdin, os.Stdout, os.Stderr); handled {
 		return err
 	}
@@ -140,22 +149,7 @@ func mainRun() error {
 		log.Printf("[SERVICE] Migrated config (%s); backup: %s", strings.Join(rep.Changes, "; "), rep.Backup)
 	}
 	c := cfg
-	values := redaction.EnvironmentValues()
-	values = append(values, os.Getenv(c.Telegram.TokenEnv))
-	for _, provider := range configuredProviders(c) {
-		values = append(values, os.Getenv(provider.APIKeyEnv))
-		// Best effort for early diagnostics; serve enforces credential files.
-		if fileKey, err := provider.APIKey(); err == nil && fileKey != "" {
-			values = append(values, fileKey)
-		}
-	}
-	if c.Telegram.TokenPath != "" {
-		// Best effort for early diagnostics; serve() enforces the file strictly.
-		if fileToken, err := c.Telegram.Token(); err == nil && fileToken != "" {
-			values = append(values, fileToken)
-		}
-	}
-	policy, _ := redaction.New(redaction.Config{}, values)
+	policy, _ := redaction.New(redaction.Config{}, configuredSecrets(c))
 	log.SetOutput(&redaction.DiagnosticWriter{Policy: policy, Sink: redaction.Terminal, Out: os.Stderr})
 	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
 	defer stop()
@@ -414,6 +408,25 @@ func configuredProviders(c config.Config) map[string]config.Provider {
 	}
 	providers[c.Provider.Name] = c.Provider
 	return providers
+}
+
+func configuredSecrets(c config.Config) []string {
+	values := redaction.EnvironmentValues()
+	values = append(values, os.Getenv(c.Telegram.TokenEnv))
+	for _, provider := range configuredProviders(c) {
+		values = append(values, os.Getenv(provider.APIKeyEnv))
+		// Best effort for early diagnostics; serve enforces credential files.
+		if fileKey, err := provider.APIKey(); err == nil && fileKey != "" {
+			values = append(values, fileKey)
+		}
+	}
+	if c.Telegram.TokenPath != "" {
+		// Best effort for early diagnostics; serve() enforces the file strictly.
+		if fileToken, err := c.Telegram.Token(); err == nil && fileToken != "" {
+			values = append(values, fileToken)
+		}
+	}
+	return values
 }
 
 func configuredProviderFactory(c config.Config, providerKeys map[string]string, httpClient *http.Client) run.ProviderFactory {

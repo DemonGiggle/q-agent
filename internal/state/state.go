@@ -19,11 +19,13 @@ const MaxPairs = 12
 const MaxHistoryBytes = 32 << 10
 
 type Pair struct {
-	Interrupted bool     `json:"interrupted,omitempty"`
-	Progress    string   `json:"progress,omitempty"`
-	User        string   `json:"user"`
-	Answer      string   `json:"answer"`
-	Steers      []string `json:"steers,omitempty"`
+	// Learning is only stamped on completed interactive exchanges with memory enabled.
+	Learning    *ExchangeOrigin `json:"learning_origin,omitempty"`
+	Interrupted bool            `json:"interrupted,omitempty"`
+	Progress    string          `json:"progress,omitempty"`
+	User        string          `json:"user"`
+	Answer      string          `json:"answer"`
+	Steers      []string        `json:"steers,omitempty"`
 }
 type Conversation struct {
 	// Resolved when loading a task; not part of persisted topic history.

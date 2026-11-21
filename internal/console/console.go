@@ -50,6 +50,7 @@ Automation (never prompts; --json for machine-readable output):
 
 Runtime commands (non-interactive):
   q-agent serve [--config FILE]
+  q-agent learning configure|trigger [--config FILE] (JSON policy or question on stdin)
   q-agent image build [--config FILE]
   q-agent update [--arch amd64|arm64]
   q-agent service install|print [--config FILE]

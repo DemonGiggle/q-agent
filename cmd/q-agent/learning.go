@@ -24,8 +24,8 @@ import (
 )
 
 func runLearning(ctx context.Context, args []string, input io.Reader, output io.Writer) error {
-	if len(args) == 0 || (args[0] != "configure" && args[0] != "trigger" && args[0] != "search" && args[0] != "enqueue" && args[0] != "work" && args[0] != "recall" && args[0] != "frontier" && args[0] != "status") {
-		return fmt.Errorf("usage: q-agent learning configure|trigger|search|enqueue|work|recall|frontier|status [--config FILE]; pass input on stdin")
+	if len(args) == 0 || (args[0] != "configure" && args[0] != "trigger" && args[0] != "search" && args[0] != "enqueue" && args[0] != "work" && args[0] != "recall" && args[0] != "frontier" && args[0] != "status" && args[0] != "pause" && args[0] != "resume") {
+		return fmt.Errorf("usage: q-agent learning configure|trigger|search|enqueue|work|recall|frontier|status|pause|resume [--config FILE]; pass input on stdin")
 	}
 
 	flags := flag.NewFlagSet("learning "+args[0], flag.ContinueOnError)
@@ -90,7 +90,8 @@ func runLearning(ctx context.Context, args []string, input io.Reader, output io.
 	}
 	// Check against the caller's raw text before redaction and apply the
 	// same exclusion policy again to the sanitized planning input.
-	if args[0] != "work" && args[0] != "status" && cfg.Permissions.Excludes(learning.ConversationTurn{Transcript: string(data)}) {
+	runIDInput := slices.Contains([]string{"work", "status", "pause", "resume"}, args[0])
+	if !runIDInput && cfg.Permissions.Excludes(learning.ConversationTurn{Transcript: string(data)}) {
 		return learning.ErrDenied
 	}
 	policy, err := redaction.New(redaction.Config{}, configuredSecrets(app))
@@ -100,6 +101,20 @@ func runLearning(ctx context.Context, args []string, input io.Reader, output io.
 	if args[0] == "status" {
 		result, err := state.NewLearningCoordinator(app.StateDir).ResearchStatus(
 			ctx, cfg, strings.TrimSpace(string(data)), func(s string) bool { return !policy.ContainsSecret(s) })
+		if err != nil {
+			return err
+		}
+		return enc.Encode(result)
+	}
+
+	if args[0] == "pause" || args[0] == "resume" {
+		unlock, err := state.Lock(filepath.Join(app.StateDir, "learning"))
+		if err != nil {
+			return err
+		}
+		defer unlock()
+		result, err := state.NewLearningCoordinator(app.StateDir).SetResearchPaused(
+			ctx, cfg, strings.TrimSpace(string(data)), func(s string) bool { return !policy.ContainsSecret(s) }, args[0] == "pause")
 		if err != nil {
 			return err
 		}

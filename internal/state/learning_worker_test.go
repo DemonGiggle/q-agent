@@ -293,6 +293,29 @@ func TestLearningWorkerDoesNotReplayAnUncertainCall(t *testing.T) {
 		t.Fatal("opened a document without a saved search response")
 		return learning.FetchedDocument{}, learning.Budget{}, nil
 	})
+	allow := func(string) bool { return true }
+	paused, err := c.SetResearchPaused(ctx, cfg, id, allow, true)
+	if err != nil || paused.State != learning.RunPaused || paused.ResumeState != learning.RunRunning ||
+		paused.Spent != record.Run.Spent {
+		t.Fatalf("pause: %+v, err=%v", paused, err)
+	}
+	c = NewLearningCoordinator(dir)
+	skip, err := c.WorkResearch(ctx, cfg, id, allow, search, fetch, localtools.LearningDocumentReader{}, nil)
+	if err != nil || skip.State != learning.RunPaused || len(skip.Transitions) != len(paused.Transitions) {
+		t.Fatalf("worker on paused run: %+v, err=%v", skip, err)
+	}
+	if _, err := c.Acquire(ctx, id, time.Minute); !errors.Is(err, learning.ErrDenied) {
+		t.Fatalf("lease on paused run: %v", err)
+	}
+	resumed, err := c.SetResearchPaused(ctx, cfg, id, allow, false)
+	if err != nil || resumed.State != learning.RunRunning || resumed.ResumeState != "" ||
+		resumed.Spent != record.Run.Spent || resumed.Transitions[len(resumed.Transitions)-1].Reason != "operator_resumed" {
+		t.Fatalf("resume: %+v, err=%v", resumed, err)
+	}
+	current, err := c.load(id)
+	if err != nil || current.Run.Checkpoint.NextIntent != "search" || current.Run.Checkpoint.Spent != record.Run.Spent {
+		t.Fatalf("checkpoint after resume: %+v, err=%v", current.Run.Checkpoint, err)
+	}
 	result, err := c.WorkResearch(ctx, cfg, id, func(string) bool { return true }, search, fetch, localtools.LearningDocumentReader{}, nil)
 	if err != nil || result.State != learning.RunUnresolved || result.StopReason != "interrupted_provider_call" ||
 		result.Spent != record.Run.Spent {

@@ -224,3 +224,44 @@ func TestLearningStatusReadsMetadataWithoutLease(t *testing.T) {
 		t.Fatalf("status = %s, %v", out.String(), err)
 	}
 }
+
+func TestLearningPauseAndResumeQueuedRun(t *testing.T) {
+	dir := t.TempDir()
+	app := filepath.Join(dir, "config.toml")
+	if err := os.WriteFile(app, []byte("state_dir = 'data'\n"), 0600); err != nil {
+		t.Fatal(err)
+	}
+	ctx := context.Background()
+	out := new(bytes.Buffer)
+	command := func(action, input string) error {
+		out.Reset()
+		return runLearning(ctx, []string{action, "--config", app}, strings.NewReader(input), out)
+	}
+	if err := command("configure", `{"enabled":true}`); err != nil {
+		t.Fatal(err)
+	}
+	if err := command("enqueue", "A public research question"); err != nil {
+		t.Fatal(err)
+	}
+	var result state.LearningWorkerResult
+	if err := json.Unmarshal(out.Bytes(), &result); err != nil || result.RunID == "" {
+		t.Fatalf("enqueue = %s, %v", out.String(), err)
+	}
+	id := result.RunID
+	assert := func(action string, want learning.RunState, transitions int) {
+		t.Helper()
+		if err := command(action, id); err != nil {
+			t.Fatal(err)
+		}
+		result = state.LearningWorkerResult{}
+		if err := json.Unmarshal(out.Bytes(), &result); err != nil || result.State != want ||
+			len(result.Transitions) != transitions || result.Spent.Requests != 0 {
+			t.Fatalf("%s = %s, %v", action, out.String(), err)
+		}
+	}
+	assert("pause", learning.RunPaused, 2)
+	assert("pause", learning.RunPaused, 2)
+	assert("work", learning.RunPaused, 2)
+	assert("resume", learning.RunQueued, 3)
+	assert("resume", learning.RunQueued, 3)
+}

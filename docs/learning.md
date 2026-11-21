@@ -204,18 +204,19 @@ Calls run with a deadline capped by the active lease and UTC day. A run
 has one in-flight call, and cancelling or releasing its lease interrupts the
 call context. Adapters must honor context and enforce their declared upper
 bounds before dispatch. The provider call path introduces no permanent
-timer, polling loop or background goroutine. The structured-output boundary validates against a host schema using the
-existing JSON Schema library. An invalid output permits one separately
-budgeted retry. Provider and cancellation errors stop immediately. Manual source summarization uses the local Ollama adapter. Additional
-research events and multi-source synthesis are follow-up work.
+timer, polling loop or background goroutine. The structured-output
+boundary validates against a host schema using the existing JSON Schema
+library. An invalid output permits one separately budgeted retry. Provider
+and cancellation errors stop immediately. Additional research events and
+multi-source synthesis are follow-up work.
 
 ## Follow-up issues
 
 - #65 / #69 / #70 own the integration contract. This slice includes the
   reader, domain types, config validation, metadata audit, and the offline
-  preview. The local repository validates stored citation
-  references. A manual search adapter is available. Fetch and model
-  adapters follow.
+  preview. The local repository validates stored citation references.
+  The manual worker connects search, fetch, source reading, and the local
+  structured model adapter. Recall uses the keyword index.
 - #72 has durable leases, cancellation, checkpoints and a tested commit
   fence. Provider dispatch now enforces budget reservations, cancellation,
   and deadlines. The manual worker adds checkpointed collection and a

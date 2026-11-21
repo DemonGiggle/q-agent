@@ -1,0 +1,310 @@
+package state
+
+import (
+	"context"
+	"crypto/rand"
+	"errors"
+	"fmt"
+	"strings"
+	"time"
+
+	"q-agent/internal/learning"
+	"q-agent/internal/platform"
+)
+
+const learningDocumentLimit = 128 << 10
+
+type LearningWorkerTransition struct {
+	State  learning.RunState `json:"state"`
+	At     time.Time         `json:"at"`
+	Reason string            `json:"reason,omitempty"`
+}
+
+type LearningWorkerResult struct {
+	RunID       string                     `json:"run_id"`
+	State       learning.RunState          `json:"state"`
+	StopReason  string                     `json:"stop_reason,omitempty"`
+	Spent       learning.Budget            `json:"spent_budget"`
+	Transitions []LearningWorkerTransition `json:"transitions"`
+}
+
+func (c *LearningCoordinator) EnqueueResearch(ctx context.Context, cfg learning.Config, query string) (string, error) {
+	query = strings.TrimSpace(query)
+	if err := cfg.Validate(); err != nil {
+		return "", err
+	}
+	if !cfg.Enabled || cfg.Permissions.Excludes(learning.ConversationTurn{Transcript: query}) {
+		return "", learning.ErrDenied
+	}
+	if query == "" || len(query) > 2000 {
+		return "", fmt.Errorf("learning research requires a 1–2000 byte public question")
+	}
+	id := rand.Text()
+	if err := c.create(ctx, learning.Partition{Public: true}, id, rand.Text(), query); err != nil {
+		return "", err
+	}
+	return id, nil
+}
+
+// WorkResearch processes one explicitly authorized public candidate. The
+// caller holds the learning directory lock and checks secrets under its
+// current policy. Search results never become evidence or claims.
+func (c *LearningCoordinator) WorkResearch(ctx context.Context, cfg learning.Config, id string, allow func(string) bool,
+	search learning.SearchProvider, fetch learning.DocumentFetcher) (result LearningWorkerResult, retErr error) {
+	if err := cfg.Validate(); err != nil {
+		return result, err
+	}
+	if !cfg.Enabled || allow == nil || search == nil || fetch == nil {
+		return result, learning.ErrDenied
+	}
+	record, err := c.load(id)
+	if err != nil {
+		return result, err
+	}
+	question := record.Question
+	if record.PartitionKey != "public" || question == "" || !allow(question) ||
+		cfg.Permissions.Excludes(learning.ConversationTurn{Transcript: question}) {
+		return result, learning.ErrDenied
+	}
+	readResult := func(run storedLearningRun) LearningWorkerResult {
+		return LearningWorkerResult{RunID: id, State: run.Run.State, StopReason: run.Run.StopReason,
+			Spent: run.Run.Spent, Transitions: run.Transitions}
+	}
+	if terminalLearningRun(record.Run.State) {
+		return readResult(record), nil
+	}
+	lease, err := c.Acquire(ctx, id, time.Minute)
+	if err != nil {
+		return result, err
+	}
+	defer func() {
+		releaseCtx := context.WithoutCancel(ctx)
+		if ctx.Err() != nil {
+			latest, err := c.load(id)
+			retErr = errors.Join(retErr, ctx.Err(), err)
+			if err == nil && !terminalLearningRun(latest.Run.State) {
+				if err := c.Cancel(releaseCtx, id); err != nil && !errors.Is(err, ErrLearningCommitted) {
+					retErr = errors.Join(retErr, err)
+				}
+			}
+		}
+		retErr = errors.Join(retErr, c.Release(releaseCtx, lease))
+		latest, err := c.load(id)
+		retErr = errors.Join(retErr, err)
+		if err == nil {
+			result = readResult(latest)
+		}
+	}()
+
+	plan := learning.Plan{
+		Record: record.Run.Record, ID: record.Run.PlanID, Goal: question,
+		QuestionID: platform.WorkspaceKey(strings.ToLower(strings.Join(strings.Fields(question), " ")), 0),
+		Version:    1, Budget: cfg.PerQuestion,
+		Steps: []string{"discover", "fetch", "record_source"}, AllowedSourceClasses: []string{"public"},
+		StopConditions:       []string{"source_recorded", "no_qualified_source", "budget_exhausted", "cancelled"},
+		EvidenceRequirements: learning.EvidenceRequirements{MinIndependentSources: 1},
+	}
+	if record.PlanBudget != nil {
+		plan.Budget = *record.PlanBudget
+	}
+
+	for {
+		current, err := c.Get(ctx, id)
+		if err != nil {
+			return result, err
+		}
+		run := current.Run
+		if terminalLearningRun(run.State) {
+			return result, nil
+		}
+		cp := run.Checkpoint
+		if cp == nil {
+			cp = &learning.Checkpoint{}
+			run.Checkpoint = cp
+		}
+		switch run.State {
+		case learning.RunQueued:
+			run.State, cp.NextIntent = learning.RunPlanned, "search"
+		case learning.RunPlanned:
+			run.State = learning.RunRunning
+		case learning.RunRunning:
+			// Calls reserve before dispatch. If the process stopped before
+			// checkpointing an output, its call outcome is unknown.
+			if (cp.NextIntent == "search" && run.Spent.Requests != 0) ||
+				(cp.NextIntent == "fetch" && run.Spent.Requests != 1) {
+				run.State, run.StopReason = learning.RunUnresolved, "interrupted_provider_call"
+				break
+			}
+			var uri string
+			var source *learning.Source
+			if cp.NextIntent == "search" {
+				uri, err = c.researchSearch(ctx, lease, cfg, plan, allow, search)
+			} else if cp.NextIntent == "fetch" {
+				source, err = c.researchFetch(ctx, lease, cfg, plan, allow, fetch, cp.ResearchURI)
+			} else {
+				return result, fmt.Errorf("invalid research checkpoint intent")
+			}
+			if errors.Is(err, ErrLearningBudget) || ctx.Err() != nil {
+				return result, err
+			}
+			// Reservation changed the checkpoint version and usage.
+			latest, getErr := c.Get(ctx, id)
+			if getErr != nil {
+				return result, errors.Join(err, getErr)
+			}
+			if terminalLearningRun(latest.Run.State) {
+				return result, nil
+			}
+			current, run = latest, latest.Run
+			cp = run.Checkpoint
+			if err != nil || (uri == "" && source == nil) {
+				run.State, run.StopReason = learning.RunUnresolved, "no_qualified_source"
+				if err != nil {
+					run.StopReason = "provider_failed"
+				}
+			} else if source != nil {
+				cp.ResearchSource, cp.NextIntent = source, "validate"
+				run.State = learning.RunValidating
+			} else {
+				cp.ResearchURI, cp.NextIntent = uri, "fetch"
+			}
+		case learning.RunValidating:
+			if !cfg.Permissions.ResearchURI(cp.ResearchURI) || !allow(cp.ResearchURI) ||
+				cp.ResearchSource == nil || !allow(cp.ResearchSource.Title) ||
+				!run.Spent.Fits(cfg.PerQuestion) {
+				run.State, run.StopReason = learning.RunUnresolved, "policy_changed"
+				break
+			}
+			run.State, cp.NextIntent, cp.OperationID = learning.RunCommitting, "commit", rand.Text()
+		case learning.RunCommitting:
+			if err := c.commitResearch(ctx, cfg, lease, allow, question, run); err != nil {
+				return result, err
+			}
+			current, err = c.Get(ctx, id)
+			if err != nil {
+				return result, err
+			}
+			run, cp = current.Run, current.Run.Checkpoint
+			if terminalLearningRun(run.State) {
+				return result, nil
+			}
+			run.State, run.StopReason = learning.RunCompleted, "source_recorded"
+		default:
+			return result, fmt.Errorf("invalid research worker state %q", run.State)
+		}
+		if terminalLearningRun(run.State) {
+			cp.NextIntent = ""
+		}
+		if err := c.Checkpoint(ctx, lease, current.Version, run); err != nil {
+			return result, err
+		}
+	}
+}
+
+func (c *LearningCoordinator) researchSearch(ctx context.Context, lease learning.Lease, cfg learning.Config, plan learning.Plan,
+	allow func(string) bool, search learning.SearchProvider) (string, error) {
+	ms := min(int64(15_000), cfg.PerQuestion.WallTimeMillis)
+	var hits []learning.SearchHit
+	charge := learning.Budget{Requests: 1, WallTimeMillis: ms}
+	err := c.CallProvider(ctx, lease, cfg, plan, charge, time.Duration(ms)*time.Millisecond, func(ctx context.Context) (learning.Budget, error) {
+		var usage learning.Budget
+		var err error
+		hits, usage, err = search.Search(ctx, plan.Goal, 5)
+		return usage, err
+	})
+	if err != nil {
+		return "", err
+	}
+	for _, hit := range hits[:min(5, len(hits))] {
+		if cfg.Permissions.ResearchURI(hit.URI) && allow(hit.URI) {
+			return hit.URI, nil
+		}
+	}
+	return "", nil
+}
+
+func (c *LearningCoordinator) researchFetch(ctx context.Context, lease learning.Lease, cfg learning.Config, plan learning.Plan,
+	allow func(string) bool, fetch learning.DocumentFetcher, uri string) (*learning.Source, error) {
+	if !cfg.Permissions.ResearchURI(uri) || !allow(uri) {
+		return nil, nil
+	}
+	ms := min(int64(10_000), cfg.PerQuestion.WallTimeMillis)
+	charge := learning.Budget{Requests: 2, Documents: 1, WallTimeMillis: ms, StorageBytes: 24 << 10}
+	var doc learning.FetchedDocument
+	err := c.CallProvider(ctx, lease, cfg, plan, charge, time.Duration(ms)*time.Millisecond, func(ctx context.Context) (learning.Budget, error) {
+		var usage learning.Budget
+		var err error
+		doc, usage, err = fetch.Fetch(ctx, uri, learningDocumentLimit)
+		return usage, err
+	})
+	if err != nil {
+		return nil, err
+	}
+	source := doc.Source
+	if source.CanonicalURI != uri || len(source.Title) > 256 || len(source.ContentHash) != 64 ||
+		len(source.Publisher) > 253 || source.License != "" || source.TrustClass != "public_reference" ||
+		!allow(source.Title) || cfg.Permissions.Excludes(learning.ConversationTurn{Transcript: source.Title}) {
+		return nil, nil
+	}
+	if err := source.Validate(); err != nil {
+		return nil, err
+	}
+	return &source, nil
+}
+
+func (c *LearningCoordinator) commitResearch(ctx context.Context, cfg learning.Config, lease learning.Lease,
+	allow func(string) bool, question string, run learning.Run) error {
+	record, err := c.load(run.ID)
+	if err != nil {
+		return err
+	}
+	c.mu.Lock()
+	committed, err := c.hasCommit(record)
+	c.mu.Unlock()
+	if committed || err != nil {
+		return err
+	}
+	cp := run.Checkpoint
+	source := cp.ResearchSource
+	if source == nil || !cfg.Permissions.ResearchURI(source.CanonicalURI) ||
+		!allow(source.CanonicalURI) || !allow(source.Title) ||
+		cfg.Permissions.Excludes(learning.ConversationTurn{Transcript: source.Title}) ||
+		!run.Spent.Fits(cfg.PerQuestion) {
+		return c.failResearchCommit(ctx, lease, "policy_changed")
+	}
+	partition := learning.Partition{Public: true}
+	next, err := c.repo.Snapshot(ctx, partition)
+	if err != nil {
+		return err
+	}
+	found := false
+	for _, prior := range next.Sources {
+		if prior.ID == source.ID {
+			found = true
+			break
+		}
+	}
+	if !found {
+		next.Sources = append(next.Sources, *source)
+	}
+	next.Notes = append(next.Notes, learning.Note{
+		Record: source.Record, ID: run.ID, Title: question, Revision: 1,
+		Summary:   "Public source retrieved. Relevance and factual claims have not been reviewed.",
+		SourceIDs: []string{source.ID},
+	})
+	_, err = c.repo.Commit(ctx, partition, next.Version, lease, cp.OperationID, next)
+	if errors.Is(err, ErrLearningPartitionFull) {
+		return errors.Join(err, c.failResearchCommit(ctx, lease, "storage_limit"))
+	}
+	return err
+}
+
+func (c *LearningCoordinator) failResearchCommit(ctx context.Context, lease learning.Lease, reason string) error {
+	current, err := c.Get(ctx, lease.RunID)
+	if err != nil {
+		return err
+	}
+	current.Run.State, current.Run.StopReason = learning.RunFailed, reason
+	current.Run.Checkpoint.NextIntent = ""
+	return c.Checkpoint(ctx, lease, current.Version, current.Run)
+}

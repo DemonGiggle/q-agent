@@ -11,6 +11,7 @@ import (
 	"log"
 	"os"
 	"path/filepath"
+	"strings"
 	"time"
 
 	"q-agent/internal/config"
@@ -21,8 +22,8 @@ import (
 )
 
 func runLearning(ctx context.Context, args []string, input io.Reader, output io.Writer) error {
-	if len(args) == 0 || (args[0] != "configure" && args[0] != "trigger" && args[0] != "search") {
-		return fmt.Errorf("usage: q-agent learning configure|trigger|search [--config FILE]; pass input on stdin")
+	if len(args) == 0 || (args[0] != "configure" && args[0] != "trigger" && args[0] != "search" && args[0] != "enqueue" && args[0] != "work") {
+		return fmt.Errorf("usage: q-agent learning configure|trigger|search|enqueue|work [--config FILE]; pass input on stdin")
 	}
 
 	flags := flag.NewFlagSet("learning "+args[0], flag.ContinueOnError)
@@ -68,15 +69,16 @@ func runLearning(ctx context.Context, args []string, input io.Reader, output io.
 	}
 	// Check against the caller's raw text before redaction and apply the
 	// same exclusion policy again to the sanitized planning input.
-	if cfg.Permissions.Excludes(learning.ConversationTurn{Transcript: string(data)}) {
+	if args[0] != "work" && cfg.Permissions.Excludes(learning.ConversationTurn{Transcript: string(data)}) {
 		return learning.ErrDenied
 	}
 	policy, err := redaction.New(redaction.Config{}, configuredSecrets(app))
 	if err != nil {
 		return err
 	}
-	if args[0] == "search" {
-		if !cfg.Enabled || policy.ContainsSecret(string(data)) || !cfg.Permissions.AllowsDomain(localtools.LearningSearchDomain) {
+	if args[0] == "search" || args[0] == "enqueue" || args[0] == "work" {
+		if !cfg.Enabled || (args[0] != "work" && policy.ContainsSecret(string(data))) ||
+			(args[0] == "search" && !cfg.Permissions.AllowsDomain(localtools.LearningSearchDomain)) {
 			return learning.ErrDenied
 		}
 		unlock, err := state.Lock(filepath.Join(app.StateDir, "learning"))
@@ -84,8 +86,29 @@ func runLearning(ctx context.Context, args []string, input io.Reader, output io.
 			return err
 		}
 		defer unlock()
-		discovery, err := state.NewLearningCoordinator(app.StateDir).Discover(
-			ctx, cfg, localtools.LearningSearch{Permissions: cfg.Permissions}, string(data))
+		coordinator := state.NewLearningCoordinator(app.StateDir)
+		search := localtools.LearningSearch{Permissions: cfg.Permissions}
+		switch args[0] {
+		case "enqueue":
+			id, err := coordinator.EnqueueResearch(ctx, cfg, string(data))
+			if err != nil {
+				return err
+			}
+			return enc.Encode(struct {
+				RunID string `json:"run_id"`
+			}{RunID: id})
+		case "work":
+			fetch := localtools.LearningFetch{Permissions: cfg.Permissions}
+			result, err := coordinator.WorkResearch(ctx, cfg, strings.TrimSpace(string(data)), func(s string) bool {
+				return !policy.ContainsSecret(s) &&
+					!cfg.Permissions.Excludes(learning.ConversationTurn{Transcript: s})
+			}, search, fetch)
+			if result.RunID != "" {
+				err = errors.Join(err, enc.Encode(result))
+			}
+			return err
+		}
+		discovery, err := coordinator.Discover(ctx, cfg, search, string(data))
 		if discovery.RunID != "" {
 			err = errors.Join(err, enc.Encode(discovery))
 		}

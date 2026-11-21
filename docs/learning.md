@@ -47,6 +47,39 @@ Search holds the learning state directory's single-owner lock, independent
 of the chat service lock. The provider can report an upstream error or
 challenge and the request reservation remains charged.
 
+## Run one queued research candidate
+
+```sh
+printf '%s\n' '{"enabled":true,"permissions":{"allow_domains":["lite.duckduckgo.com","example.org"]}}' |
+  q-agent learning configure --config ./config.toml
+printf '%s\n' 'Public example documents' |
+  q-agent learning enqueue --config ./config.toml
+printf '%s\n' "$run_id" | q-agent learning work --config ./config.toml
+```
+
+Copy the enqueue response's `run_id` into `run_id` for the work command.
+Enqueue persists an explicitly public operator-supplied question without
+contacting a provider. Work acquires that candidate's lease and rechecks
+policy before sending its question. The worker searches once and attempts
+to retrieve the first eligible result. Source retrieval requires an
+explicit allowlist, HTTPS on the standard port, and public IPv4. It
+rejects redirects, query parameters, and documents over 128 KiB. Sites
+with a recognized robots file containing exclusions, delays, or unknown
+directives are skipped conservatively. Document opt-outs also prevent
+recording.
+
+Work records the run state, transition timestamps and stop reason. A
+successful run stores the fetched source metadata and a reference note
+in the public partition under one commit receipt. It stores no document
+body, search snippet, Evidence, or Claim. The note represents source
+collection. Evidence validation and synthesis require a later stage.
+
+To resume after a crash, invoke work with the same run ID after the
+lease expires. A saved source or successful commit can be reused. A
+charged call with no saved outcome stops as `UNRESOLVED`. The worker
+does not repeat that uncertain call. This manual entry point starts no
+scheduler or idle task.
+
 ## Resource constraints
 
 Keep ACA on the same binary and reuse existing state, provider and
@@ -142,8 +175,9 @@ pipeline and its audit events are follow-up work.
   adapters follow.
 - #72 has durable leases, cancellation, checkpoints and a tested commit
   fence. Provider dispatch now enforces budget reservations, cancellation,
-  and deadlines. Manual discovery exercises the provider call path.
-  The remaining research steps and full audit integration stay open.
+  and deadlines. The manual worker adds checkpointed collection and a
+  fenced reference-note commit. Evidence synthesis and centralized audit
+  integration stay open.
 - #73 owns chat recall and its share of the context budget. Recall uses
   authorized evidence and a separate failure path from normal chat.
 - #74 owns Claim lifecycle and atomic Revision history. Use evidence links

@@ -44,6 +44,7 @@ func (c *LearningCoordinator) Repository() learning.KnowledgeRepository { return
 var _ learning.RunCoordinator = (*LearningCoordinator)(nil)
 
 type storedLearningRun struct {
+	ResumeState  learning.RunState          `json:"resume_state,omitempty"`
 	Question     string                     `json:"public_question,omitempty"`
 	Transitions  []LearningWorkerTransition `json:"transitions,omitempty"`
 	PlanBudget   *learning.Budget           `json:"plan_budget,omitempty"`
@@ -124,6 +125,9 @@ func (c *LearningCoordinator) save(record storedLearningRun) error {
 			reason := record.Run.StopReason
 			if reason == "" {
 				reason = string(record.Run.State)
+				if last >= 0 && record.Transitions[last].State == learning.RunPaused {
+					reason = "operator_resumed"
+				}
 			}
 			record.Transitions = append(record.Transitions, LearningWorkerTransition{
 				EventID: researchTransitionID(record.Run.ID, len(record.Transitions)),
@@ -167,7 +171,7 @@ func (c *LearningCoordinator) Acquire(ctx context.Context, runID string, ttl tim
 		return learning.Lease{}, err
 	}
 	now := c.now().UTC()
-	if terminalLearningRun(record.Run.State) || record.Fence == math.MaxUint64 {
+	if terminalLearningRun(record.Run.State) || record.Run.State == learning.RunPaused || record.Fence == math.MaxUint64 {
 		return learning.Lease{}, learning.ErrDenied
 	}
 	if record.ExpiresAt != nil && now.Before(*record.ExpiresAt) {
@@ -357,6 +361,7 @@ func (c *LearningCoordinator) Cancel(ctx context.Context, runID string) error {
 	if now := c.now().UTC(); now.After(record.Run.UpdatedAt) {
 		record.Run.UpdatedAt = now
 	}
+	record.ResumeState = ""
 	record.Run.State = learning.RunCancelled
 	record.Run.StopReason = "cancelled"
 	record.Run.EndedAt = &record.Run.UpdatedAt
@@ -408,10 +413,8 @@ func learningRunTransition(from, to learning.RunState) bool {
 	case learning.RunPlanned:
 		return to == learning.RunRunning
 	case learning.RunRunning:
-		return to == learning.RunValidating || to == learning.RunPaused ||
+		return to == learning.RunValidating ||
 			to == learning.RunUnresolved || to == learning.RunBudgetExhausted
-	case learning.RunPaused:
-		return to == learning.RunRunning || to == learning.RunBudgetExhausted
 	case learning.RunValidating:
 		return to == learning.RunCommitting || to == learning.RunUnresolved || to == learning.RunBudgetExhausted
 	case learning.RunCommitting:

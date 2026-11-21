@@ -30,6 +30,7 @@ type LearningWorkerResult struct {
 	RunID         string                     `json:"run_id"`
 	State         learning.RunState          `json:"state"`
 	StopReason    string                     `json:"stop_reason,omitempty"`
+	ResumeState   learning.RunState          `json:"resume_state,omitempty"`
 	SummaryStatus string                     `json:"summary_status,omitempty"`
 	CoverageScore float64                    `json:"coverage_score"`
 	EvidenceID    string                     `json:"evidence_id,omitempty"`
@@ -40,27 +41,36 @@ type LearningWorkerResult struct {
 // ResearchStatus reads an operator-owned public run without acquiring a
 // lease. Neither the question nor the fetched content is returned.
 func (c *LearningCoordinator) ResearchStatus(ctx context.Context, cfg learning.Config, id string, allow func(string) bool) (LearningWorkerResult, error) {
-	if err := ctx.Err(); err != nil {
-		return LearningWorkerResult{}, err
-	}
-	if !cfg.Enabled || allow == nil {
-		return LearningWorkerResult{}, learning.ErrDenied
-	}
-	record, err := c.load(id)
+	record, err := c.readAuthorizedResearch(ctx, cfg, id, allow)
 	if err != nil {
 		return LearningWorkerResult{}, err
 	}
+	return researchWorkerResult(record), nil
+}
+
+func (c *LearningCoordinator) readAuthorizedResearch(ctx context.Context, cfg learning.Config, id string,
+	allow func(string) bool) (storedLearningRun, error) {
+	if err := ctx.Err(); err != nil {
+		return storedLearningRun{}, err
+	}
+	if !cfg.Enabled || allow == nil {
+		return storedLearningRun{}, learning.ErrDenied
+	}
+	record, err := c.load(id)
+	if err != nil {
+		return storedLearningRun{}, err
+	}
 	if record.PartitionKey != "public" || record.Question == "" || !allow(record.Question) ||
 		cfg.Permissions.Excludes(learning.ConversationTurn{Transcript: record.Question}) {
-		return LearningWorkerResult{}, learning.ErrDenied
+		return storedLearningRun{}, learning.ErrDenied
 	}
-	return researchWorkerResult(record), nil
+	return record, nil
 }
 
 func researchWorkerResult(record storedLearningRun) LearningWorkerResult {
 	run := record.Run
 	result := LearningWorkerResult{RunID: run.ID, State: run.State, StopReason: run.StopReason,
-		CoverageScore: run.CoverageScore, Spent: run.Spent, Transitions: record.Transitions}
+		ResumeState: record.ResumeState, CoverageScore: run.CoverageScore, Spent: run.Spent, Transitions: record.Transitions}
 	// Older checkpoints have a transition list without explicit event IDs.
 	// Derive the same ID on each read without rewriting the history.
 	for i := range result.Transitions {
@@ -111,17 +121,13 @@ func (c *LearningCoordinator) WorkResearch(ctx context.Context, cfg learning.Con
 	if !cfg.Enabled || allow == nil || search == nil || fetch == nil || reader == nil {
 		return result, learning.ErrDenied
 	}
-	record, err := c.load(id)
+	record, err := c.readAuthorizedResearch(ctx, cfg, id, allow)
 	if err != nil {
 		return result, err
 	}
 	question := record.Question
-	if record.PartitionKey != "public" || question == "" || !allow(question) ||
-		cfg.Permissions.Excludes(learning.ConversationTurn{Transcript: question}) {
-		return result, learning.ErrDenied
-	}
 
-	if terminalLearningRun(record.Run.State) {
+	if terminalLearningRun(record.Run.State) || record.Run.State == learning.RunPaused {
 		return researchWorkerResult(record), nil
 	}
 	lease, err := c.Acquire(ctx, id, time.Minute)

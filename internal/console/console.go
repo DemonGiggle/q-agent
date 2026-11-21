@@ -52,6 +52,7 @@ Runtime commands (non-interactive):
   q-agent serve [--config FILE]
   q-agent learning configure|trigger|search [--config FILE] (JSON policy or question on stdin)
   q-agent learning frontier --chat-id ID [--topic-id ID] [--config FILE]
+  q-agent learning status|pause|resume [--config FILE] (run ID on stdin)
   q-agent image build [--config FILE]
   q-agent update [--arch amd64|arm64]
   q-agent service install|print [--config FILE]

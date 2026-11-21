@@ -107,6 +107,23 @@ plan's required source count. The current single-source worker reports zero
 until an excerpt is verified and one when it meets that collection target.
 Coverage measures collection and does not rate claim confidence.
 
+## Pause between worker invocations
+
+```sh
+printf '%s\n' "$run_id" | q-agent learning pause --config ./config.toml
+printf '%s\n' "$run_id" | q-agent learning resume --config ./config.toml
+```
+
+Pause preserves the checkpoint, reserved usage and prior execution state.
+Resume restores that state for a subsequent `learning work` invocation.
+Repeated commands are idempotent and a paused run cannot acquire a lease.
+These controls use the learning directory lock, so an active worker must
+release its lock before an operator can pause. A run whose commit has
+already begun keeps its normal commit recovery path. If a provider
+response was never checkpointed, resuming still follows the rule against
+replaying uncertain calls.
+
+
 ## Summarize a public excerpt
 
 Use the normal research run ID with

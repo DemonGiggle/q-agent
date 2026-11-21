@@ -35,9 +35,11 @@ func runLearning(ctx context.Context, args []string, input io.Reader, output io.
 		flags.BoolVar(&summarize, "summarize", false, "summarize a public excerpt through local Ollama")
 	}
 	var chatID, topicID int64
+	var selectFrontier bool
 	if args[0] == "frontier" {
 		flags.Int64Var(&chatID, "chat-id", 0, "authorized Telegram chat ID")
 		flags.Int64Var(&topicID, "topic-id", 0, "Telegram topic ID")
+		flags.BoolVar(&selectFrontier, "select", false, "show the policy-selected shortlist")
 	}
 	if err := flags.Parse(args[1:]); err != nil {
 		return err
@@ -72,7 +74,7 @@ func runLearning(ctx context.Context, args []string, input io.Reader, output io.
 	}
 
 	if args[0] == "frontier" {
-		frontier, err := collectLearningFrontier(ctx, app, cfg, chatID, topicID)
+		frontier, err := collectLearningFrontier(ctx, app, cfg, chatID, topicID, selectFrontier)
 		if err != nil {
 			return err
 		}
@@ -159,7 +161,7 @@ func runLearning(ctx context.Context, args []string, input io.Reader, output io.
 	return enc.Encode(preview)
 }
 
-func collectLearningFrontier(ctx context.Context, app config.Config, cfg learning.Config, chatID, topicID int64) ([]learning.FrontierEntry, error) {
+func collectLearningFrontier(ctx context.Context, app config.Config, cfg learning.Config, chatID, topicID int64, selectFrontier bool) (any, error) {
 	if !cfg.Enabled || !app.Memory.Enabled || chatID == 0 || topicID < 0 {
 		return nil, learning.ErrDenied
 	}
@@ -193,10 +195,15 @@ func collectLearningFrontier(ctx context.Context, app config.Config, cfg learnin
 	}
 	defer unlock()
 	now := time.Now().UTC()
-	return state.NewLearningRepository(app.StateDir, nil).CollectConversationFrontier(ctx, reader, learning.ConversationQuery{
+	repo := state.NewLearningRepository(app.StateDir, nil)
+	query := learning.ConversationQuery{
 		Scope: learning.Scope{Platform: platformName, ChatID: chatID, TopicID: &topicID, Visibility: visibility},
 		From:  now.Add(-48 * time.Hour), Until: now,
-	}, now, allow)
+	}
+	if selectFrontier {
+		return repo.SelectConversationFrontier(ctx, reader, query, now, allow, cfg.Selection)
+	}
+	return repo.CollectConversationFrontier(ctx, reader, query, now, allow)
 }
 
 func learningPolicyPath(stateDir string) string {

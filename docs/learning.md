@@ -135,6 +135,17 @@ origin references and a deterministic score. Repeated and near-duplicate
 questions reuse the same entry. The frontier stores up to 64 candidates per
 topic. Newly excluded text is withheld from results.
 
+Add `--select` to show a shortlist under the current selection policy.
+The default targets are 70% conversation, 20% knowledge gaps and 10%
+associations. Empty categories cede their slots to other eligible origins.
+Each shortlist is limited to five topics and depth two by default. When
+an eligible gap exists and no gap has entered the queue in the previous
+seven days, a slot gives it preference after manual choices. The
+`selection` configuration accepts `pinned_ids`, `muted_ids`,
+`banned_topic_ids`, and `priority_overrides`. Pins and positive priority
+take precedence over quota ranking after policy and cooldown checks.
+The result explains each selection and does not change queue status.
+
 Candidates stay in their private topic partition. This local command
 does not invoke a provider or transfer a candidate to a public research
 run. Automatic scheduling and approved egress are separate steps.

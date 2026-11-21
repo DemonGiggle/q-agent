@@ -166,6 +166,21 @@ func TestLearningFrontierUsesOnlyAuthorizedTopic(t *testing.T) {
 		}
 		out.Reset()
 	}
+	selectArgs := append(append([]string(nil), args...), "--select")
+	if err := runLearning(ctx, selectArgs, strings.NewReader(""), out); err != nil {
+		t.Fatal(err)
+	}
+	var selected []learning.SelectedCandidate
+	if err := json.Unmarshal(out.Bytes(), &selected); err != nil || len(selected) != 1 || selected[0].Reason != "origin_quota" {
+		t.Fatalf("shortlist = %s, %v", out.String(), err)
+	}
+	out.Reset()
+	configure(`{"enabled":true,"permissions":{"include_group_chats":true},"selection":{"conversation_percent":0,"gap_percent":100,"association_percent":0}}`)
+	if err := runLearning(ctx, selectArgs, strings.NewReader(""), out); err != nil || strings.TrimSpace(out.String()) != "[]" {
+		t.Fatalf("updated selection = %s, %v", out.String(), err)
+	}
+	out.Reset()
+
 	configure(`{"enabled":true,"permissions":{"include_group_chats":true,"excluded_terms":["藤原氏"]}}`)
 	if err := runLearning(ctx, args, strings.NewReader(""), out); err != nil || strings.TrimSpace(out.String()) != "[]" {
 		t.Fatalf("filtered frontier = %s, %v", out.String(), err)

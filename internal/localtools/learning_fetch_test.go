@@ -27,7 +27,7 @@ func TestLearningFetchPolicy(t *testing.T) {
 		calls  int64
 		ok     bool
 	}{
-		{"allowed", "User-agent: *\nDisallow:", "<title>Public document</title>", 200, 2, true},
+		{"allowed", "User-agent: *\nDisallow:", "<title>Public document</title><link rel='canonical' href='https://news.original.example.net/path'>", 200, 2, true},
 		{"robots exclusion", "User-agent: *\nDisallow: /doc", "", 200, 1, false},
 		{"crawl delay", "User-agent: *\nCrawl-delay: 5", "", 200, 1, false},
 		{"page opt out", "", "<meta name='robots' content='noindex'>", 200, 2, false},
@@ -61,7 +61,7 @@ func TestLearningFetchPolicy(t *testing.T) {
 			if (err == nil) != tc.ok || usage.Requests != tc.calls {
 				t.Fatalf("fetch: %+v, %+v, err=%v", doc, usage, err)
 			}
-			if tc.ok && (doc.Source.Title != "Public document" || len(doc.Source.ContentHash) != 64 || string(doc.Body) != tc.body) {
+			if tc.ok && (doc.Source.Title != "Public document" || doc.Source.SyndicationOrigin != "example.net" || len(doc.Source.ContentHash) != 64 || string(doc.Body) != tc.body) {
 				t.Fatalf("unexpected source: %+v", doc)
 			}
 		})

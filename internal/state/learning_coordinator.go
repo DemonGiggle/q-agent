@@ -44,6 +44,7 @@ func (c *LearningCoordinator) Repository() learning.KnowledgeRepository { return
 var _ learning.RunCoordinator = (*LearningCoordinator)(nil)
 
 type storedLearningRun struct {
+	SourceTarget int                        `json:"source_target,omitempty"`
 	ResumeState  learning.RunState          `json:"resume_state,omitempty"`
 	Question     string                     `json:"public_question,omitempty"`
 	Transitions  []LearningWorkerTransition `json:"transitions,omitempty"`
@@ -57,10 +58,10 @@ type storedLearningRun struct {
 }
 
 func (c *LearningCoordinator) Create(ctx context.Context, partition learning.Partition, runID, planID string) error {
-	return c.create(ctx, partition, runID, planID, "")
+	return c.create(ctx, partition, runID, planID, "", 0)
 }
 
-func (c *LearningCoordinator) create(ctx context.Context, partition learning.Partition, runID, planID, question string) error {
+func (c *LearningCoordinator) create(ctx context.Context, partition learning.Partition, runID, planID, question string, sourceTarget int) error {
 	if !auditID.MatchString(runID) || !auditID.MatchString(planID) {
 		return fmt.Errorf("invalid learning run or plan ID")
 	}
@@ -75,7 +76,7 @@ func (c *LearningCoordinator) create(ctx context.Context, partition learning.Par
 	}
 	existing, err := c.load(runID)
 	if err == nil {
-		if existing.Run.PlanID != planID || existing.PartitionKey != key || existing.Question != question {
+		if existing.Run.PlanID != planID || existing.PartitionKey != key || existing.Question != question || existing.SourceTarget != sourceTarget {
 			return learning.ErrVersionConflict
 		}
 		return SyncDir(c.dir)
@@ -84,7 +85,7 @@ func (c *LearningCoordinator) create(ctx context.Context, partition learning.Par
 		return err
 	}
 	now := c.now().UTC()
-	return c.save(storedLearningRun{PartitionKey: key, Question: question, Version: 1, Run: learning.Run{
+	return c.save(storedLearningRun{PartitionKey: key, Question: question, SourceTarget: sourceTarget, Version: 1, Run: learning.Run{
 		Record: learning.Record{SchemaVersion: learning.SchemaVersion, CreatedAt: now, UpdatedAt: now},
 		ID:     runID, PlanID: planID, State: learning.RunQueued,
 	}})

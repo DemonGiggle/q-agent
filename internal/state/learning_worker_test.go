@@ -56,7 +56,7 @@ func TestLearningWorker(t *testing.T) {
 			if tc.name == "excluded excerpt" {
 				cfg.Permissions.ExcludedTerms = []string{"relevant paragraph"}
 			}
-			id, err := NewLearningCoordinator(dir).EnqueueResearch(ctx, cfg, "Public question")
+			id, err := NewLearningCoordinator(dir).EnqueueResearch(ctx, cfg, "Public question", 1)
 			if err != nil {
 				t.Fatal(err)
 			}
@@ -268,7 +268,7 @@ func TestLearningWorkerDoesNotReplayAnUncertainCall(t *testing.T) {
 	cfg := learning.DefaultConfig()
 	cfg.Enabled = true
 	c := NewLearningCoordinator(dir)
-	id, err := c.EnqueueResearch(ctx, cfg, "Public question")
+	id, err := c.EnqueueResearch(ctx, cfg, "Public question", 1)
 	if err != nil {
 		t.Fatal(err)
 	}

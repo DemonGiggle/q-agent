@@ -117,18 +117,26 @@ const (
 	RunUnresolved      RunState = "UNRESOLVED"
 )
 
+type ResearchReference struct {
+	Source   Source    `json:"source"`
+	Evidence *Evidence `json:"evidence,omitempty"`
+}
+
 type Checkpoint struct {
-	ResearchURI           string    `json:"research_uri,omitempty"`
-	ResearchSource        *Source   `json:"research_source,omitempty"`
-	ResearchEvidence      *Evidence `json:"research_evidence,omitempty"`
-	ResearchSummary       string    `json:"research_summary,omitempty"`
-	ResearchSummaryStatus string    `json:"research_summary_status,omitempty"`
-	Version               uint64    `json:"version"`
-	OpenQuestions         []string  `json:"open_questions"`
-	Fingerprints          []string  `json:"fingerprints"`
-	Spent                 Budget    `json:"spent_budget"`
-	OperationID           string    `json:"operation_id,omitempty"`
-	NextIntent            string    `json:"next_intent"`
+	ResearchCandidates    []string            `json:"research_candidates,omitempty"`
+	ResearchAttempt       int                 `json:"research_attempt,omitempty"`
+	ResearchReferences    []ResearchReference `json:"research_references,omitempty"`
+	ResearchURI           string              `json:"research_uri,omitempty"`
+	ResearchSource        *Source             `json:"research_source,omitempty"`
+	ResearchEvidence      *Evidence           `json:"research_evidence,omitempty"`
+	ResearchSummary       string              `json:"research_summary,omitempty"`
+	ResearchSummaryStatus string              `json:"research_summary_status,omitempty"`
+	Version               uint64              `json:"version"`
+	OpenQuestions         []string            `json:"open_questions"`
+	Fingerprints          []string            `json:"fingerprints"`
+	Spent                 Budget              `json:"spent_budget"`
+	OperationID           string              `json:"operation_id,omitempty"`
+	NextIntent            string              `json:"next_intent"`
 }
 
 type Run struct {
@@ -146,15 +154,16 @@ type Run struct {
 
 type Source struct {
 	Record
-	ID           string     `json:"source_id"`
-	CanonicalURI string     `json:"canonical_uri"`
-	Title        string     `json:"title"`
-	Publisher    string     `json:"publisher,omitempty"`
-	PublishedAt  *time.Time `json:"published_at,omitempty"`
-	FetchedAt    time.Time  `json:"fetched_at"`
-	ContentHash  string     `json:"content_hash"`
-	License      string     `json:"license,omitempty"`
-	TrustClass   string     `json:"trust_class"`
+	ID                string     `json:"source_id"`
+	CanonicalURI      string     `json:"canonical_uri"`
+	SyndicationOrigin string     `json:"syndication_origin,omitempty"`
+	Title             string     `json:"title"`
+	Publisher         string     `json:"publisher,omitempty"`
+	PublishedAt       *time.Time `json:"published_at,omitempty"`
+	FetchedAt         time.Time  `json:"fetched_at"`
+	ContentHash       string     `json:"content_hash"`
+	License           string     `json:"license,omitempty"`
+	TrustClass        string     `json:"trust_class"`
 }
 
 func (s Source) Validate() error {

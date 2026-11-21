@@ -118,14 +118,15 @@ const (
 )
 
 type Checkpoint struct {
-	ResearchURI    string   `json:"research_uri,omitempty"`
-	ResearchSource *Source  `json:"research_source,omitempty"`
-	Version        uint64   `json:"version"`
-	OpenQuestions  []string `json:"open_questions"`
-	Fingerprints   []string `json:"fingerprints"`
-	Spent          Budget   `json:"spent_budget"`
-	OperationID    string   `json:"operation_id,omitempty"`
-	NextIntent     string   `json:"next_intent"`
+	ResearchURI      string    `json:"research_uri,omitempty"`
+	ResearchSource   *Source   `json:"research_source,omitempty"`
+	ResearchEvidence *Evidence `json:"research_evidence,omitempty"`
+	Version          uint64    `json:"version"`
+	OpenQuestions    []string  `json:"open_questions"`
+	Fingerprints     []string  `json:"fingerprints"`
+	Spent            Budget    `json:"spent_budget"`
+	OperationID      string    `json:"operation_id,omitempty"`
+	NextIntent       string    `json:"next_intent"`
 }
 
 type Run struct {
@@ -227,14 +228,15 @@ func (c Claim) Validate() error {
 
 type Note struct {
 	Record
-	ID        string   `json:"note_id"`
-	Title     string   `json:"title"`
-	TopicIDs  []string `json:"topic_ids"`
-	Summary   string   `json:"summary"`
-	BodyRef   string   `json:"body_ref"`
-	ClaimIDs  []string `json:"claim_ids"`
-	SourceIDs []string `json:"source_ids"`
-	Revision  uint64   `json:"revision"`
+	ID          string   `json:"note_id"`
+	Title       string   `json:"title"`
+	TopicIDs    []string `json:"topic_ids"`
+	Summary     string   `json:"summary"`
+	BodyRef     string   `json:"body_ref"`
+	ClaimIDs    []string `json:"claim_ids"`
+	SourceIDs   []string `json:"source_ids"`
+	EvidenceIDs []string `json:"evidence_ids,omitempty"`
+	Revision    uint64   `json:"revision"`
 }
 
 type Relation struct {

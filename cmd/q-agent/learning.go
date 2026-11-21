@@ -102,7 +102,7 @@ func runLearning(ctx context.Context, args []string, input io.Reader, output io.
 			result, err := coordinator.WorkResearch(ctx, cfg, strings.TrimSpace(string(data)), func(s string) bool {
 				return !policy.ContainsSecret(s) &&
 					!cfg.Permissions.Excludes(learning.ConversationTurn{Transcript: s})
-			}, search, fetch)
+			}, search, fetch, localtools.LearningDocumentReader{})
 			if result.RunID != "" {
 				err = errors.Join(err, enc.Encode(result))
 			}

@@ -4,13 +4,17 @@ import (
 	"bytes"
 	"context"
 	"encoding/json"
+	"errors"
 	"os"
 	"path/filepath"
 	"strings"
 	"testing"
+	"time"
 
 	"q-agent/internal/config"
 	"q-agent/internal/learning"
+	"q-agent/internal/platform"
+	"q-agent/internal/state"
 )
 
 func TestLearningConfigureAndDryRun(t *testing.T) {
@@ -115,5 +119,55 @@ func TestLearningSearchDeniesEgressBeforeCreatingRun(t *testing.T) {
 	}
 	if _, err := os.Stat(filepath.Join(dir, "data", "learning", "runs")); !os.IsNotExist(err) {
 		t.Fatalf("denied query created run state: %v", err)
+	}
+}
+
+func TestLearningFrontierUsesOnlyAuthorizedTopic(t *testing.T) {
+	dir := t.TempDir()
+	app := filepath.Join(dir, "config.toml")
+	if err := os.WriteFile(app, []byte("state_dir = 'data'\n[telegram]\nallowed_groups = [-100]\n"), 0600); err != nil {
+		t.Fatal(err)
+	}
+	store, err := state.Open(filepath.Join(dir, "data"), nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	now := time.Now().Add(-time.Minute)
+	for i, question := range []string{"藤原氏如何建立攝關政治？", "另一個話題有何不同？"} {
+		route := platform.Message{Platform: "telegram", ChatID: -100, TopicID: int64(i + 7)}
+		source := []string{"update:telegram:1", "update:telegram:2"}[i]
+		if err := store.CommitExchange(route, source, state.Conversation{Pairs: []state.Pair{{User: question}}}, now); err != nil {
+			t.Fatal(err)
+		}
+	}
+	ctx := context.Background()
+	out := new(bytes.Buffer)
+	configure := func(policy string) {
+		t.Helper()
+		if err := runLearning(ctx, []string{"configure", "--config", app}, strings.NewReader(policy), out); err != nil {
+			t.Fatal(err)
+		}
+		out.Reset()
+	}
+	args := []string{"frontier", "--chat-id", "-100", "--topic-id", "7", "--config", app}
+	configure(`{"enabled":true}`)
+	if err := runLearning(ctx, args, strings.NewReader(""), out); !errors.Is(err, learning.ErrDenied) {
+		t.Fatalf("missing group opt-in: %v", err)
+	}
+	configure(`{"enabled":true,"permissions":{"include_group_chats":true}}`)
+	for range 2 {
+		if err := runLearning(ctx, args, strings.NewReader(""), out); err != nil {
+			t.Fatal(err)
+		}
+		var entries []learning.FrontierEntry
+		if err := json.Unmarshal(out.Bytes(), &entries); err != nil || len(entries) != 1 ||
+			len(entries[0].Question.OriginRefs) != 1 || !strings.Contains(entries[0].Question.Text, "藤原氏") {
+			t.Fatalf("frontier = %s, %v", out.String(), err)
+		}
+		out.Reset()
+	}
+	configure(`{"enabled":true,"permissions":{"include_group_chats":true,"excluded_terms":["藤原氏"]}}`)
+	if err := runLearning(ctx, args, strings.NewReader(""), out); err != nil || strings.TrimSpace(out.String()) != "[]" {
+		t.Fatalf("filtered frontier = %s, %v", out.String(), err)
 	}
 }

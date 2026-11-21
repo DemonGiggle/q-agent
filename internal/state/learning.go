@@ -11,6 +11,7 @@ import (
 
 	"q-agent/internal/learning"
 	"q-agent/internal/platform"
+	"q-agent/internal/redaction"
 )
 
 type ExchangeOrigin struct {
@@ -125,4 +126,12 @@ func (s *Store) learningSnapshot(route platform.Message, topic *int64) (ChatMemo
 		}
 	}
 	return mem, conv, nil
+}
+
+// NewFileLearningReader reads already persisted conversation data without
+// opening the state store for recovery or writes. Individual files are
+// replaced atomically by the chat service.
+func NewFileLearningReader(dir string, policy *redaction.Policy,
+	authorize func(context.Context, learning.Scope) bool, excluded func(learning.Scope, learning.ConversationTurn) bool) learning.ConversationReader {
+	return (&Store{dir: dir, policy: policy}).NewLearningReader(authorize, excluded)
 }

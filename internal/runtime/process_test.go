@@ -89,17 +89,27 @@ func TestProcessWaitSteeringAuthorizationAndTaskCleanup(t *testing.T) {
 	r, p, dir := setupProcessRuntime(t)
 	must(t, r.Handle(context.Background(), input(1, -10, 7, 1, "authorize application")))
 	processRequest(t, p)
-	p.call("shell", map[string]any{"command": "printf 'Open https://example.test/device ABCD-1234'; read approval; printf 'authorized %s' \"$approval\"; sleep 30", "background": true, "yield_ms": 10})
+	// The authorization prompt below comes from process.wait's interim
+	// message. Keep the child quiet until input so output cannot wake it.
+	p.call("shell", map[string]any{"command": "read approval; printf 'authorized %s' \"$approval\"; sleep 30", "background": true, "yield_ms": 10})
 	session := latestProcess(t, processRequest(t, p))
 	p.call("process", map[string]any{"action": "wait", "session_id": session.ID, "cursor": session.EndCursor, "human_input": true, "message": "Open https://example.test/device and enter ABCD-1234"})
 	// Wait for the durable interim, then exercise topic and owner isolation.
-	deadline := time.Now().Add(time.Second)
+	timeout := time.NewTimer(3 * time.Second)
+	defer timeout.Stop()
+	poll := time.NewTicker(time.Millisecond)
+	defer poll.Stop()
 	for !strings.Contains(strings.Join(drainReplies(t, r.Store), "\n"), "example.test") {
-		if time.Now().After(deadline) {
+		select {
+		case req := <-p.requests:
+			t.Fatalf("process wait returned before sending the authorization interim: %s", req.Messages[len(req.Messages)-1].Content)
+		case <-timeout.C:
 			t.Fatal("authorization interim missing")
+		case <-poll.C:
 		}
-		time.Sleep(time.Millisecond)
 	}
+	timeout.Stop()
+	poll.Stop()
 	must(t, r.Handle(context.Background(), input(2, -10, 8, 1, "wrong topic")))
 	must(t, r.Handle(context.Background(), input(3, -10, 7, 2, "wrong owner")))
 	select {

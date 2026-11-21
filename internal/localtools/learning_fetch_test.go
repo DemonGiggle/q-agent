@@ -31,6 +31,7 @@ func TestLearningFetchPolicy(t *testing.T) {
 		{"robots exclusion", "User-agent: *\nDisallow: /doc", "", 200, 1, false},
 		{"crawl delay", "User-agent: *\nCrawl-delay: 5", "", 200, 1, false},
 		{"page opt out", "", "<meta name='robots' content='noindex'>", 200, 2, false},
+		{"restricted excerpt", "", "<meta name='robots' content='max-snippet:40'>", 200, 2, false},
 		{"redirect", "", "", 302, 2, false},
 		{"too large", "", strings.Repeat("x", 1025), 200, 2, false},
 	} {
@@ -60,7 +61,7 @@ func TestLearningFetchPolicy(t *testing.T) {
 			if (err == nil) != tc.ok || usage.Requests != tc.calls {
 				t.Fatalf("fetch: %+v, %+v, err=%v", doc, usage, err)
 			}
-			if tc.ok && (doc.Source.Title != "Public document" || len(doc.Source.ContentHash) != 64 || len(doc.Body) != 0) {
+			if tc.ok && (doc.Source.Title != "Public document" || len(doc.Source.ContentHash) != 64 || string(doc.Body) != tc.body) {
 				t.Fatalf("unexpected source: %+v", doc)
 			}
 		})

@@ -2,13 +2,16 @@ package state
 
 import (
 	"context"
+	"crypto/sha256"
 	"errors"
+	"fmt"
 	"slices"
 	"strings"
 	"testing"
 	"time"
 
 	"q-agent/internal/learning"
+	"q-agent/internal/localtools"
 )
 
 type researchFetcher func(context.Context, string, int64) (learning.FetchedDocument, learning.Budget, error)
@@ -19,15 +22,20 @@ func (f researchFetcher) Fetch(ctx context.Context, uri string, limit int64) (le
 
 func TestLearningWorker(t *testing.T) {
 	const uri = "https://example.org/reference"
+	const quote = "This public question has a relevant paragraph."
+	const article = "<title>Fetched title</title><nav><p>Public question</p></nav><p>" + quote + "</p>"
 	for _, tc := range []struct {
-		name     string
-		maxCalls int64
-		want     learning.RunState
+		name       string
+		maxCalls   int64
+		want       learning.RunState
+		wantsQuote bool
 	}{
-		{"store source", 3, learning.RunCompleted},
-		{"budget stop", 2, learning.RunBudgetExhausted},
-		{"fetch failed", 3, learning.RunUnresolved},
-		{"cancel active fetch", 3, learning.RunCancelled},
+		{"store source with excerpt", 3, learning.RunCompleted, true},
+		{"excluded excerpt", 3, learning.RunCompleted, false},
+		{"tampered body", 3, learning.RunUnresolved, false},
+		{"budget stop", 2, learning.RunBudgetExhausted, false},
+		{"fetch failed", 3, learning.RunUnresolved, false},
+		{"cancel active fetch", 3, learning.RunCancelled, false},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			dir := t.TempDir()
@@ -37,6 +45,9 @@ func TestLearningWorker(t *testing.T) {
 			cfg.Enabled = true
 			cfg.PerQuestion.Requests = tc.maxCalls
 			cfg.Permissions.AllowDomains = []string{"example.org"}
+			if tc.name == "excluded excerpt" {
+				cfg.Permissions.ExcludedTerms = []string{"relevant paragraph"}
+			}
 			id, err := NewLearningCoordinator(dir).EnqueueResearch(ctx, cfg, "Public question")
 			if err != nil {
 				t.Fatal(err)
@@ -68,17 +79,22 @@ func TestLearningWorker(t *testing.T) {
 						t.Fatal("provider context was not cancelled")
 					}
 				}
-				if tc.want == learning.RunUnresolved {
+				if tc.name == "fetch failed" {
 					return learning.FetchedDocument{}, learning.Budget{Requests: 2}, errors.New("fetch unavailable")
 				}
 				now := time.Now().UTC()
-				return learning.FetchedDocument{Source: learning.Source{
+				hash := fmt.Sprintf("%x", sha256.Sum256([]byte(article)))
+				body := []byte(article)
+				if tc.name == "tampered body" {
+					body = []byte("<p>Different public question content.</p>")
+				}
+				return learning.FetchedDocument{MediaType: "text/html", Body: body, Source: learning.Source{
 					Record: learning.Record{SchemaVersion: learning.SchemaVersion, CreatedAt: now, UpdatedAt: now},
 					ID:     "source", CanonicalURI: link, FetchedAt: now, Title: "Fetched title",
-					ContentHash: strings.Repeat("d", 64), TrustClass: "public_reference",
+					ContentHash: hash, TrustClass: "public_reference",
 				}}, learning.Budget{Requests: 2, Documents: 1}, nil
 			})
-			result, err := c.WorkResearch(ctx, cfg, id, allow, search, fetch)
+			result, err := c.WorkResearch(ctx, cfg, id, allow, search, fetch, localtools.LearningDocumentReader{})
 			if result.State != tc.want || searchCalls != 1 ||
 				(tc.want == learning.RunBudgetExhausted && !errors.Is(err, ErrLearningBudget)) ||
 				(tc.want != learning.RunBudgetExhausted && err != nil) {
@@ -93,11 +109,12 @@ func TestLearningWorker(t *testing.T) {
 				t.Fatalf("fetch=%d, history: %+v", fetchCalls, result.Transitions)
 			}
 			snapshot, err := c.Repository().Snapshot(ctx, partition)
-			if err != nil || len(snapshot.Claims) != 0 || len(snapshot.Evidence) != 0 {
+			if err != nil || len(snapshot.Claims) != 0 {
 				t.Fatalf("snapshot: %+v, err=%v", snapshot, err)
 			}
 			if tc.want != learning.RunCompleted {
-				if snapshot.Version != 0 {
+				if snapshot.Version != 0 || len(snapshot.Evidence) != 0 || result.EvidenceID != "" ||
+					(tc.name == "tampered body" && result.StopReason != "invalid_source_content") {
 					t.Fatalf("failed run wrote knowledge: %+v", snapshot)
 				}
 				return
@@ -116,6 +133,22 @@ func TestLearningWorker(t *testing.T) {
 				t.Fatalf("states: %v, snapshot: %+v", states, snapshot)
 			}
 
+			if !tc.wantsQuote {
+				if result.EvidenceID != "" || len(snapshot.Evidence) != 0 || len(snapshot.Notes[0].EvidenceIDs) != 0 {
+					t.Fatalf("excluded quote persisted: %+v", snapshot)
+				}
+				return
+			}
+			if len(snapshot.Evidence) != 1 || result.EvidenceID == "" ||
+				!slices.Equal(snapshot.Notes[0].EvidenceIDs, []string{result.EvidenceID}) {
+				t.Fatalf("missing excerpt link: result=%+v snapshot=%+v", result, snapshot)
+			}
+			e := snapshot.Evidence[0]
+			if e.ID != result.EvidenceID || e.SourceID != "source" || e.ExcerptOrSummary != quote ||
+				e.Locator.Start != strings.Index(article, quote) || article[e.Locator.Start:e.Locator.End] != quote {
+				t.Fatalf("incorrect evidence anchor: %+v", e)
+			}
+
 			// Restore the last run checkpoint before completion, leaving
 			// the already committed knowledge and its receipt on disk.
 			record, err := c.load(id)
@@ -129,10 +162,10 @@ func TestLearningWorker(t *testing.T) {
 				t.Fatal(err)
 			}
 			c = NewLearningCoordinator(dir)
-			result, err = c.WorkResearch(ctx, cfg, id, allow, search, fetch)
+			result, err = c.WorkResearch(ctx, cfg, id, allow, search, fetch, localtools.LearningDocumentReader{})
 			latest, snapErr := c.Repository().Snapshot(ctx, partition)
 			if err != nil || snapErr != nil || result.State != learning.RunCompleted || latest.Version != 1 ||
-				len(latest.Notes) != 1 || searchCalls != 1 || fetchCalls != 1 {
+				len(latest.Notes) != 1 || len(latest.Evidence) != 1 || result.EvidenceID != e.ID || searchCalls != 1 || fetchCalls != 1 {
 				t.Fatalf("restart: %+v, snapshot: %+v, err=%v/%v", result, latest, err, snapErr)
 			}
 		})
@@ -170,7 +203,7 @@ func TestLearningWorkerDoesNotReplayAnUncertainCall(t *testing.T) {
 		t.Fatal("opened a document without a saved search response")
 		return learning.FetchedDocument{}, learning.Budget{}, nil
 	})
-	result, err := c.WorkResearch(ctx, cfg, id, func(string) bool { return true }, search, fetch)
+	result, err := c.WorkResearch(ctx, cfg, id, func(string) bool { return true }, search, fetch, localtools.LearningDocumentReader{})
 	if err != nil || result.State != learning.RunUnresolved || result.StopReason != "interrupted_provider_call" ||
 		result.Spent != record.Run.Spent {
 		t.Fatalf("restart: %+v, err=%v", result, err)

@@ -14,6 +14,7 @@ import (
 	"net/url"
 	"strings"
 	"time"
+	"unicode"
 	"unicode/utf8"
 
 	"golang.org/x/net/html"
@@ -100,7 +101,7 @@ func (f LearningFetch) fetch(ctx context.Context, client *http.Client, uri strin
 	contentHash := hex.EncodeToString(hash[:])
 	id := sha256.Sum256([]byte(uri + ":" + contentHash))
 	return learning.FetchedDocument{
-		MediaType: media,
+		MediaType: media, Body: body,
 		Source: learning.Source{
 			Record: learning.Record{SchemaVersion: learning.SchemaVersion, CreatedAt: now, UpdatedAt: now},
 			ID:     hex.EncodeToString(id[:]), CanonicalURI: uri, Title: title, Publisher: u.Hostname(),
@@ -152,10 +153,17 @@ func allowsLearningRobots(resp *http.Response) bool {
 }
 
 func learningRobotsOptOut(value string) bool {
-	for directive := range strings.FieldsSeq(strings.ToLower(strings.ReplaceAll(value, ",", " "))) {
+	directives := strings.FieldsFunc(strings.ToLower(value), func(r rune) bool {
+		return r == ',' || r == ':' || unicode.IsSpace(r)
+	})
+	for i, directive := range directives {
 		switch directive {
 		case "none", "noindex", "noarchive", "nosnippet":
 			return true
+		case "max-snippet":
+			if i+1 == len(directives) || directives[i+1] != "-1" {
+				return true
+			}
 		}
 	}
 	return false

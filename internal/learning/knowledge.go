@@ -76,7 +76,8 @@ func (s KnowledgeSnapshot) ValidateReferences() error {
 	}
 	for _, v := range s.Notes {
 		if !v.Record.valid() || v.Revision == 0 || !hasKnowledgeIDs(topics, v.TopicIDs) ||
-			!hasKnowledgeIDs(claims, v.ClaimIDs) || !hasKnowledgeIDs(sources, v.SourceIDs) {
+			!hasKnowledgeIDs(claims, v.ClaimIDs) || !hasKnowledgeIDs(sources, v.SourceIDs) ||
+			!hasKnowledgeIDs(evidence, v.EvidenceIDs) {
 			return fmt.Errorf("invalid note or note references")
 		}
 	}

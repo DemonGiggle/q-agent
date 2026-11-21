@@ -69,10 +69,20 @@ directives are skipped conservatively. Document opt-outs also prevent
 recording.
 
 Work records the run state, transition timestamps and stop reason. A
-successful run stores the fetched source metadata and a reference note
-in the public partition under one commit receipt. It stores no document
-body, search snippet, Evidence, or Claim. The note represents source
-collection. Evidence validation and synthesis require a later stage.
+successful run stores fetched source metadata and a reference note in
+the public partition. When a passage matches the question's keywords,
+the same commit includes one Evidence record of up to 240 UTF-8 bytes.
+The reader uses plain text and contiguous HTML paragraph, list item, or
+blockquote text. It skips hidden sections, snippet opt-outs, and text
+that requires entity decoding. The document body and search snippet stay
+outside durable storage.
+
+The `source-bytes-v1` locator uses zero-based byte offsets with an exclusive
+end. To verify a citation, match the SHA-256 hash of the fetched response
+body against the stored source hash, then compare the indicated bytes to
+the saved excerpt. When present, the work response includes the
+`evidence_id`. The excerpt preserves provenance. Claim generation and
+cross-source verification are later stages.
 
 To resume after a crash, invoke work with the same run ID after the
 lease expires. A saved source or successful commit can be reused. A

@@ -5,6 +5,7 @@ import (
 	"crypto/rand"
 	"errors"
 	"fmt"
+	"slices"
 	"strings"
 	"time"
 
@@ -24,6 +25,7 @@ type LearningWorkerResult struct {
 	RunID       string                     `json:"run_id"`
 	State       learning.RunState          `json:"state"`
 	StopReason  string                     `json:"stop_reason,omitempty"`
+	EvidenceID  string                     `json:"evidence_id,omitempty"`
 	Spent       learning.Budget            `json:"spent_budget"`
 	Transitions []LearningWorkerTransition `json:"transitions"`
 }
@@ -50,11 +52,11 @@ func (c *LearningCoordinator) EnqueueResearch(ctx context.Context, cfg learning.
 // caller holds the learning directory lock and checks secrets under its
 // current policy. Search results never become evidence or claims.
 func (c *LearningCoordinator) WorkResearch(ctx context.Context, cfg learning.Config, id string, allow func(string) bool,
-	search learning.SearchProvider, fetch learning.DocumentFetcher) (result LearningWorkerResult, retErr error) {
+	search learning.SearchProvider, fetch learning.DocumentFetcher, reader learning.DocumentReader) (result LearningWorkerResult, retErr error) {
 	if err := cfg.Validate(); err != nil {
 		return result, err
 	}
-	if !cfg.Enabled || allow == nil || search == nil || fetch == nil {
+	if !cfg.Enabled || allow == nil || search == nil || fetch == nil || reader == nil {
 		return result, learning.ErrDenied
 	}
 	record, err := c.load(id)
@@ -67,8 +69,13 @@ func (c *LearningCoordinator) WorkResearch(ctx context.Context, cfg learning.Con
 		return result, learning.ErrDenied
 	}
 	readResult := func(run storedLearningRun) LearningWorkerResult {
-		return LearningWorkerResult{RunID: id, State: run.Run.State, StopReason: run.Run.StopReason,
+		result := LearningWorkerResult{RunID: id, State: run.Run.State, StopReason: run.Run.StopReason,
 			Spent: run.Run.Spent, Transitions: run.Transitions}
+		cp := run.Run.Checkpoint
+		if run.Run.State == learning.RunCompleted && cp != nil && cp.ResearchEvidence != nil {
+			result.EvidenceID = cp.ResearchEvidence.ID
+		}
+		return result
 	}
 	if terminalLearningRun(record.Run.State) {
 		return readResult(record), nil
@@ -100,7 +107,7 @@ func (c *LearningCoordinator) WorkResearch(ctx context.Context, cfg learning.Con
 		Record: record.Run.Record, ID: record.Run.PlanID, Goal: question,
 		QuestionID: platform.WorkspaceKey(strings.ToLower(strings.Join(strings.Fields(question), " ")), 0),
 		Version:    1, Budget: cfg.PerQuestion,
-		Steps: []string{"discover", "fetch", "record_source"}, AllowedSourceClasses: []string{"public"},
+		Steps: []string{"discover", "fetch", "select_excerpt", "record_source"}, AllowedSourceClasses: []string{"public"},
 		StopConditions:       []string{"source_recorded", "no_qualified_source", "budget_exhausted", "cancelled"},
 		EvidenceRequirements: learning.EvidenceRequirements{MinIndependentSources: 1},
 	}
@@ -137,10 +144,11 @@ func (c *LearningCoordinator) WorkResearch(ctx context.Context, cfg learning.Con
 			}
 			var uri string
 			var source *learning.Source
+			var evidence *learning.Evidence
 			if cp.NextIntent == "search" {
 				uri, err = c.researchSearch(ctx, lease, cfg, plan, allow, search)
 			} else if cp.NextIntent == "fetch" {
-				source, err = c.researchFetch(ctx, lease, cfg, plan, allow, fetch, cp.ResearchURI)
+				source, evidence, err = c.researchFetch(ctx, lease, cfg, plan, allow, fetch, reader, cp.ResearchURI)
 			} else {
 				return result, fmt.Errorf("invalid research checkpoint intent")
 			}
@@ -159,19 +167,19 @@ func (c *LearningCoordinator) WorkResearch(ctx context.Context, cfg learning.Con
 			cp = run.Checkpoint
 			if err != nil || (uri == "" && source == nil) {
 				run.State, run.StopReason = learning.RunUnresolved, "no_qualified_source"
-				if err != nil {
+				if errors.Is(err, learning.ErrInvalidSourceContent) {
+					run.StopReason = "invalid_source_content"
+				} else if err != nil {
 					run.StopReason = "provider_failed"
 				}
 			} else if source != nil {
-				cp.ResearchSource, cp.NextIntent = source, "validate"
+				cp.ResearchSource, cp.ResearchEvidence, cp.NextIntent = source, evidence, "validate"
 				run.State = learning.RunValidating
 			} else {
 				cp.ResearchURI, cp.NextIntent = uri, "fetch"
 			}
 		case learning.RunValidating:
-			if !cfg.Permissions.ResearchURI(cp.ResearchURI) || !allow(cp.ResearchURI) ||
-				cp.ResearchSource == nil || !allow(cp.ResearchSource.Title) ||
-				!run.Spent.Fits(cfg.PerQuestion) {
+			if !researchCitationAllowed(cfg, allow, run) {
 				run.State, run.StopReason = learning.RunUnresolved, "policy_changed"
 				break
 			}
@@ -224,9 +232,9 @@ func (c *LearningCoordinator) researchSearch(ctx context.Context, lease learning
 }
 
 func (c *LearningCoordinator) researchFetch(ctx context.Context, lease learning.Lease, cfg learning.Config, plan learning.Plan,
-	allow func(string) bool, fetch learning.DocumentFetcher, uri string) (*learning.Source, error) {
+	allow func(string) bool, fetch learning.DocumentFetcher, reader learning.DocumentReader, uri string) (*learning.Source, *learning.Evidence, error) {
 	if !cfg.Permissions.ResearchURI(uri) || !allow(uri) {
-		return nil, nil
+		return nil, nil, nil
 	}
 	ms := min(int64(10_000), cfg.PerQuestion.WallTimeMillis)
 	charge := learning.Budget{Requests: 2, Documents: 1, WallTimeMillis: ms, StorageBytes: 24 << 10}
@@ -238,18 +246,31 @@ func (c *LearningCoordinator) researchFetch(ctx context.Context, lease learning.
 		return usage, err
 	})
 	if err != nil {
-		return nil, err
+		return nil, nil, err
 	}
 	source := doc.Source
 	if source.CanonicalURI != uri || len(source.Title) > 256 || len(source.ContentHash) != 64 ||
 		len(source.Publisher) > 253 || source.License != "" || source.TrustClass != "public_reference" ||
 		!allow(source.Title) || cfg.Permissions.Excludes(learning.ConversationTurn{Transcript: source.Title}) {
-		return nil, nil
+		return nil, nil, nil
 	}
 	if err := source.Validate(); err != nil {
-		return nil, err
+		return nil, nil, err
 	}
-	return &source, nil
+	if len(doc.Body) > learningDocumentLimit {
+		return nil, nil, learning.ErrInvalidSourceContent
+	}
+	spans, err := reader.Read(ctx, doc)
+	if err != nil {
+		return nil, nil, err
+	}
+	evidence, err := learning.SelectSourceExcerpt(doc, spans, plan.Goal, func(quote string) bool {
+		return allow(quote) && !cfg.Permissions.Excludes(learning.ConversationTurn{Transcript: quote})
+	})
+	if err != nil {
+		return nil, nil, err
+	}
+	return &source, evidence, nil
 }
 
 func (c *LearningCoordinator) commitResearch(ctx context.Context, cfg learning.Config, lease learning.Lease,
@@ -264,14 +285,11 @@ func (c *LearningCoordinator) commitResearch(ctx context.Context, cfg learning.C
 	if committed || err != nil {
 		return err
 	}
-	cp := run.Checkpoint
-	source := cp.ResearchSource
-	if source == nil || !cfg.Permissions.ResearchURI(source.CanonicalURI) ||
-		!allow(source.CanonicalURI) || !allow(source.Title) ||
-		cfg.Permissions.Excludes(learning.ConversationTurn{Transcript: source.Title}) ||
-		!run.Spent.Fits(cfg.PerQuestion) {
+	if !researchCitationAllowed(cfg, allow, run) {
 		return c.failResearchCommit(ctx, lease, "policy_changed")
 	}
+	cp := run.Checkpoint
+	source := cp.ResearchSource
 	partition := learning.Partition{Public: true}
 	next, err := c.repo.Snapshot(ctx, partition)
 	if err != nil {
@@ -280,6 +298,9 @@ func (c *LearningCoordinator) commitResearch(ctx context.Context, cfg learning.C
 	found := false
 	for _, prior := range next.Sources {
 		if prior.ID == source.ID {
+			if prior.ContentHash != source.ContentHash || prior.CanonicalURI != source.CanonicalURI {
+				return c.failResearchCommit(ctx, lease, "source_identity_conflict")
+			}
 			found = true
 			break
 		}
@@ -287,16 +308,39 @@ func (c *LearningCoordinator) commitResearch(ctx context.Context, cfg learning.C
 	if !found {
 		next.Sources = append(next.Sources, *source)
 	}
-	next.Notes = append(next.Notes, learning.Note{
+	note := learning.Note{
 		Record: source.Record, ID: run.ID, Title: question, Revision: 1,
 		Summary:   "Public source retrieved. Relevance and factual claims have not been reviewed.",
 		SourceIDs: []string{source.ID},
-	})
+	}
+	if evidence := cp.ResearchEvidence; evidence != nil {
+		if !slices.ContainsFunc(next.Evidence, func(prior learning.Evidence) bool { return prior.ID == evidence.ID }) {
+			next.Evidence = append(next.Evidence, *evidence)
+		}
+		note.EvidenceIDs = []string{evidence.ID}
+		note.Summary = "Public source retrieved with a matching excerpt. Factual claims have not been reviewed."
+	}
+	next.Notes = append(next.Notes, note)
 	_, err = c.repo.Commit(ctx, partition, next.Version, lease, cp.OperationID, next)
 	if errors.Is(err, ErrLearningPartitionFull) {
 		return errors.Join(err, c.failResearchCommit(ctx, lease, "storage_limit"))
 	}
 	return err
+}
+
+func researchCitationAllowed(cfg learning.Config, allow func(string) bool, run learning.Run) bool {
+	cp := run.Checkpoint
+	if cp == nil || cp.ResearchSource == nil || !run.Spent.Fits(cfg.PerQuestion) {
+		return false
+	}
+	source := cp.ResearchSource
+	if !cfg.Permissions.ResearchURI(source.CanonicalURI) || !allow(source.CanonicalURI) ||
+		!allow(source.Title) || cfg.Permissions.Excludes(learning.ConversationTurn{Transcript: source.Title}) {
+		return false
+	}
+	evidence := cp.ResearchEvidence
+	return evidence == nil || (evidence.MatchesSourceExcerpt(*source) && allow(evidence.ExcerptOrSummary) &&
+		!cfg.Permissions.Excludes(learning.ConversationTurn{Transcript: evidence.ExcerptOrSummary}))
 }
 
 func (c *LearningCoordinator) failResearchCommit(ctx context.Context, lease learning.Lease, reason string) error {

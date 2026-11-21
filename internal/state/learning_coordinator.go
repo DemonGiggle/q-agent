@@ -23,13 +23,14 @@ var (
 )
 
 // LearningCoordinator owns run state within the process that holds the
-// existing state directory lock. It needs no worker, timer, or in-memory
-// registry. Use one instance per serving process.
+// existing state directory lock. It needs no background worker or timer.
+// Use one instance per serving process.
 type LearningCoordinator struct {
-	dir  string
-	repo *LearningRepository
-	now  func() time.Time
-	mu   sync.Mutex
+	dir         string
+	repo        *LearningRepository
+	now         func() time.Time
+	mu          sync.Mutex
+	activeCalls map[string]context.CancelFunc
 }
 
 func NewLearningCoordinator(stateDir string) *LearningCoordinator {
@@ -43,11 +44,13 @@ func (c *LearningCoordinator) Repository() learning.KnowledgeRepository { return
 var _ learning.RunCoordinator = (*LearningCoordinator)(nil)
 
 type storedLearningRun struct {
-	PartitionKey string       `json:"partition_key"`
-	Version      uint64       `json:"version"`
-	Fence        uint64       `json:"fence"`
-	ExpiresAt    *time.Time   `json:"expires_at,omitempty"`
-	Run          learning.Run `json:"run"`
+	PlanBudget   *learning.Budget `json:"plan_budget,omitempty"`
+	QuestionKey  string           `json:"question_key,omitempty"`
+	PartitionKey string           `json:"partition_key"`
+	Version      uint64           `json:"version"`
+	Fence        uint64           `json:"fence"`
+	ExpiresAt    *time.Time       `json:"expires_at,omitempty"`
+	Run          learning.Run     `json:"run"`
 }
 
 func (c *LearningCoordinator) Create(ctx context.Context, partition learning.Partition, runID, planID string) error {
@@ -178,13 +181,22 @@ func (c *LearningCoordinator) Release(ctx context.Context, lease learning.Lease)
 		return learning.ErrDenied
 	}
 	if record.ExpiresAt == nil {
+		if cancel := c.activeCalls[lease.RunID]; cancel != nil {
+			cancel()
+		}
 		return SyncDir(c.dir)
 	}
 	if !record.ExpiresAt.Equal(lease.ExpiresAt) {
 		return learning.ErrDenied
 	}
 	record.ExpiresAt = nil
-	return c.save(record)
+	if err := c.save(record); err != nil {
+		return err
+	}
+	if cancel := c.activeCalls[lease.RunID]; cancel != nil {
+		cancel()
+	}
+	return nil
 }
 
 func (c *LearningCoordinator) guard(ctx context.Context, partition learning.Partition, lease learning.Lease, operationID string, write func() error) error {
@@ -223,6 +235,9 @@ func (c *LearningCoordinator) Checkpoint(ctx context.Context, lease learning.Lea
 	}
 	if record.Version != expectedVersion || record.Version == math.MaxUint64 {
 		return learning.ErrVersionConflict
+	}
+	if c.activeCalls[lease.RunID] != nil {
+		return ErrLearningProviderActive
 	}
 	prior := record.Run
 	if next.ID != prior.ID || next.PlanID != prior.PlanID ||
@@ -302,6 +317,9 @@ func (c *LearningCoordinator) Cancel(ctx context.Context, runID string) error {
 		return err
 	}
 	if record.Run.State == learning.RunCancelled {
+		if cancel := c.activeCalls[runID]; cancel != nil {
+			cancel()
+		}
 		return SyncDir(c.dir)
 	}
 	if terminalLearningRun(record.Run.State) || record.Version == math.MaxUint64 {
@@ -324,7 +342,13 @@ func (c *LearningCoordinator) Cancel(ctx context.Context, runID string) error {
 	record.Run.EndedAt = &record.Run.UpdatedAt
 	record.ExpiresAt = nil
 	record.Version++
-	return c.save(record)
+	if err := c.save(record); err != nil {
+		return err
+	}
+	if cancel := c.activeCalls[runID]; cancel != nil {
+		cancel()
+	}
+	return nil
 }
 
 // hasCommit is called with the coordinator lock held, just like the

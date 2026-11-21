@@ -96,9 +96,21 @@ share the same coordinator lock. If cancellation wins, the lease is revoked.
 If the write wins, its receipt survives a restart and the resumed run can
 mark itself complete using the same operation ID.
 
-The coordinator preserves reported usage across checkpoints. The research
-worker will own provider timeouts, budget reservation, stop decisions, and
-audit events for the full pipeline.
+Provider calls reserve their upper bound against plan, run, question and
+global daily budgets before sending a request. The 64 KiB quota ledger
+holds global and per-question usage for the current UTC day. The run
+checkpoint also enforces the run's cumulative allowance across days. The
+ledger is written before the checkpoint, and both writes must succeed
+before the provider is called. A crash between writes can consume some of
+the daily allowance even if the call never starts. Reservations remain
+charged on error or cancellation to account for uncertain provider usage.
+
+Calls run with a deadline capped by the active lease and UTC day. A run
+has one in-flight call, and cancelling or releasing its lease interrupts the
+call context. Adapters must honor context and enforce their declared upper
+bounds before dispatch. The provider call path introduces no permanent
+timer, polling loop or background goroutine. The rest of the research
+pipeline and its audit events are follow-up work.
 
 ## Follow-up issues
 
@@ -107,7 +119,8 @@ audit events for the full pipeline.
   preview. The local repository validates stored citation
   references. Live adapter wiring follows.
 - #72 has durable leases, cancellation, checkpoints and a tested commit
-  fence. Live execution, timeout and budget enforcement remain open.
+  fence. Provider dispatch now enforces budget reservations, cancellation,
+  and deadlines. Live provider adapters and the execution loop remain open.
 - #73 owns chat recall and its share of the context budget. Recall uses
   authorized evidence and a separate failure path from normal chat.
 - #74 owns Claim lifecycle and atomic Revision history. Use evidence links

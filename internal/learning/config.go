@@ -2,6 +2,8 @@ package learning
 
 import (
 	"fmt"
+	"net/netip"
+	"net/url"
 	"strings"
 	"time"
 )
@@ -39,6 +41,21 @@ func (p PermissionConfig) AllowsDomain(host string) bool {
 		return false
 	}
 	return host != "" && !matches(p.BlockDomains) && (len(p.AllowDomains) == 0 || matches(p.AllowDomains))
+}
+
+// ResearchURI accepts only explicitly approved HTTPS domains and URLs without
+// query parameters, fragments, or credentials.
+func (p PermissionConfig) ResearchURI(raw string) bool {
+	if len(raw) > 1024 || len(p.AllowDomains) == 0 || strings.ContainsAny(raw, "?#") {
+		return false
+	}
+	u, err := url.Parse(raw)
+	if err != nil || u.Scheme != "https" || u.User != nil || u.Opaque != "" || u.Port() != "" {
+		return false
+	}
+	host := u.Hostname()
+	_, ipErr := netip.ParseAddr(host)
+	return ipErr != nil && strings.Contains(host, ".") && p.AllowsDomain(host)
 }
 
 // Budget measures upper limits, or spent units when embedded in a Run.

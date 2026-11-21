@@ -118,12 +118,14 @@ const (
 )
 
 type Checkpoint struct {
-	Version       uint64   `json:"version"`
-	OpenQuestions []string `json:"open_questions"`
-	Fingerprints  []string `json:"fingerprints"`
-	Spent         Budget   `json:"spent_budget"`
-	OperationID   string   `json:"operation_id,omitempty"`
-	NextIntent    string   `json:"next_intent"`
+	ResearchURI    string   `json:"research_uri,omitempty"`
+	ResearchSource *Source  `json:"research_source,omitempty"`
+	Version        uint64   `json:"version"`
+	OpenQuestions  []string `json:"open_questions"`
+	Fingerprints   []string `json:"fingerprints"`
+	Spent          Budget   `json:"spent_budget"`
+	OperationID    string   `json:"operation_id,omitempty"`
+	NextIntent     string   `json:"next_intent"`
 }
 
 type Run struct {

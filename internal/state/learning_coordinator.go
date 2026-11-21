@@ -44,16 +44,22 @@ func (c *LearningCoordinator) Repository() learning.KnowledgeRepository { return
 var _ learning.RunCoordinator = (*LearningCoordinator)(nil)
 
 type storedLearningRun struct {
-	PlanBudget   *learning.Budget `json:"plan_budget,omitempty"`
-	QuestionKey  string           `json:"question_key,omitempty"`
-	PartitionKey string           `json:"partition_key"`
-	Version      uint64           `json:"version"`
-	Fence        uint64           `json:"fence"`
-	ExpiresAt    *time.Time       `json:"expires_at,omitempty"`
-	Run          learning.Run     `json:"run"`
+	Question     string                     `json:"public_question,omitempty"`
+	Transitions  []LearningWorkerTransition `json:"transitions,omitempty"`
+	PlanBudget   *learning.Budget           `json:"plan_budget,omitempty"`
+	QuestionKey  string                     `json:"question_key,omitempty"`
+	PartitionKey string                     `json:"partition_key"`
+	Version      uint64                     `json:"version"`
+	Fence        uint64                     `json:"fence"`
+	ExpiresAt    *time.Time                 `json:"expires_at,omitempty"`
+	Run          learning.Run               `json:"run"`
 }
 
 func (c *LearningCoordinator) Create(ctx context.Context, partition learning.Partition, runID, planID string) error {
+	return c.create(ctx, partition, runID, planID, "")
+}
+
+func (c *LearningCoordinator) create(ctx context.Context, partition learning.Partition, runID, planID, question string) error {
 	if !auditID.MatchString(runID) || !auditID.MatchString(planID) {
 		return fmt.Errorf("invalid learning run or plan ID")
 	}
@@ -68,7 +74,7 @@ func (c *LearningCoordinator) Create(ctx context.Context, partition learning.Par
 	}
 	existing, err := c.load(runID)
 	if err == nil {
-		if existing.Run.PlanID != planID || existing.PartitionKey != key {
+		if existing.Run.PlanID != planID || existing.PartitionKey != key || existing.Question != question {
 			return learning.ErrVersionConflict
 		}
 		return SyncDir(c.dir)
@@ -77,7 +83,7 @@ func (c *LearningCoordinator) Create(ctx context.Context, partition learning.Par
 		return err
 	}
 	now := c.now().UTC()
-	return c.save(storedLearningRun{PartitionKey: key, Version: 1, Run: learning.Run{
+	return c.save(storedLearningRun{PartitionKey: key, Question: question, Version: 1, Run: learning.Run{
 		Record: learning.Record{SchemaVersion: learning.SchemaVersion, CreatedAt: now, UpdatedAt: now},
 		ID:     runID, PlanID: planID, State: learning.RunQueued,
 	}})
@@ -112,6 +118,18 @@ func (c *LearningCoordinator) load(id string) (storedLearningRun, error) {
 }
 
 func (c *LearningCoordinator) save(record storedLearningRun) error {
+	if record.Question != "" {
+		last := len(record.Transitions) - 1
+		if last < 0 || record.Transitions[last].State != record.Run.State {
+			reason := record.Run.StopReason
+			if reason == "" {
+				reason = string(record.Run.State)
+			}
+			record.Transitions = append(record.Transitions, LearningWorkerTransition{
+				State: record.Run.State, At: record.Run.UpdatedAt, Reason: reason,
+			})
+		}
+	}
 	raw, err := json.Marshal(record)
 	if err != nil {
 		return err

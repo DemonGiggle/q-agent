@@ -26,6 +26,21 @@ func (p PermissionConfig) Excludes(turn ConversationTurn) bool {
 	return false
 }
 
+// AllowsDomain applies a blocklist first, then an optional allowlist.
+func (p PermissionConfig) AllowsDomain(host string) bool {
+	host = strings.ToLower(strings.TrimSuffix(host, "."))
+	matches := func(domains []string) bool {
+		for _, domain := range domains {
+			domain = strings.TrimSuffix(strings.ToLower(strings.TrimSpace(domain)), ".")
+			if domain != "" && (host == domain || strings.HasSuffix(host, "."+domain)) {
+				return true
+			}
+		}
+		return false
+	}
+	return host != "" && !matches(p.BlockDomains) && (len(p.AllowDomains) == 0 || matches(p.AllowDomains))
+}
+
 // Budget measures upper limits, or spent units when embedded in a Run.
 type Budget struct {
 	Requests       int64 `json:"requests"`

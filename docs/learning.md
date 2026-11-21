@@ -26,6 +26,27 @@ scheduled work. Each successful invocation appends a separate
 `ResearchPlanned` event with generated references. Audit contains no question
 or transcript text. The audit sink rejects changes to an existing event ID.
 
+## Discover sources manually
+
+```sh
+printf '%s\n' 'Fujiwara regency Heian period' |
+  q-agent learning search --config ./config.toml
+```
+
+The explicit search command sends the supplied query to DuckDuckGo Lite
+and returns up to five unverified hits. It accepts up to 2,000 bytes and
+rejects detected credentials and excluded terms before dispatch. Optional
+allow/block lists apply to the provider domain and result domains. This
+command never reads conversation history.
+
+Each search reserves one outbound request and up to 15 seconds of wall
+time. It does not follow redirects or fetch the result URLs. The run
+finishes as `UNRESOLVED` with reason `discovery_only`, leaving claims
+and evidence outside the knowledge store until they can be verified.
+Search holds the learning state directory's single-owner lock, independent
+of the chat service lock. The provider can report an upstream error or
+challenge and the request reservation remains charged.
+
 ## Resource constraints
 
 Keep ACA on the same binary and reuse existing state, provider and
@@ -69,8 +90,8 @@ Each authorized partition uses one JSON file under
 `<state_dir>/learning/knowledge/`. The initial cap is 4 MiB per file,
 including retry receipts and revision events. Reads and replacements are
 bounded by this cap. The repository has no background process, index, or
-new dependency. It is constructed lazily and uses its own lock inside the
-service's existing single-owner state directory.
+new dependency. It is constructed lazily within the single-owner
+learning state directory.
 
 A write must hold the coordinator's current lease guard, match the
 partition version, and validate citations in the replacement snapshot.
@@ -117,14 +138,16 @@ pipeline and its audit events are follow-up work.
 - #65 / #69 / #70 own the integration contract. This slice includes the
   reader, domain types, config validation, metadata audit, and the offline
   preview. The local repository validates stored citation
-  references. Live adapter wiring follows.
+  references. A manual search adapter is available. Fetch and model
+  adapters follow.
 - #72 has durable leases, cancellation, checkpoints and a tested commit
   fence. Provider dispatch now enforces budget reservations, cancellation,
-  and deadlines. Live provider adapters and the execution loop remain open.
+  and deadlines. Manual discovery exercises the provider call path.
+  The remaining research steps and full audit integration stay open.
 - #73 owns chat recall and its share of the context budget. Recall uses
   authorized evidence and a separate failure path from normal chat.
 - #74 owns Claim lifecycle and atomic Revision history. Use evidence links
   to record support/refutation per Claim, and keep prior versions queryable.
 - #76 owns provider egress, ACL for any remote controls, and deletion across
-  durable knowledge/indexes/backups. Enable provider or scheduler wiring
-  only after those boundaries are enforced.
+  durable knowledge/indexes/backups. Conversation-derived egress and
+  scheduling need their own policy controls.

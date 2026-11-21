@@ -23,7 +23,7 @@ var (
 )
 
 // LearningCoordinator owns run state within the process that holds the
-// existing state directory lock. It needs no background worker or timer.
+// existing single-owner lock for the learning state directory.
 // Use one instance per serving process.
 type LearningCoordinator struct {
 	dir         string

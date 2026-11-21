@@ -20,7 +20,8 @@ import (
 )
 
 const webBodyLimit = 1 << 20
-const duckDuckGoURL = "https://lite.duckduckgo.com/lite/"
+const LearningSearchDomain = "lite.duckduckgo.com"
+const duckDuckGoURL = "https://" + LearningSearchDomain + "/lite/"
 
 // Deliberately separate from provider clients: no provider headers, cookie jar,
 // environment proxy credentials, or custom authentication reach fetched sites.
@@ -328,24 +329,7 @@ func readableHTML(data []byte, rawURL string) (string, string) {
 type searchResult struct{ title, url, snippet string }
 
 func searchWeb(ctx context.Context, client *http.Client, endpoint, query string, count int) (string, error) {
-	u, err := webURL(endpoint)
-	if err != nil {
-		return "", err
-	}
-	params := u.Query()
-	params.Set("q", query)
-	u.RawQuery = params.Encode()
-	page, err := getWeb(ctx, client, u.String())
-	if err != nil {
-		return "", err
-	}
-	if page.truncated {
-		return "", fmt.Errorf("DuckDuckGo response exceeded the 1 MiB input limit")
-	}
-	if page.mediaType != "text/html" && page.mediaType != "application/xhtml+xml" {
-		return "", fmt.Errorf("DuckDuckGo returned a non-HTML response")
-	}
-	results, err := parseSearch(page.data, count)
+	results, err := findWebResults(ctx, client, endpoint, query, count)
 	if err != nil {
 		return "", err
 	}
@@ -358,6 +342,27 @@ func searchWeb(ctx context.Context, client *http.Client, endpoint, query string,
 		fmt.Fprintf(&out, "\n%d. %s\n%s\n%s\n", i+1, result.title, result.url, result.snippet)
 	}
 	return Limit(out.String()), nil
+}
+
+func findWebResults(ctx context.Context, client *http.Client, endpoint, query string, count int) ([]searchResult, error) {
+	u, err := webURL(endpoint)
+	if err != nil {
+		return nil, err
+	}
+	params := u.Query()
+	params.Set("q", query)
+	u.RawQuery = params.Encode()
+	page, err := getWeb(ctx, client, u.String())
+	if err != nil {
+		return nil, err
+	}
+	if page.truncated {
+		return nil, fmt.Errorf("DuckDuckGo response exceeded the 1 MiB input limit")
+	}
+	if page.mediaType != "text/html" && page.mediaType != "application/xhtml+xml" {
+		return nil, fmt.Errorf("DuckDuckGo returned a non-HTML response")
+	}
+	return parseSearch(page.data, count)
 }
 
 func parseSearch(data []byte, count int) ([]searchResult, error) {

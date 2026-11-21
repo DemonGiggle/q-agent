@@ -89,3 +89,31 @@ func TestLearningCapturePolicy(t *testing.T) {
 	app.Memory.Enabled = false
 	check(false)
 }
+
+func TestLearningSearchDeniesEgressBeforeCreatingRun(t *testing.T) {
+	dir := t.TempDir()
+	app := filepath.Join(dir, "config.toml")
+	if err := os.WriteFile(app, []byte("state_dir = 'data'\n"), 0600); err != nil {
+		t.Fatal(err)
+	}
+	ctx := context.Background()
+	configure := []string{"configure", "--config", app}
+	search := []string{"search", "--config", app}
+	out := new(bytes.Buffer)
+	for _, tc := range []struct{ policy, query string }{
+		{`{"enabled":false}`, "some question"},
+		{`{"enabled":true,"permissions":{"block_domains":["duckduckgo.com"]}}`, "some question"},
+		{`{"enabled":true}`, "api_key=sk-abcdefghijklmnopqrstuvwxyz"},
+	} {
+		if err := runLearning(ctx, configure, strings.NewReader(tc.policy), out); err != nil {
+			t.Fatal(err)
+		}
+		out.Reset()
+		if err := runLearning(ctx, search, strings.NewReader(tc.query), out); err != learning.ErrDenied || out.Len() != 0 {
+			t.Fatalf("search returned %v with %d output bytes", err, out.Len())
+		}
+	}
+	if _, err := os.Stat(filepath.Join(dir, "data", "learning", "runs")); !os.IsNotExist(err) {
+		t.Fatalf("denied query created run state: %v", err)
+	}
+}

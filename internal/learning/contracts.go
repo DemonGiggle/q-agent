@@ -38,9 +38,9 @@ type KnowledgeRepository interface {
 }
 
 type SearchHit struct {
-	URI     string
-	Title   string
-	Snippet string
+	URI     string `json:"url"`
+	Title   string `json:"title"`
+	Snippet string `json:"snippet,omitempty"`
 }
 
 type SearchProvider interface {

@@ -313,6 +313,33 @@ topic. Newly excluded text is withheld from results.
 Add `--select` to show a shortlist under the current selection policy.
 The default targets are 70% conversation, 20% knowledge gaps and 10%
 associations. Empty categories cede their slots to other eligible origins.
+
+```sh
+q-agent learning frontier --public --select --config ./config.toml
+q-agent learning frontier --public --enqueue next --config ./config.toml
+```
+
+The public frontier derives gaps from cited hypotheses, unresolved,
+disputed, or stale claims. It derives associations from topic relationships
+with verified citations. Each candidate records the claim or relationship
+ID and its evidence IDs. Only existing, policy-allowed public knowledge
+feeds this path. Use `--origin gap` or `--origin association` on a list,
+and `--status all` to include history for currently visible candidates.
+
+`--enqueue next` queues one selected public lead. For either frontier,
+`--enqueue <candidate-id>` queues a particular selected lead. For a
+chat-scoped lead, pass an independently reviewed public question on
+stdin. The queued run stores that question. The original chat text,
+candidate origin references, and selection history stay in the original
+topic partition.
+
+The result includes a run ID for `q-agent learning work`. Queuing is local
+and starts no provider call. Each run requests two verified sources
+under the existing budgets. Repeating an explicit candidate ID returns
+the same run, including after interruption between the run and frontier
+writes. A later list refreshes finished runs into frontier history, and
+identical questions stay suppressed while queued or in cooldown. Frontier
+scope does not change the status of a cited claim.
 Each shortlist is limited to five topics and depth two by default. When
 an eligible gap exists and no gap has entered the queue in the previous
 seven days, a slot gives it preference after manual choices. The

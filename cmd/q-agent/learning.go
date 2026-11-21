@@ -21,6 +21,7 @@ import (
 	"q-agent/internal/localtools"
 	"q-agent/internal/redaction"
 	"q-agent/internal/state"
+	"q-agent/internal/trust"
 )
 
 func runLearning(ctx context.Context, args []string, input io.Reader, output io.Writer) error {
@@ -39,12 +40,15 @@ func runLearning(ctx context.Context, args []string, input io.Reader, output io.
 		flags.BoolVar(&summarize, "summarize", false, "summarize a public excerpt through local Ollama")
 		flags.BoolVar(&claims, "claims", false, "draft a claim from verified excerpts through local Ollama")
 	}
-	var chatID, topicID int64
-	var selectFrontier bool
+	var frontier frontierOptions
 	if args[0] == "frontier" {
-		flags.Int64Var(&chatID, "chat-id", 0, "authorized Telegram chat ID")
-		flags.Int64Var(&topicID, "topic-id", 0, "Telegram topic ID")
-		flags.BoolVar(&selectFrontier, "select", false, "show the policy-selected shortlist")
+		flags.Int64Var(&frontier.chatID, "chat-id", 0, "authorized Telegram chat ID")
+		flags.Int64Var(&frontier.topicID, "topic-id", 0, "Telegram topic ID")
+		flags.BoolVar(&frontier.public, "public", false, "use the public knowledge frontier")
+		flags.BoolVar(&frontier.selectOnly, "select", false, "show the policy-selected shortlist")
+		flags.StringVar(&frontier.origin, "origin", "", "filter by candidate origin")
+		flags.StringVar(&frontier.status, "status", "candidate", "filter by status or use all")
+		flags.StringVar(&frontier.enqueue, "enqueue", "", "queue a selected ID (or next in the public frontier)")
 	}
 	if err := flags.Parse(args[1:]); err != nil {
 		return err
@@ -82,11 +86,11 @@ func runLearning(ctx context.Context, args []string, input io.Reader, output io.
 	}
 
 	if args[0] == "frontier" {
-		frontier, err := collectLearningFrontier(ctx, app, cfg, chatID, topicID, selectFrontier)
+		result, err := collectLearningFrontier(ctx, app, cfg, frontier, input)
 		if err != nil {
 			return err
 		}
-		return enc.Encode(frontier)
+		return enc.Encode(result)
 	}
 
 	data, err := io.ReadAll(io.LimitReader(input, 4097))
@@ -225,18 +229,40 @@ func runLearning(ctx context.Context, args []string, input io.Reader, output io.
 	return enc.Encode(preview)
 }
 
-func collectLearningFrontier(ctx context.Context, app config.Config, cfg learning.Config, chatID, topicID int64, selectFrontier bool) (any, error) {
-	if !cfg.Enabled || !app.Memory.Enabled || chatID == 0 || topicID < 0 {
+type frontierOptions struct {
+	chatID, topicID int64
+	public          bool
+	selectOnly      bool
+	origin, status  string
+	enqueue         string
+}
+
+func collectLearningFrontier(ctx context.Context, app config.Config, cfg learning.Config, options frontierOptions, input io.Reader) (any, error) {
+	if !cfg.Enabled {
 		return nil, learning.ErrDenied
 	}
-	visibility := learning.GroupChat
-	if chatID > 0 {
-		if !cfg.Permissions.IncludePrivateChats || !slices.Contains(app.Telegram.AllowedUsers, chatID) {
+	if (options.public && (options.chatID != 0 || options.topicID != 0)) ||
+		(options.selectOnly && options.enqueue != "") ||
+		((options.selectOnly || options.enqueue != "") && (options.status != "candidate" || options.origin != "")) ||
+		!slices.Contains([]string{"", "conversation", "gap", "association"}, options.origin) ||
+		!slices.Contains([]string{"candidate", "queued", "resolved", "unresolved", "dismissed", "all"}, options.status) {
+		return nil, fmt.Errorf("invalid learning frontier options")
+	}
+	partition := learning.Partition{Public: options.public}
+	if !options.public {
+		if !app.Memory.Enabled || options.chatID == 0 || options.topicID < 0 {
 			return nil, learning.ErrDenied
 		}
-		visibility = learning.PrivateChat
-	} else if !cfg.Permissions.IncludeGroupChats || !slices.Contains(app.Telegram.AllowedGroups, chatID) {
-		return nil, learning.ErrDenied
+		visibility := learning.GroupChat
+		if options.chatID > 0 {
+			if !cfg.Permissions.IncludePrivateChats || !slices.Contains(app.Telegram.AllowedUsers, options.chatID) {
+				return nil, learning.ErrDenied
+			}
+			visibility = learning.PrivateChat
+		} else if !cfg.Permissions.IncludeGroupChats || !slices.Contains(app.Telegram.AllowedGroups, options.chatID) {
+			return nil, learning.ErrDenied
+		}
+		partition.Scope = &learning.Scope{Platform: "telegram", ChatID: options.chatID, TopicID: &options.topicID, Visibility: visibility}
 	}
 	policy, err := redaction.New(redaction.Config{}, configuredSecrets(app))
 	if err != nil {
@@ -246,13 +272,6 @@ func collectLearningFrontier(ctx context.Context, app config.Config, cfg learnin
 		return !strings.Contains(text, redaction.Marker) && !policy.ContainsSecret(text) &&
 			!cfg.Permissions.Excludes(learning.ConversationTurn{Transcript: text})
 	}
-	const platformName = "telegram"
-	reader := state.NewFileLearningReader(app.StateDir, policy, func(_ context.Context, scope learning.Scope) bool {
-		return scope.Platform == platformName && scope.ChatID == chatID && scope.Visibility == visibility &&
-			scope.TopicID != nil && *scope.TopicID == topicID
-	}, func(_ learning.Scope, turn learning.ConversationTurn) bool {
-		return !allow(turn.Transcript)
-	})
 	unlock, err := state.Lock(filepath.Join(app.StateDir, "learning"))
 	if err != nil {
 		return nil, err
@@ -260,14 +279,50 @@ func collectLearningFrontier(ctx context.Context, app config.Config, cfg learnin
 	defer unlock()
 	now := time.Now().UTC()
 	repo := state.NewLearningRepository(app.StateDir, nil)
-	query := learning.ConversationQuery{
-		Scope: learning.Scope{Platform: platformName, ChatID: chatID, TopicID: &topicID, Visibility: visibility},
-		From:  now.Add(-48 * time.Hour), Until: now,
+	var entries []learning.FrontierEntry
+	if options.public {
+		entries, err = repo.PublicFrontier(ctx, cfg, now, func(text string) bool {
+			return allow(text) && !trust.Suspicious(text)
+		})
+	} else {
+		scope := *partition.Scope
+		reader := state.NewFileLearningReader(app.StateDir, policy, func(_ context.Context, requested learning.Scope) bool {
+			return requested.Platform == scope.Platform && requested.ChatID == scope.ChatID && requested.Visibility == scope.Visibility &&
+				requested.TopicID != nil && *requested.TopicID == *scope.TopicID
+		}, func(_ learning.Scope, turn learning.ConversationTurn) bool {
+			return !allow(turn.Transcript)
+		})
+		query := learning.ConversationQuery{Scope: scope, From: now.Add(-48 * time.Hour), Until: now}
+		entries, err = repo.ConversationFrontier(ctx, reader, query, now, allow)
 	}
-	if selectFrontier {
-		return repo.SelectConversationFrontier(ctx, reader, query, now, allow, cfg.Selection)
+	if err != nil {
+		return nil, err
 	}
-	return repo.CollectConversationFrontier(ctx, reader, query, now, allow)
+	coordinator := state.NewLearningCoordinator(app.StateDir)
+	entries, err = coordinator.RefreshFrontier(ctx, partition, entries)
+	if err != nil {
+		return nil, err
+	}
+	if options.enqueue != "" {
+		var approved string
+		if !options.public {
+			data, err := io.ReadAll(io.LimitReader(input, 2001))
+			if err != nil {
+				return nil, err
+			}
+			if len(data) > 2000 {
+				return nil, fmt.Errorf("public question exceeds 2000 bytes")
+			}
+			approved = string(data)
+		}
+		return coordinator.QueueFrontier(ctx, cfg, partition, entries, options.enqueue, approved, now, func(text string) bool {
+			return allow(text) && !trust.Suspicious(text)
+		})
+	}
+	if options.selectOnly {
+		return learning.SelectFrontier(entries, cfg.Selection, now, allow), nil
+	}
+	return state.ListLearningFrontier(entries, now, allow, options.origin, options.status), nil
 }
 
 func learningPolicyPath(stateDir string) string {

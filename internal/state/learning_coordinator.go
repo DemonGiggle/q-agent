@@ -71,6 +71,10 @@ func (c *LearningCoordinator) create(ctx context.Context, partition learning.Par
 	}
 	c.mu.Lock()
 	defer c.mu.Unlock()
+	return c.createLocked(ctx, key, runID, planID, question, sourceTarget)
+}
+
+func (c *LearningCoordinator) createLocked(ctx context.Context, key, runID, planID, question string, sourceTarget int) error {
 	if err := ctx.Err(); err != nil {
 		return err
 	}

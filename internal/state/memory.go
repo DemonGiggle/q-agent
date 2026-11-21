@@ -80,6 +80,8 @@ const MaxMemoryNotices = 16
 type MemoryLimits struct {
 	MaxBytes        int
 	MaxPendingBytes int
+	LearnFromDMs    bool
+	LearnFromGroups bool
 }
 
 // SourceEvent is independent of the bounded prompt history. Transcript contains

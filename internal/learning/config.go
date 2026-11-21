@@ -94,6 +94,7 @@ type Config struct {
 	Enabled       bool             `json:"enabled"`
 	Schedule      ScheduleConfig   `json:"schedule"`
 	Permissions   PermissionConfig `json:"permissions"`
+	Selection     SelectionConfig  `json:"selection"`
 	GlobalDaily   Budget           `json:"global_daily"`
 	PerRun        Budget           `json:"per_run"`
 	PerQuestion   Budget           `json:"per_question"`
@@ -104,6 +105,7 @@ type Config struct {
 func DefaultConfig() Config {
 	return Config{
 		SchemaVersion: SchemaVersion,
+		Selection:     SelectionConfig{Conversation: 70, Gap: 20, Association: 10, MaxTopics: 5, MaxDepth: 2},
 		Schedule:      ScheduleConfig{TimeZone: "UTC", WindowStart: "02:00", WindowEnd: "05:00", IdleMinutes: 30},
 		GlobalDaily:   Budget{Requests: 30, Documents: 16, Tokens: 40000, CostMicros: 200000, WallTimeMillis: 600000, Depth: 2, StorageBytes: 2 << 20},
 		PerRun:        Budget{Requests: 12, Documents: 8, Tokens: 16000, CostMicros: 100000, WallTimeMillis: 300000, Depth: 2, StorageBytes: 1 << 20},
@@ -134,5 +136,5 @@ func (c Config) Validate() error {
 		!c.PerQuestion.Fits(c.PerRun) || !c.PerRun.Fits(c.GlobalDaily) {
 		return fmt.Errorf("learning budgets must be positive and nested")
 	}
-	return nil
+	return c.Selection.Validate()
 }

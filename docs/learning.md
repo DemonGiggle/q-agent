@@ -90,6 +90,24 @@ charged call with no saved outcome stops as `UNRESOLVED`. The worker
 does not repeat that uncertain call. This manual entry point starts no
 scheduler or idle task.
 
+## Summarize a public excerpt
+
+Use the normal research run ID with
+`q-agent learning work --summarize --config ./config.toml`. This flag
+uses the default `[provider]` only when it is an installed Ollama model
+served at an HTTP(S) loopback IP. The q-agent process sends only the
+validated public excerpt and a fixed summarization instruction to Ollama.
+
+Each request reserves 2,432 tokens and up to 15 seconds. The adapter
+requests a 2,048-token context and at most 384 generated tokens, requires
+token counters on the response, and releases the Ollama model after the
+call. An invalid JSON response can retry once under a separate reservation.
+Every admitted attempt is recorded before dispatch as a metadata-only
+`ModelCallReserved` event. The model summary is labeled unreviewed and
+linked to the existing excerpt, with no Claim created. Model failures
+leave the ordinary source note available. Budget exhaustion stops the
+run. A resumed run never replays an uncertain model request.
+
 ## Find previously read sources
 
 ```sh
@@ -186,18 +204,19 @@ Calls run with a deadline capped by the active lease and UTC day. A run
 has one in-flight call, and cancelling or releasing its lease interrupts the
 call context. Adapters must honor context and enforce their declared upper
 bounds before dispatch. The provider call path introduces no permanent
-timer, polling loop or background goroutine. The structured-output boundary validates against a host schema using the
-existing JSON Schema library. An invalid output permits one separately
-budgeted retry. Provider and cancellation errors stop immediately. The live
-model adapter and remaining research events are follow-up work.
+timer, polling loop or background goroutine. The structured-output
+boundary validates against a host schema using the existing JSON Schema
+library. An invalid output permits one separately budgeted retry. Provider
+and cancellation errors stop immediately. Additional research events and
+multi-source synthesis are follow-up work.
 
 ## Follow-up issues
 
 - #65 / #69 / #70 own the integration contract. This slice includes the
   reader, domain types, config validation, metadata audit, and the offline
-  preview. The local repository validates stored citation
-  references. A manual search adapter is available. Fetch and model
-  adapters follow.
+  preview. The local repository validates stored citation references.
+  The manual worker connects search, fetch, source reading, and the local
+  structured model adapter. Recall uses the keyword index.
 - #72 has durable leases, cancellation, checkpoints and a tested commit
   fence. Provider dispatch now enforces budget reservations, cancellation,
   and deadlines. The manual worker adds checkpointed collection and a

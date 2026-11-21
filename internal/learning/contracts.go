@@ -69,6 +69,7 @@ type DocumentReader interface {
 
 type StructuredRequest struct {
 	Operation  string
+	TokenLimit int
 	SchemaJSON []byte
 	References []DocumentSpan
 }

@@ -3,14 +3,21 @@ package state
 import (
 	"context"
 	"crypto/sha256"
+	"encoding/json"
 	"errors"
 	"fmt"
+	"net/http"
+	"net/http/httptest"
+	"os"
+	"path/filepath"
 	"slices"
 	"strings"
+	"sync/atomic"
 	"testing"
 	"time"
 
 	"q-agent/internal/learning"
+	"q-agent/internal/llm"
 	"q-agent/internal/localtools"
 )
 
@@ -31,6 +38,7 @@ func TestLearningWorker(t *testing.T) {
 		wantsQuote bool
 	}{
 		{"store source with excerpt", 3, learning.RunCompleted, true},
+		{"summarize with Ollama adapter", 5, learning.RunCompleted, true},
 		{"excluded excerpt", 3, learning.RunCompleted, false},
 		{"tampered body", 3, learning.RunUnresolved, false},
 		{"budget stop", 2, learning.RunBudgetExhausted, false},
@@ -94,7 +102,41 @@ func TestLearningWorker(t *testing.T) {
 					ContentHash: hash, TrustClass: "public_reference",
 				}}, learning.Budget{Requests: 2, Documents: 1}, nil
 			})
-			result, err := c.WorkResearch(ctx, cfg, id, allow, search, fetch, localtools.LearningDocumentReader{})
+			var model learning.ModelProvider
+			var modelCalls atomic.Int32
+			if tc.name == "summarize with Ollama adapter" {
+				server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+					attempt := modelCalls.Add(1)
+					var request struct {
+						Messages []struct{ Role, Content string }
+						Format   json.RawMessage
+						Options  map[string]int
+						Tools    []any
+					}
+					if r.URL.Path != "/api/chat" || json.NewDecoder(r.Body).Decode(&request) != nil ||
+						len(request.Messages) != 2 || request.Messages[1].Content != quote ||
+						len(request.Format) == 0 || len(request.Tools) != 0 ||
+						request.Options["num_ctx"] != 2048 || request.Options["num_predict"] != 384 {
+						t.Errorf("invalid Ollama request: %+v", request)
+						w.WriteHeader(http.StatusBadRequest)
+						return
+					}
+					summary := `{"summary":false}`
+					if attempt == 2 {
+						summary = `{"summary":"The source reports a relevant paragraph."}`
+					}
+					_ = json.NewEncoder(w).Encode(map[string]any{
+						"done": true, "prompt_eval_count": 50, "eval_count": 15,
+						"message": map[string]string{"content": summary},
+					})
+				}))
+				defer server.Close()
+				model, err = llm.NewLearningOllama(server.URL, "fixture-local")
+				if err != nil {
+					t.Fatal(err)
+				}
+			}
+			result, err := c.WorkResearch(ctx, cfg, id, allow, search, fetch, localtools.LearningDocumentReader{}, model)
 			if result.State != tc.want || searchCalls != 1 ||
 				(tc.want == learning.RunBudgetExhausted && !errors.Is(err, ErrLearningBudget)) ||
 				(tc.want != learning.RunBudgetExhausted && err != nil) {
@@ -133,6 +175,26 @@ func TestLearningWorker(t *testing.T) {
 				t.Fatalf("states: %v, snapshot: %+v", states, snapshot)
 			}
 
+			if model != nil && (modelCalls.Load() != 2 || result.Spent.Requests != 5 ||
+				result.Spent.Tokens != 4864 || result.SummaryStatus != "generated" ||
+				!strings.Contains(snapshot.Notes[0].Summary, "Unreviewed model summary of the cited excerpt: The source reports")) {
+				t.Fatalf("Ollama synthesis: calls=%d result=%+v notes=%+v", modelCalls.Load(), result, snapshot.Notes)
+			}
+			if model != nil {
+				auditDir := filepath.Join(dir, "learning", "audit")
+				events, err := os.ReadDir(auditDir)
+				if err != nil || len(events) != 2 {
+					t.Fatalf("model audit entries: %v, %v", events, err)
+				}
+				for _, entry := range events {
+					raw, err := os.ReadFile(filepath.Join(auditDir, entry.Name()))
+					var event learning.Event
+					if err != nil || json.Unmarshal(raw, &event) != nil || event.RunID != id ||
+						event.Type != learning.ModelCallReserved || strings.Contains(string(raw), quote) {
+						t.Fatalf("invalid model audit: %s, %v", raw, err)
+					}
+				}
+			}
 			if !tc.wantsQuote {
 				if result.EvidenceID != "" || len(snapshot.Evidence) != 0 || len(snapshot.Notes[0].EvidenceIDs) != 0 {
 					t.Fatalf("excluded quote persisted: %+v", snapshot)
@@ -162,7 +224,7 @@ func TestLearningWorker(t *testing.T) {
 				t.Fatal(err)
 			}
 			c = NewLearningCoordinator(dir)
-			result, err = c.WorkResearch(ctx, cfg, id, allow, search, fetch, localtools.LearningDocumentReader{})
+			result, err = c.WorkResearch(ctx, cfg, id, allow, search, fetch, localtools.LearningDocumentReader{}, nil)
 			latest, snapErr := c.Repository().Snapshot(ctx, partition)
 			if err != nil || snapErr != nil || result.State != learning.RunCompleted || latest.Version != 1 ||
 				len(latest.Notes) != 1 || len(latest.Evidence) != 1 || result.EvidenceID != e.ID || searchCalls != 1 || fetchCalls != 1 {
@@ -203,7 +265,7 @@ func TestLearningWorkerDoesNotReplayAnUncertainCall(t *testing.T) {
 		t.Fatal("opened a document without a saved search response")
 		return learning.FetchedDocument{}, learning.Budget{}, nil
 	})
-	result, err := c.WorkResearch(ctx, cfg, id, func(string) bool { return true }, search, fetch, localtools.LearningDocumentReader{})
+	result, err := c.WorkResearch(ctx, cfg, id, func(string) bool { return true }, search, fetch, localtools.LearningDocumentReader{}, nil)
 	if err != nil || result.State != learning.RunUnresolved || result.StopReason != "interrupted_provider_call" ||
 		result.Spent != record.Run.Spent {
 		t.Fatalf("restart: %+v, err=%v", result, err)

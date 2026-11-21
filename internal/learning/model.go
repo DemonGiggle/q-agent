@@ -74,8 +74,9 @@ func (q Question) Validate() error {
 }
 
 type EvidenceRequirements struct {
-	MinIndependentSources int  `json:"min_independent_sources"`
-	AllowSingleAuthority  bool `json:"allow_single_authority"`
+	MinIndependentSources int                   `json:"min_independent_sources"`
+	AllowSingleAuthority  bool                  `json:"allow_single_authority"`
+	SourcePolicy          *ResearchSourcePolicy `json:"source_policy,omitempty"`
 }
 
 type Plan struct {

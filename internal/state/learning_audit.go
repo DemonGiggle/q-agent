@@ -124,7 +124,7 @@ func safeResearchReason(reason string) string {
 	switch reason {
 	case "operator_paused", "operator_resumed", "cancelled", "policy_changed",
 		"interrupted_provider_call", "no_qualified_source", "invalid_source_content", "provider_failed",
-		"insufficient_independent_sources", "source_recorded", "independent_excerpts_recorded",
+		"insufficient_independent_sources", "source_recorded", "independent_excerpts_recorded", "authority_source_recorded",
 		"source_identity_conflict", "storage_limit", "provider_budget":
 		return reason
 	}

@@ -24,7 +24,7 @@ var ErrLearningPartitionFull = errors.New("learning partition exceeds storage li
 // LearningLeaseGuard keeps the current lease valid through the commit. It
 // calls write once while holding the coordinator's lock, or returns an error
 // without calling it if the run is cancelled, expires, or belongs elsewhere.
-type LearningLeaseGuard func(ctx context.Context, partition learning.Partition, lease learning.Lease, write func() error) error
+type LearningLeaseGuard func(ctx context.Context, partition learning.Partition, lease learning.Lease, operationID string, write func() error) error
 
 // LearningRepository uses the host's single-owner state directory. Use one
 // instance per serving process while holding the existing state directory
@@ -138,7 +138,7 @@ func (r *LearningRepository) Commit(ctx context.Context, partition learning.Part
 	}
 	receipt := learningReceipt{Version: next.Version, Digest: sha256.Sum256(body), RunID: lease.RunID}
 	var version uint64
-	err = r.guard(ctx, partition, lease, func() error {
+	err = r.guard(ctx, partition, lease, operationID, func() error {
 		r.mu.Lock()
 		defer r.mu.Unlock()
 		if err := ctx.Err(); err != nil {

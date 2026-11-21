@@ -81,15 +81,33 @@ committing from a stale version fails. Reaching the cap rejects the write
 and preserves the last committed version. Retention policy and full Claim
 history belong to their respective follow-up issues.
 
+## Durable run coordination
+
+Runs use one JSON file each under `<state_dir>/learning/runs/`, with a 64 KiB
+cap for the run and its last checkpoint. The coordinator uses the existing
+single-owner state lock and separate synchronization from chat. It performs
+I/O on demand and checks lease expiry when handling requests.
+
+Run transitions compare the checkpoint version, and a replacement lease
+increments a persisted fencing token. Before entering COMMITTING, persist an
+operation ID in the checkpoint. Only that operation can write to the bound
+knowledge partition while the lease is current. Cancellation and the write
+share the same coordinator lock. If cancellation wins, the lease is revoked.
+If the write wins, its receipt survives a restart and the resumed run can
+mark itself complete using the same operation ID.
+
+The coordinator preserves reported usage across checkpoints. The research
+worker will own provider timeouts, budget reservation, stop decisions, and
+audit events for the full pipeline.
+
 ## Follow-up issues
 
 - #65 / #69 / #70 own the integration contract. This slice includes the
   reader, domain types, config validation, metadata audit, and the offline
   preview. The local repository validates stored citation
-  references. Live adapter wiring and the coordinator implementation follow.
-- #72 owns durable leases, budget accounting, cancellation, and checkpoint
-  transitions. Define the commit fence and test a retry between commit and
-  checkpoint before enabling a worker.
+  references. Live adapter wiring follows.
+- #72 has durable leases, cancellation, checkpoints and a tested commit
+  fence. Live execution, timeout and budget enforcement remain open.
 - #73 owns chat recall and its share of the context budget. Recall uses
   authorized evidence and a separate failure path from normal chat.
 - #74 owns Claim lifecycle and atomic Revision history. Use evidence links

@@ -63,12 +63,30 @@ turns. The scope identifies where the exchange was recorded. Final replies
 may have incorporated chat-wide memory. Provider export therefore needs its
 own policy check before any conversation-derived text can leave the host.
 
+## Local knowledge store
+
+Each authorized partition uses one JSON file under
+`<state_dir>/learning/knowledge/`. The initial cap is 4 MiB per file,
+including retry receipts and revision events. Reads and replacements are
+bounded by this cap. The repository has no background process, index, or
+new dependency. It is constructed lazily and uses its own lock inside the
+service's existing single-owner state directory.
+
+A write must hold the coordinator's current lease guard, match the
+partition version, and validate citations in the replacement snapshot.
+The snapshot and idempotency receipt are installed with a single synced
+rename. A repeated operation with the same payload and run returns its
+original commit version. Reusing an operation ID for different content or
+committing from a stale version fails. Reaching the cap rejects the write
+and preserves the last committed version. Retention policy and full Claim
+history belong to their respective follow-up issues.
+
 ## Follow-up issues
 
 - #65 / #69 / #70 own the integration contract. This slice includes the
   reader, domain types, config validation, metadata audit, and the offline
-  preview. Live adapter wiring, citation validation against stored records,
-  and repository/coordinator implementations follow.
+  preview. The local repository validates stored citation
+  references. Live adapter wiring and the coordinator implementation follow.
 - #72 owns durable leases, budget accounting, cancellation, and checkpoint
   transitions. Define the commit fence and test a retry between commit and
   checkpoint before enabling a worker.

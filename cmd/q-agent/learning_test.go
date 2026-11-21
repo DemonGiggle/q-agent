@@ -194,6 +194,33 @@ func TestLearningFrontierUsesOnlyAuthorizedTopic(t *testing.T) {
 	if err := runLearning(ctx, args, strings.NewReader(""), out); err != nil || strings.TrimSpace(out.String()) != "[]" {
 		t.Fatalf("filtered frontier = %s, %v", out.String(), err)
 	}
+	configure(`{"enabled":true,"permissions":{"include_group_chats":true}}`)
+	queue := append(append([]string(nil), args...), "--enqueue", selected[0].Question.ID)
+	if err := runLearning(ctx, queue, strings.NewReader(""), out); !errors.Is(err, learning.ErrDenied) {
+		t.Fatalf("chat candidate was queued without a public question: %v", err)
+	}
+	const approved = "Which archives document regency appointments?"
+	var id string
+	for range 2 {
+		if err := runLearning(ctx, queue, strings.NewReader(approved), out); err != nil {
+			t.Fatal(err)
+		}
+		var handoff state.FrontierHandoff
+		if err := json.Unmarshal(out.Bytes(), &handoff); err != nil || handoff.RunID == "" ||
+			(id != "" && handoff.RunID != id) {
+			t.Fatalf("handoff = %s, %v", out.String(), err)
+		}
+		id = handoff.RunID
+		out.Reset()
+	}
+	raw, err := os.ReadFile(filepath.Join(dir, "data", "learning", "runs", id+".json"))
+	if err != nil || !bytes.Contains(raw, []byte(approved)) || bytes.Contains(raw, []byte("藤原氏")) ||
+		bytes.Contains(raw, []byte("update:telegram")) {
+		t.Fatalf("unexpected public run = %s, %v", raw, err)
+	}
+	if err := runLearning(ctx, queue, strings.NewReader("Different question"), out); !errors.Is(err, learning.ErrVersionConflict) {
+		t.Fatalf("replaced a previously approved public query: %v", err)
+	}
 }
 
 func TestLearningStatusReadsMetadataWithoutLease(t *testing.T) {

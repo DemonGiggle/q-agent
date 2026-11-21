@@ -291,6 +291,7 @@ type FrontierEntry struct {
 	Question    Question             `json:"question"`
 	DependsOn   []string             `json:"depends_on"`
 	Transitions []FrontierTransition `json:"transitions"`
+	RunID       string               `json:"run_id,omitempty"`
 }
 
 type FrontierTransition struct {

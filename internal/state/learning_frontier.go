@@ -3,51 +3,48 @@ package state
 import (
 	"cmp"
 	"context"
+	"crypto/sha256"
+	"encoding/base32"
 	"encoding/json"
+	"errors"
+	"fmt"
+	"os"
 	"path/filepath"
 	"slices"
+	"strings"
 	"time"
 
 	"q-agent/internal/learning"
 )
 
-// CollectConversationFrontier reads authorized turns and atomically updates
-// only the private topic's candidate list. The caller owns the learning lock.
-func (r *LearningRepository) CollectConversationFrontier(ctx context.Context, reader learning.ConversationReader,
-	query learning.ConversationQuery, now time.Time, allow func(string) bool) ([]learning.FrontierEntry, error) {
-	entries, err := r.collectConversationFrontier(ctx, reader, query, now, allow)
-	if err != nil {
-		return nil, err
-	}
-	result := make([]learning.FrontierEntry, 0)
+func ListLearningFrontier(entries []learning.FrontierEntry, now time.Time, allow func(string) bool, origin, status string) []learning.FrontierEntry {
+	result := make([]learning.FrontierEntry, 0, len(entries))
 	for _, entry := range entries {
 		q := entry.Question
-		if q.Status == "candidate" && q.Score != nil && allow(q.Text) &&
-			(q.CooldownUntil == nil || !now.Before(*q.CooldownUntil)) {
+		if (origin == "" || q.OriginType == origin) && (status == "all" || q.Status == status) &&
+			allow(q.Text) && (status != "candidate" || (q.Score != nil &&
+			(q.CooldownUntil == nil || !now.Before(*q.CooldownUntil)))) {
 			result = append(result, entry)
 		}
 	}
 	slices.SortFunc(result, func(a, b learning.FrontierEntry) int {
 		return cmp.Or(cmp.Compare(b.Question.Priority, a.Question.Priority),
-			cmp.Compare(b.Question.Score.Final, a.Question.Score.Final),
+			cmp.Compare(frontierScore(b.Question), frontierScore(a.Question)),
 			b.Question.UpdatedAt.Compare(a.Question.UpdatedAt), cmp.Compare(a.Question.ID, b.Question.ID))
 	})
-	return result, nil
+	return result
 }
 
-func (r *LearningRepository) SelectConversationFrontier(ctx context.Context, reader learning.ConversationReader,
-	query learning.ConversationQuery, now time.Time, allow func(string) bool, policy learning.SelectionConfig) ([]learning.SelectedCandidate, error) {
-	if err := policy.Validate(); err != nil {
-		return nil, err
+func frontierScore(q learning.Question) float64 {
+	if q.Score == nil {
+		return 0
 	}
-	entries, err := r.collectConversationFrontier(ctx, reader, query, now, allow)
-	if err != nil {
-		return nil, err
-	}
-	return learning.SelectFrontier(entries, policy, now, allow), nil
+	return q.Score.Final
 }
 
-func (r *LearningRepository) collectConversationFrontier(ctx context.Context, reader learning.ConversationReader,
+// ConversationFrontier updates a chat topic with authorized conversation leads.
+// The caller holds the learning-directory lock.
+func (r *LearningRepository) ConversationFrontier(ctx context.Context, reader learning.ConversationReader,
 	query learning.ConversationQuery, now time.Time, allow func(string) bool) ([]learning.FrontierEntry, error) {
 	if reader == nil || allow == nil || query.Scope.TopicID == nil {
 		return nil, learning.ErrDenied
@@ -68,22 +65,233 @@ func (r *LearningRepository) collectConversationFrontier(ctx context.Context, re
 	}
 	entries, changed := learning.ConversationCandidates(data.Snapshot.Frontier, turns, now.UTC(), allow)
 	if changed {
-		data.Snapshot.Version++
-		data.Snapshot.Frontier = entries
-		if err := data.Snapshot.ValidateReferences(); err != nil {
+		if err := r.saveFrontier(ctx, key, data, entries); err != nil {
 			return nil, err
 		}
-		raw, err := json.Marshal(data)
+	}
+	return entries, nil
+}
+
+func (r *LearningRepository) PublicFrontier(ctx context.Context, cfg learning.Config, now time.Time, allow func(string) bool) ([]learning.FrontierEntry, error) {
+	if !cfg.Enabled || allow == nil {
+		return nil, learning.ErrDenied
+	}
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	if err := ctx.Err(); err != nil {
+		return nil, err
+	}
+	data, err := r.load("public")
+	if err != nil {
+		return nil, err
+	}
+	view := publicRecallView(data.Snapshot, cfg, allow, learning.RecallQuery{}, "")
+	generated := learning.KnowledgeCandidates(view.current, now.UTC(), allow)
+	entries := data.Snapshot.Frontier
+	known := make(map[string]bool, len(entries))
+	for _, entry := range entries {
+		known[entry.Question.ID] = true
+	}
+	active := make(map[string]bool, len(generated))
+	for _, entry := range generated {
+		q := entry.Question
+		active[q.ID] = true
+		if len(entries) >= learning.MaxFrontierCandidates || known[q.ID] {
+			continue
+		}
+		// Unchanged text from the same origin stays in cooldown even
+		// when a source was revised or a relation was rewritten.
+		if slices.ContainsFunc(entries, func(prior learning.FrontierEntry) bool {
+			old := prior.Question
+			return old.OriginType == q.OriginType && strings.EqualFold(old.Text, q.Text) &&
+				(old.Status == "queued" || old.Status == "resolved" ||
+					(old.CooldownUntil != nil && now.Before(*old.CooldownUntil)))
+		}) {
+			continue
+		}
+		entries = append(entries, entry)
+		known[q.ID] = true
+	}
+	if len(entries) != len(data.Snapshot.Frontier) {
+		if err := r.saveFrontier(ctx, "public", data, entries); err != nil {
+			return nil, err
+		}
+	}
+	visible := make([]learning.FrontierEntry, 0, len(entries))
+	for _, entry := range entries {
+		if active[entry.Question.ID] {
+			visible = append(visible, entry)
+		}
+	}
+	return visible, nil
+}
+
+func (r *LearningRepository) saveFrontier(ctx context.Context, key string, data learningPartition, entries []learning.FrontierEntry) error {
+	data.Snapshot.Version++
+	data.Snapshot.Frontier = entries
+	if err := data.Snapshot.ValidateReferences(); err != nil {
+		return err
+	}
+	raw, err := json.Marshal(data)
+	if err != nil {
+		return err
+	}
+	if len(raw) > maxLearningPartitionBytes {
+		return ErrLearningPartitionFull
+	}
+	if err := ctx.Err(); err != nil {
+		return err
+	}
+	return atomicBytes(filepath.Join(r.dir, key+".json"), raw)
+}
+
+type FrontierHandoff struct {
+	CandidateID string `json:"candidate_id"`
+	RunID       string `json:"run_id"`
+}
+
+// QueueFrontier hands one selected question to the public worker. The caller
+// holds the learning-directory lock and authorizes the frontier scope.
+// For a chat-scoped entry the operator must supply a separate public query.
+func (c *LearningCoordinator) QueueFrontier(ctx context.Context, cfg learning.Config, partition learning.Partition,
+	entries []learning.FrontierEntry, candidate, publicQuery string, now time.Time, allow func(string) bool) (FrontierHandoff, error) {
+	result := FrontierHandoff{}
+	key, err := learningPartitionKey(partition)
+	if err != nil || !cfg.Enabled || allow == nil {
+		return result, learning.ErrDenied
+	}
+	if candidate == "next" && !partition.Public {
+		return result, learning.ErrDenied
+	}
+	selected := learning.SelectFrontier(entries, cfg.Selection, now, allow)
+	reason := ""
+	for _, item := range selected {
+		if (candidate == "next" || candidate == item.Question.ID) && (partition.Public || item.Question.OriginType == "conversation") {
+			candidate, reason = item.Question.ID, item.Reason
+			break
+		}
+	}
+	visible := slices.IndexFunc(entries, func(entry learning.FrontierEntry) bool { return entry.Question.ID == candidate })
+	if visible < 0 || !allow(entries[visible].Question.Text) {
+		return result, learning.ErrDenied
+	}
+	entry := entries[visible]
+	if partition.Public {
+		publicQuery = entry.Question.Text
+	}
+	publicQuery = strings.TrimSpace(publicQuery)
+	if len(publicQuery) == 0 || len(publicQuery) > 2000 || !allow(publicQuery) ||
+		cfg.Permissions.Excludes(learning.ConversationTurn{Transcript: publicQuery}) {
+		return result, learning.ErrDenied
+	}
+	r := c.repo
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	data, err := r.load(key)
+	if err != nil {
+		return result, err
+	}
+	index := slices.IndexFunc(data.Snapshot.Frontier, func(entry learning.FrontierEntry) bool {
+		return entry.Question.ID == candidate
+	})
+	if index < 0 {
+		return result, learning.ErrDenied
+	}
+	saved := &data.Snapshot.Frontier[index]
+	if saved.Question.Text != entry.Question.Text {
+		return result, learning.ErrVersionConflict
+	}
+	runID := frontierResearchID("run", key, candidate)
+	planID := frontierResearchID("plan", key, candidate)
+	result = FrontierHandoff{CandidateID: candidate, RunID: runID}
+	if saved.RunID == runID {
+		run, err := c.readAuthorizedResearch(ctx, cfg, runID, allow)
+		if err != nil {
+			return FrontierHandoff{}, err
+		}
+		if run.Question != publicQuery {
+			return FrontierHandoff{}, learning.ErrVersionConflict
+		}
+		return result, nil
+	}
+	if reason == "" || saved.Question.Status != "candidate" || saved.RunID != "" {
+		return FrontierHandoff{}, learning.ErrDenied
+	}
+	// A process interrupted between the files retries the same run and plan IDs.
+	if err := c.createLocked(ctx, "public", runID, planID, publicQuery, 2); err != nil {
+		return FrontierHandoff{}, err
+	}
+	saved.RunID = runID
+	saved.Question.Status, saved.Question.UpdatedAt = "queued", now.UTC()
+	saved.Transitions = append(saved.Transitions, learning.FrontierTransition{At: now.UTC(), Status: "queued", Reason: reason})
+	if err := r.saveFrontier(ctx, key, data, data.Snapshot.Frontier); err != nil {
+		return FrontierHandoff{}, err
+	}
+	return result, nil
+}
+
+func frontierResearchID(kind, scope, candidate string) string {
+	sum := sha256.Sum256(fmt.Appendf(nil, "%s:%s:%s", kind, scope, candidate))
+	return base32.StdEncoding.WithPadding(base32.NoPadding).EncodeToString(sum[:16])
+}
+
+// RefreshFrontier copies terminal run outcomes into the candidate history.
+func (c *LearningCoordinator) RefreshFrontier(ctx context.Context, partition learning.Partition,
+	entries []learning.FrontierEntry) ([]learning.FrontierEntry, error) {
+	if !slices.ContainsFunc(entries, func(entry learning.FrontierEntry) bool {
+		return entry.RunID != "" && entry.Question.Status == "queued"
+	}) {
+		return entries, nil
+	}
+	key, err := learningPartitionKey(partition)
+	if err != nil {
+		return nil, err
+	}
+	r := c.repo
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	data, err := r.load(key)
+	if err != nil {
+		return nil, err
+	}
+	changed := false
+	for i := range entries {
+		entry := &entries[i]
+		if entry.RunID == "" || entry.Question.Status != "queued" {
+			continue
+		}
+		run, err := c.Get(ctx, entry.RunID)
+		if errors.Is(err, os.ErrNotExist) {
+			continue
+		}
 		if err != nil {
 			return nil, err
 		}
-		if len(raw) > maxLearningPartitionBytes {
-			return nil, ErrLearningPartitionFull
+		if !terminalLearningRun(run.Run.State) {
+			continue
 		}
-		if err := ctx.Err(); err != nil {
-			return nil, err
+		index := slices.IndexFunc(data.Snapshot.Frontier, func(saved learning.FrontierEntry) bool {
+			return saved.Question.ID == entry.Question.ID && saved.RunID == entry.RunID
+		})
+		if index < 0 {
+			return nil, learning.ErrVersionConflict
 		}
-		if err := atomicBytes(filepath.Join(r.dir, key+".json"), raw); err != nil {
+		status := "unresolved"
+		if run.Run.State == learning.RunCompleted && run.Run.CoverageScore >= 1 && entry.Question.OriginType != "gap" {
+			status = "resolved"
+		}
+		at := run.Run.UpdatedAt
+		entry.Question.Status, entry.Question.UpdatedAt = status, at
+		next := at.AddDate(0, 0, 7)
+		entry.Question.CooldownUntil = &next
+		entry.Transitions = append(entry.Transitions, learning.FrontierTransition{At: at, Status: status, Reason: string(run.Run.State)})
+		data.Snapshot.Frontier[index] = *entry
+		changed = true
+	}
+	if changed {
+		if err := r.saveFrontier(ctx, key, data, data.Snapshot.Frontier); err != nil {
 			return nil, err
 		}
 	}

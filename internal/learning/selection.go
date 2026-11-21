@@ -90,6 +90,13 @@ func SelectFrontier(entries []FrontierEntry, policy SelectionConfig, now time.Ti
 		}) {
 			continue
 		}
+		if slices.ContainsFunc(entry.DependsOn, func(id string) bool {
+			return !slices.ContainsFunc(entries, func(dependency FrontierEntry) bool {
+				return dependency.Question.ID == id && dependency.Question.Status == "resolved"
+			})
+		}) {
+			continue
+		}
 		pinned := slices.Contains(policy.PinnedIDs, q.ID)
 		priority := q.Priority
 		if override, ok := policy.PriorityOverrides[q.ID]; ok {

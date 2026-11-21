@@ -118,6 +118,10 @@ func (r *LearningRepository) publicRecallView(ctx context.Context, cfg learning.
 	if err != nil {
 		return learningRecallView{}, err
 	}
+	return publicRecallView(snapshot, cfg, allow, intent, onlyID), nil
+}
+
+func publicRecallView(snapshot learning.KnowledgeSnapshot, cfg learning.Config, allow func(string) bool, intent learning.RecallQuery, onlyID string) learningRecallView {
 	allowed := func(s string) bool {
 		return allow(s) && !cfg.Permissions.Excludes(learning.ConversationTurn{Transcript: s})
 	}
@@ -213,7 +217,7 @@ func (r *LearningRepository) publicRecallView(ctx context.Context, cfg learning.
 			}
 		}
 	}
-	return learningRecallView{current: current, notes: notes, sources: sources, evidence: evidence, claims: claims}, nil
+	return learningRecallView{current: current, notes: notes, sources: sources, evidence: evidence, claims: claims}
 }
 
 func (v learningRecallView) note(id string) LearningRecall {

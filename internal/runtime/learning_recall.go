@@ -62,7 +62,7 @@ func (r *Runtime) researchRecall(ctx context.Context, query string, budget int) 
 	now := time.Now()
 	var entries string
 	for _, hit := range hits {
-		entry := renderResearchNote(hit, r.Learning.SourcePolicy, now, budget-len(entries))
+		entry := hit.Markdown(r.Learning.SourcePolicy, now, budget-len(entries))
 		if entry == "" {
 			continue
 		}
@@ -83,50 +83,6 @@ func (r *Runtime) researchRecall(ctx context.Context, query string, budget int) 
 		}
 	}
 	return result
-}
-
-func renderResearchNote(hit state.LearningRecall, policy *learning.ResearchSourcePolicy, now time.Time, limit int) string {
-	if len(hit.Note.Title)+len(hit.Note.Summary) > limit {
-		return ""
-	}
-	var text strings.Builder
-	fmt.Fprintf(&text, "Research question: %s\nSummary: %s\n", hit.Note.Title, hit.Note.Summary)
-	for i, source := range hit.Sources {
-		fmt.Fprintf(&text, "Source %d: %s (read %s", i+1, source.CanonicalURI, source.FetchedAt.UTC().Format(time.DateOnly))
-		if source.PublishedAt != nil {
-			fmt.Fprintf(&text, ", published %s", source.PublishedAt.UTC().Format(time.DateOnly))
-		}
-		if !policy.Accepts(source, now) {
-			text.WriteString(", outside current date policy")
-		}
-		text.WriteString(")\n")
-		if text.Len() > limit {
-			return ""
-		}
-		for j, item := range hit.Evidence {
-			if item.SourceID == source.ID {
-				fmt.Fprintf(&text, "Excerpt %d (bytes %d–%d): %s\n", j+1, item.Locator.Start, item.Locator.End, item.ExcerptOrSummary)
-				if text.Len() > limit {
-					return ""
-				}
-			}
-		}
-	}
-	for _, claim := range hit.Claims {
-		if len(claim.Subject)+len(claim.Predicate)+len(claim.Object)+text.Len() > limit {
-			return ""
-		}
-		fmt.Fprintf(&text, "Claim [%s, confidence %.2f]: %s %s %s\n", claim.Status, claim.Confidence, claim.Subject, claim.Predicate, claim.Object)
-		for _, link := range claim.Evidence {
-			index := slices.IndexFunc(hit.Evidence, func(item learning.Evidence) bool { return item.ID == link.EvidenceID })
-			fmt.Fprintf(&text, "Excerpt %d: %s\n", index+1, link.Relation)
-			if text.Len() > limit {
-				return ""
-			}
-		}
-	}
-	text.WriteByte('\n')
-	return text.String()
 }
 
 func (r *Runtime) auditResearchRecall(ctx context.Context, recall researchRecall) {

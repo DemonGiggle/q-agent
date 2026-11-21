@@ -5,6 +5,7 @@ import (
 	"crypto/rand"
 	"crypto/sha256"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"os"
 	"path/filepath"
@@ -42,19 +43,57 @@ func TestLearningRecallInInteractiveChat(t *testing.T) {
 	claim := learning.Claim{Record: record, ID: rand.Text(), Subject: "藤原氏", Predicate: "參與", Object: "關白制度",
 		Revision: 1, RevisedAt: now, Status: "unresolved", Evidence: []learning.EvidenceLink{{EvidenceID: evidence.ID, Relation: "refutes"}}}
 	note := learning.Note{Record: record, ID: rand.Text(), Title: "關白制度", Summary: "整理古文書。",
-		SourceIDs: []string{source.ID}, EvidenceIDs: []string{evidence.ID}, ClaimIDs: []string{claim.ID}, Revision: 1}
+		SourceIDs: []string{source.ID}, EvidenceIDs: []string{evidence.ID}, ClaimIDs: []string{claim.ID}, TopicIDs: []string{"regency"}, Revision: 1}
 	snapshot := learning.KnowledgeSnapshot{
 		Version: 1, Sources: []learning.Source{source}, Evidence: []learning.Evidence{*evidence},
 		Claims: []learning.Claim{claim}, Notes: []learning.Note{note},
+		Topics: []learning.Topic{
+			{Record: record, ID: "regency", Title: "攝政制度", TaxonomyPath: []string{"東亞史"}, Aliases: []string{"regency"}},
+			{Record: record, ID: "heian", Title: "平安時代", Aliases: []string{"heian"}},
+		},
+		Relations: []learning.Relation{{
+			Record: record, ID: "historical-period", FromID: "regency", Predicate: "period", ToID: "heian", EvidenceIDs: []string{evidence.ID},
+		}},
 	}
 	dir := filepath.Join(r.Config.StateDir, "learning")
-	if err := state.Atomic(filepath.Join(dir, "knowledge", "public.json"), struct {
+	path := filepath.Join(dir, "knowledge", "public.json")
+	if err := state.Atomic(path, struct {
 		Schema   string                     `json:"schema_version"`
 		Snapshot learning.KnowledgeSnapshot `json:"snapshot"`
 	}{learning.SchemaVersion, snapshot}); err != nil {
 		t.Fatal(err)
 	}
 	ctx := context.Background()
+	before, err := os.ReadFile(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	repo := state.NewLearningRepository(r.Config.StateDir, nil)
+	allow := func(string) bool { return true }
+	for _, query := range []string{"東亞史", "regency", "heian"} {
+		hits, err := repo.RecallPublic(ctx, r.Learning, query, allow, 5)
+		if err != nil || len(hits) != 1 || hits[0].Note.BodyRef != "note:"+note.ID {
+			t.Fatalf("recall for %q = %+v, %v", query, hits, err)
+		}
+	}
+	read, err := repo.ReadPublicNote(ctx, r.Learning, "note:"+note.ID, allow)
+	if err != nil {
+		t.Fatal(err)
+	}
+	body := read.Markdown(nil, now, 32<<10)
+	if !strings.Contains(body, uri) || !strings.Contains(body, quote) || !strings.Contains(body, "refutes") {
+		t.Fatalf("note lost provenance: %q", body)
+	}
+	after, err := os.ReadFile(path)
+	if err != nil || string(before) != string(after) {
+		t.Fatalf("rendering changed the saved snapshot: %v", err)
+	}
+	blocked := r.Learning
+	blocked.Permissions.BlockDomains = []string{"history.example.org"}
+	if _, err := repo.ReadPublicNote(ctx, blocked, note.ID, allow); !errors.Is(err, learning.ErrDenied) {
+		t.Fatalf("note view did not apply its source policy: %v", err)
+	}
+
 	for _, tc := range []struct {
 		chat  int64
 		query string

@@ -511,7 +511,7 @@ func (c *LearningCoordinator) commitResearch(ctx context.Context, cfg learning.C
 		return err
 	}
 	note := learning.Note{
-		Record: refs[0].Source.Record, ID: run.ID, Title: plan.Goal, Revision: 1,
+		Record: refs[0].Source.Record, ID: run.ID, Title: plan.Goal, Revision: 1, BodyRef: "note:" + run.ID,
 		Summary: "Public source retrieved. Relevance and factual claims have not been reviewed.",
 	}
 	for _, ref := range refs {

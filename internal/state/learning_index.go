@@ -1,8 +1,10 @@
 package state
 
 import (
+	"cmp"
 	"context"
 	"slices"
+	"strings"
 
 	"q-agent/internal/learning"
 )
@@ -44,6 +46,14 @@ type LearningRecall struct {
 	Claims   []learning.Claim    `json:"claims,omitempty"`
 }
 
+type learningRecallView struct {
+	current  learning.KnowledgeSnapshot
+	notes    map[string]learning.Note
+	sources  map[string]learning.Source
+	evidence map[string]learning.Evidence
+	claims   map[string]learning.Claim
+}
+
 // RecallPublic rechecks the current egress/retention policy before ranking
 // notes from the public knowledge partition. The caller owns local auth.
 func (r *LearningRepository) RecallPublic(ctx context.Context, cfg learning.Config, query string, allow func(string) bool, limit int) ([]LearningRecall, error) {
@@ -57,10 +67,56 @@ func (r *LearningRepository) RecallPublic(ctx context.Context, cfg learning.Conf
 	if intent.Text == "" && !intent.Recent {
 		return []LearningRecall{}, nil
 	}
-	partition := learning.Partition{Public: true}
-	snapshot, err := r.Snapshot(ctx, partition)
+	view, err := r.publicRecallView(ctx, cfg, allow, intent, "")
 	if err != nil {
 		return nil, err
+	}
+	var ids []string
+	if intent.Recent {
+		slices.SortFunc(view.current.Notes, func(a, b learning.Note) int {
+			if order := b.UpdatedAt.Compare(a.UpdatedAt); order != 0 {
+				return order
+			}
+			return cmp.Compare(a.ID, b.ID)
+		})
+		for _, note := range view.current.Notes[:min(len(view.current.Notes), limit)] {
+			ids = append(ids, note.ID)
+		}
+	} else {
+		ids, err = learning.RankNoteKeywords(ctx, view.current, intent.Text, limit)
+		if err != nil {
+			return nil, err
+		}
+	}
+	results := make([]LearningRecall, 0, len(ids))
+	for _, id := range ids {
+		results = append(results, view.note(id))
+	}
+	return results, nil
+}
+
+// ReadPublicNote resolves a note ID or body reference with the same policy
+// and citation checks as recall.
+func (r *LearningRepository) ReadPublicNote(ctx context.Context, cfg learning.Config, ref string, allow func(string) bool) (LearningRecall, error) {
+	id := strings.TrimPrefix(ref, "note:")
+	if !cfg.Enabled || allow == nil || !auditID.MatchString(id) {
+		return LearningRecall{}, learning.ErrDenied
+	}
+	view, err := r.publicRecallView(ctx, cfg, allow, learning.RecallQuery{}, id)
+	if err != nil {
+		return LearningRecall{}, err
+	}
+	if _, ok := view.notes[id]; !ok {
+		return LearningRecall{}, learning.ErrDenied
+	}
+	return view.note(id), nil
+}
+
+func (r *LearningRepository) publicRecallView(ctx context.Context, cfg learning.Config, allow func(string) bool, intent learning.RecallQuery,
+	onlyID string) (learningRecallView, error) {
+	snapshot, err := r.Snapshot(ctx, learning.Partition{Public: true})
+	if err != nil {
+		return learningRecallView{}, err
 	}
 	allowed := func(s string) bool {
 		return allow(s) && !cfg.Permissions.Excludes(learning.ConversationTurn{Transcript: s})
@@ -107,7 +163,7 @@ func (r *LearningRepository) RecallPublic(ctx context.Context, cfg learning.Conf
 	}
 	notes := make(map[string]learning.Note, len(snapshot.Notes))
 	for _, note := range snapshot.Notes {
-		if len(note.SourceIDs) == 0 || !allowed(note.Title) || !allowed(note.Summary) {
+		if (onlyID != "" && note.ID != onlyID) || len(note.SourceIDs) == 0 || !allowed(note.Title) || !allowed(note.Summary) {
 			continue
 		}
 		valid, matches := true, false
@@ -132,50 +188,49 @@ func (r *LearningRepository) RecallPublic(ctx context.Context, cfg learning.Conf
 				note.ClaimIDs = append(note.ClaimIDs, id)
 			}
 		}
+		if note.BodyRef == "" && auditID.MatchString(note.ID) {
+			note.BodyRef = "note:" + note.ID
+		}
 		current.Notes = append(current.Notes, note)
 		notes[note.ID] = note
 	}
-	var ids []string
-	if intent.Recent {
-		slices.SortFunc(current.Notes, func(a, b learning.Note) int {
-			if order := b.UpdatedAt.Compare(a.UpdatedAt); order != 0 {
-				return order
+	if onlyID == "" && !intent.Recent {
+		topics := make(map[string]bool, len(snapshot.Topics))
+		safe := func(value string) bool { return !allowed(value) }
+		for _, topic := range snapshot.Topics {
+			if allowed(topic.Title) && !slices.ContainsFunc(topic.Aliases, safe) && !slices.ContainsFunc(topic.TaxonomyPath, safe) {
+				topics[topic.ID] = true
+				current.Topics = append(current.Topics, topic)
 			}
-			if a.ID < b.ID {
-				return -1
-			}
-			if a.ID > b.ID {
-				return 1
-			}
-			return 0
-		})
-		for _, note := range current.Notes[:min(len(current.Notes), limit)] {
-			ids = append(ids, note.ID)
 		}
-	} else {
-		ids, err = learning.RankNoteKeywords(ctx, current, intent.Text, limit)
-		if err != nil {
-			return nil, err
+		for _, edge := range snapshot.Relations {
+			if topics[edge.FromID] && topics[edge.ToID] && len(edge.EvidenceIDs) > 0 &&
+				!slices.ContainsFunc(edge.EvidenceIDs, func(id string) bool {
+					_, ok := evidence[id]
+					return !ok
+				}) {
+				current.Relations = append(current.Relations, edge)
+			}
 		}
 	}
-	results := make([]LearningRecall, 0, len(ids))
-	for _, id := range ids {
-		note := notes[id]
-		result := LearningRecall{Note: note}
-		for _, id := range note.ClaimIDs {
-			result.Claims = append(result.Claims, claims[id])
-		}
-		for _, id := range note.SourceIDs {
-			result.Sources = append(result.Sources, sources[id])
-		}
-		for _, id := range note.EvidenceIDs {
-			item := evidence[id]
-			result.Evidence = append(result.Evidence, item)
-			if !slices.ContainsFunc(result.Sources, func(source learning.Source) bool { return source.ID == item.SourceID }) {
-				result.Sources = append(result.Sources, sources[item.SourceID])
-			}
-		}
-		results = append(results, result)
+	return learningRecallView{current: current, notes: notes, sources: sources, evidence: evidence, claims: claims}, nil
+}
+
+func (v learningRecallView) note(id string) LearningRecall {
+	note := v.notes[id]
+	result := LearningRecall{Note: note}
+	for _, id := range note.ClaimIDs {
+		result.Claims = append(result.Claims, v.claims[id])
 	}
-	return results, nil
+	for _, id := range note.SourceIDs {
+		result.Sources = append(result.Sources, v.sources[id])
+	}
+	for _, id := range note.EvidenceIDs {
+		item := v.evidence[id]
+		result.Evidence = append(result.Evidence, item)
+		if !slices.ContainsFunc(result.Sources, func(source learning.Source) bool { return source.ID == item.SourceID }) {
+			result.Sources = append(result.Sources, v.sources[item.SourceID])
+		}
+	}
+	return result
 }

@@ -252,6 +252,11 @@ domain and text policies before ranking. An unrelated query yields an
 empty array. Retrieval reads the local snapshot and uses no model or
 auxiliary index files.
 
+When available, topic names, aliases, taxonomy categories, and one-hop
+topic links with verified Evidence also contribute to ranking. A snapshot
+with only notes and citations uses the same keyword lookup. Publication
+and fetch dates remain attached to the citations.
+
 Ask “what did you research?” or “你最近研究了什麼？” for the latest
 authorized notes. The CLI and chat accept `site:example.org`,
 `after:2026-01-01` and `before:2027-01-01` filters. The first date is
@@ -277,6 +282,19 @@ configured publication-age rule carry an age warning.
 Both options default to off. Optional `RecallUsed` events record the
 note and claim IDs included in an answered turn. The audit contains IDs
 and timestamps only. Retrieval and audit errors allow chat to continue.
+
+### Read the Markdown body of a note
+
+```sh
+printf '%s\n' "$body_ref" | q-agent learning note --config ./config.toml
+```
+
+The command accepts a `note:<id>` body reference or a note ID returned by
+recall. It renders the current summary, draft status and full citations
+from the authorized knowledge snapshot. Re-rendering leaves the stored
+note, claim and evidence IDs intact, and the Markdown view applies the same
+source and text rules as chat recall. Recall supplies a body reference for
+older notes with a learning run ID, without rewriting them.
 
 ## Collect local research candidates
 

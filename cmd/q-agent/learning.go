@@ -24,8 +24,8 @@ import (
 )
 
 func runLearning(ctx context.Context, args []string, input io.Reader, output io.Writer) error {
-	if len(args) == 0 || !slices.Contains([]string{"configure", "trigger", "search", "enqueue", "work", "recall", "frontier", "status", "pause", "resume", "audit"}, args[0]) {
-		return fmt.Errorf("usage: q-agent learning configure|trigger|search|enqueue|work|recall|frontier|status|pause|resume|audit [--config FILE]; pass input on stdin")
+	if len(args) == 0 || !slices.Contains([]string{"configure", "trigger", "search", "enqueue", "work", "recall", "note", "frontier", "status", "pause", "resume", "audit"}, args[0]) {
+		return fmt.Errorf("usage: q-agent learning configure|trigger|search|enqueue|work|recall|note|frontier|status|pause|resume|audit [--config FILE]; pass input on stdin")
 	}
 
 	flags := flag.NewFlagSet("learning "+args[0], flag.ContinueOnError)
@@ -98,7 +98,7 @@ func runLearning(ctx context.Context, args []string, input io.Reader, output io.
 	}
 	// Check against the caller's raw text before redaction and apply the
 	// same exclusion policy again to the sanitized planning input.
-	runIDInput := slices.Contains([]string{"work", "status", "pause", "resume", "audit"}, args[0])
+	runIDInput := slices.Contains([]string{"work", "status", "pause", "resume", "audit", "note"}, args[0])
 	if !runIDInput && cfg.Permissions.Excludes(learning.ConversationTurn{Transcript: string(data)}) {
 		return learning.ErrDenied
 	}
@@ -152,6 +152,19 @@ func runLearning(ctx context.Context, args []string, input io.Reader, output io.
 			return err
 		}
 		return enc.Encode(results)
+	}
+	if args[0] == "note" {
+		note, err := state.NewLearningRepository(app.StateDir, nil).ReadPublicNote(
+			ctx, cfg, strings.TrimSpace(string(data)), allow)
+		if err != nil {
+			return err
+		}
+		body := note.Markdown(cfg.SourcePolicy, time.Now(), 32<<10)
+		if body == "" {
+			return fmt.Errorf("rendered learning note exceeds 32 KiB")
+		}
+		_, err = io.WriteString(output, body)
+		return err
 	}
 	if args[0] == "search" || args[0] == "enqueue" || args[0] == "work" {
 		if !cfg.Enabled || (args[0] != "work" && policy.ContainsSecret(string(data))) ||

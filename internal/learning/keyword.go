@@ -11,7 +11,8 @@ import (
 )
 
 // RankNoteKeywords returns the IDs of matching notes in score and recency
-// order. Searches are bounded by the repository snapshot and need no index
+// order. Direct matches weigh more than related topics. Searches are
+// bounded by the repository snapshot and need no index
 // files, model calls, or background updates.
 func RankNoteKeywords(ctx context.Context, snapshot KnowledgeSnapshot, query string, limit int) ([]string, error) {
 	if err := ctx.Err(); err != nil {
@@ -46,6 +47,24 @@ func RankNoteKeywords(ctx context.Context, snapshot KnowledgeSnapshot, query str
 		}
 		return mask
 	}
+	categories := make(map[string]uint32, len(snapshot.Topics))
+	for _, topic := range snapshot.Topics {
+		mask := termMask(strings.ToLower(topic.Title))
+		for _, title := range topic.TaxonomyPath {
+			mask |= termMask(strings.ToLower(title))
+		}
+		for _, alias := range topic.Aliases {
+			mask |= termMask(strings.ToLower(alias))
+		}
+		categories[topic.ID] = mask
+	}
+	related := make(map[string]uint32)
+	for _, edge := range snapshot.Relations {
+		if len(edge.EvidenceIDs) > 0 {
+			related[edge.FromID] |= categories[edge.ToID]
+			related[edge.ToID] |= categories[edge.FromID]
+		}
+	}
 	for i, note := range snapshot.Notes {
 		if err := ctx.Err(); err != nil {
 			return nil, err
@@ -62,7 +81,13 @@ func RankNoteKeywords(ctx context.Context, snapshot KnowledgeSnapshot, query str
 		for _, id := range note.ClaimIDs {
 			body |= termMask(claims[id])
 		}
-		score := 2*bits.OnesCount32(title) + bits.OnesCount32(body&^title)
+		var neighbors uint32
+		for _, id := range note.TopicIDs {
+			body |= categories[id]
+			neighbors |= related[id]
+		}
+		score := 4*bits.OnesCount32(title) + 2*bits.OnesCount32(body&^title) +
+			bits.OnesCount32(neighbors&^(title|body))
 		if score == 0 {
 			continue
 		}

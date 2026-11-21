@@ -265,3 +265,99 @@ func TestLearningPauseAndResumeQueuedRun(t *testing.T) {
 	assert("resume", learning.RunQueued, 3)
 	assert("resume", learning.RunQueued, 3)
 }
+
+func TestLearningAuditReplaysAfterStorageFailure(t *testing.T) {
+	dir := t.TempDir()
+	app := filepath.Join(dir, "config.toml")
+	if err := os.WriteFile(app, []byte("state_dir = 'data'\n"), 0600); err != nil {
+		t.Fatal(err)
+	}
+	ctx := context.Background()
+	var out bytes.Buffer
+	command := func(action, input string) error {
+		out.Reset()
+		return runLearning(ctx, []string{action, "--config", app}, strings.NewReader(input), &out)
+	}
+	if err := command("configure", `{"enabled":true}`); err != nil {
+		t.Fatal(err)
+	}
+	auditDir := filepath.Join(dir, "data", "learning", "audit")
+	if err := os.WriteFile(auditDir, nil, 0600); err != nil {
+		t.Fatal(err)
+	}
+	const question = "Distinct text for audit privacy checks"
+	if err := command("enqueue", question); err != nil {
+		t.Fatal(err)
+	}
+	var status state.LearningWorkerResult
+	if err := json.Unmarshal(out.Bytes(), &status); err != nil || status.RunID == "" {
+		t.Fatalf("enqueue = %s, %v", &out, err)
+	}
+	id := status.RunID
+	if err := command("pause", id); err != nil {
+		t.Fatal(err)
+	}
+	if err := command("audit", id); err == nil {
+		t.Fatal("audit succeeded with unavailable storage")
+	}
+	if err := os.Remove(auditDir); err != nil {
+		t.Fatal(err)
+	}
+	if err := command("resume", id); err != nil {
+		t.Fatal(err)
+	}
+	if err := json.Unmarshal(out.Bytes(), &status); err != nil || len(status.Transitions) != 3 {
+		t.Fatalf("resume = %s, %v", &out, err)
+	}
+	entries, err := os.ReadDir(auditDir)
+	if err != nil || len(entries) != 3 {
+		t.Fatalf("automatic replay saved %d files, %v", len(entries), err)
+	}
+	if err := command("audit", id); err != nil {
+		t.Fatal(err)
+	}
+	var events []learning.Event
+	if err := json.Unmarshal(out.Bytes(), &events); err != nil || len(events) != 3 || strings.Contains(out.String(), question) {
+		t.Fatalf("audit = %s, %v", &out, err)
+	}
+	for i, event := range events {
+		transition := status.Transitions[i]
+		if event.Type != learning.ResearchTransition || event.RunID != id || event.ID != transition.EventID ||
+			event.Outcome != string(transition.State) || event.Reason != transition.Reason || !event.At.Equal(transition.At) ||
+			event.Spent == nil || *event.Spent != *transition.Usage || len(event.ObjectRefs) != 1 {
+			t.Fatalf("event %d = %+v, transition = %+v", i, event, transition)
+		}
+	}
+	first := out.String()
+	if err := os.Remove(filepath.Join(auditDir, events[0].ID+".json")); err != nil {
+		t.Fatal(err)
+	}
+	type replay struct {
+		output string
+		err    error
+	}
+	results := make(chan replay, 2)
+	for range cap(results) {
+		go func() {
+			var buf bytes.Buffer
+			err := runLearning(ctx, []string{"audit", "--config", app}, strings.NewReader(id), &buf)
+			results <- replay{buf.String(), err}
+		}()
+	}
+	for range cap(results) {
+		got := <-results
+		if got.err != nil || got.output != first {
+			t.Errorf("audit replay = %s, %v", got.output, got.err)
+		}
+	}
+	entries, err = os.ReadDir(auditDir)
+	if err != nil || len(entries) != 3 {
+		t.Fatalf("explicit replay saved %d files, %v", len(entries), err)
+	}
+	if err := command("configure", `{"enabled":true,"permissions":{"excluded_terms":["Distinct text"]}}`); err != nil {
+		t.Fatal(err)
+	}
+	if err := command("audit", id); !errors.Is(err, learning.ErrDenied) || out.Len() != 0 {
+		t.Fatalf("audit of excluded question = %s, %v", &out, err)
+	}
+}

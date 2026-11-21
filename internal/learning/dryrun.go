@@ -11,8 +11,9 @@ import (
 type EventType string
 
 const (
-	ResearchPlanned   EventType = "ResearchPlanned"
-	ModelCallReserved EventType = "ModelCallReserved"
+	ResearchPlanned    EventType = "ResearchPlanned"
+	ResearchTransition EventType = "ResearchTransition"
+	ModelCallReserved  EventType = "ModelCallReserved"
 )
 
 type Event struct {
@@ -23,6 +24,8 @@ type Event struct {
 	RunID         string    `json:"run_id"`
 	ObjectRefs    []string  `json:"object_refs"`
 	Outcome       string    `json:"outcome"`
+	Reason        string    `json:"reason,omitempty"`
+	Spent         *Budget   `json:"spent_budget,omitempty"`
 }
 
 func (e Event) Validate() error {

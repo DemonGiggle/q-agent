@@ -90,6 +90,23 @@ charged call with no saved outcome stops as `UNRESOLVED`. The worker
 does not repeat that uncertain call. This manual entry point starts no
 scheduler or idle task.
 
+## Cross-check collection with two sources
+
+Pass `--sources 2` to `learning enqueue` to require two distinct public
+sources with verified excerpts. The target stays with the run. The worker
+considers up to three registrable domains in the returned search results.
+It rejects shared domains, shared declared canonical origins, identical
+bodies and identical normalized excerpts. These are conservative duplicate
+checks. Establishing factual agreement and publisher relationships still
+requires further review.
+
+Two-source runs checkpoint each attempted fetch. A completed run commits
+both excerpts in the same transaction. If collection stops early, partial
+coverage remains available in status and the knowledge store receives no
+partial note. The default single-source path still supports
+`learning work --summarize`.
+
+
 ## Inspect a research run
 
 ```sh
@@ -103,8 +120,8 @@ New transitions record usage in the same atomic checkpoint as the state
 change, including budget exhaustion and cancellation.
 
 Coverage is the number of sources with verified excerpts divided by the
-plan's required source count. The current single-source worker reports zero
-until an excerpt is verified and one when it meets that collection target.
+plan's required source count. A two-source run with one verified excerpt
+reports 0.5 until it can verify the second.
 Coverage measures collection and does not rate claim confidence.
 
 ## Pause between worker invocations

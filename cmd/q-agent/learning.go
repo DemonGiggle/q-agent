@@ -31,6 +31,10 @@ func runLearning(ctx context.Context, args []string, input io.Reader, output io.
 	flags := flag.NewFlagSet("learning "+args[0], flag.ContinueOnError)
 	path := flags.String("config", config.DefaultPath, "q-agent TOML configuration")
 	var summarize bool
+	var sources int
+	if args[0] == "enqueue" {
+		flags.IntVar(&sources, "sources", 1, "verified source target (1 or 2)")
+	}
 	if args[0] == "work" {
 		flags.BoolVar(&summarize, "summarize", false, "summarize a public excerpt through local Ollama")
 	}
@@ -143,7 +147,7 @@ func runLearning(ctx context.Context, args []string, input io.Reader, output io.
 		search := localtools.LearningSearch{Permissions: cfg.Permissions}
 		switch args[0] {
 		case "enqueue":
-			id, err := coordinator.EnqueueResearch(ctx, cfg, string(data))
+			id, err := coordinator.EnqueueResearch(ctx, cfg, string(data), sources)
 			if err != nil {
 				return err
 			}

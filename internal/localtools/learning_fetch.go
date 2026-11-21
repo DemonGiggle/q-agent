@@ -18,6 +18,7 @@ import (
 	"unicode/utf8"
 
 	"golang.org/x/net/html"
+	"golang.org/x/net/publicsuffix"
 	"q-agent/internal/learning"
 )
 
@@ -80,14 +81,24 @@ func (f LearningFetch) fetch(ctx context.Context, client *http.Client, uri strin
 		return doc, usage, learning.ErrDenied
 	}
 	usage.Documents = 1
-	title := ""
+	title, syndicationOrigin := "", ""
 	if media == "text/html" {
 		z := html.NewTokenizer(bytes.NewReader(body))
 		for kind := z.Next(); kind != html.ErrorToken; kind = z.Next() {
 			if kind == html.StartTagToken || kind == html.SelfClosingTagToken {
-				if tag := z.Token(); tag.Data == "meta" && learningRobotsOptOut(attr(tag, "content")) &&
+				tag := z.Token()
+				if tag.Data == "meta" && learningRobotsOptOut(attr(tag, "content")) &&
 					(strings.EqualFold(attr(tag, "name"), "robots") || strings.EqualFold(attr(tag, "name"), "q-agent")) {
 					return doc, usage, learning.ErrDenied
+				}
+				if tag.Data == "link" && strings.EqualFold(attr(tag, "rel"), "canonical") && syndicationOrigin == "" {
+					canonical, err := u.Parse(attr(tag, "href"))
+					if err == nil && (canonical.Scheme == "https" || canonical.Scheme == "http") && canonical.User == nil {
+						host := strings.ToLower(strings.TrimSuffix(canonical.Hostname(), "."))
+						if len(host) <= 253 {
+							syndicationOrigin, _ = publicsuffix.EffectiveTLDPlusOne(host)
+						}
+					}
 				}
 			}
 		}
@@ -104,7 +115,7 @@ func (f LearningFetch) fetch(ctx context.Context, client *http.Client, uri strin
 		MediaType: media, Body: body,
 		Source: learning.Source{
 			Record: learning.Record{SchemaVersion: learning.SchemaVersion, CreatedAt: now, UpdatedAt: now},
-			ID:     hex.EncodeToString(id[:]), CanonicalURI: uri, Title: title, Publisher: u.Hostname(),
+			ID:     hex.EncodeToString(id[:]), CanonicalURI: uri, SyndicationOrigin: syndicationOrigin, Title: title, Publisher: u.Hostname(),
 			FetchedAt: now, ContentHash: contentHash, TrustClass: "public_reference",
 		},
 	}, usage, nil

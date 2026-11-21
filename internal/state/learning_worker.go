@@ -33,6 +33,7 @@ type LearningWorkerResult struct {
 	ResumeState   learning.RunState          `json:"resume_state,omitempty"`
 	SummaryStatus string                     `json:"summary_status,omitempty"`
 	CoverageScore float64                    `json:"coverage_score"`
+	EvidenceIDs   []string                   `json:"evidence_ids,omitempty"`
 	EvidenceID    string                     `json:"evidence_id,omitempty"`
 	Spent         learning.Budget            `json:"spent_budget"`
 	Transitions   []LearningWorkerTransition `json:"transitions"`
@@ -80,8 +81,15 @@ func researchWorkerResult(record storedLearningRun) LearningWorkerResult {
 	}
 	if cp := run.Checkpoint; cp != nil {
 		result.SummaryStatus = cp.ResearchSummaryStatus
-		if run.State == learning.RunCompleted && cp.ResearchEvidence != nil {
-			result.EvidenceID = cp.ResearchEvidence.ID
+		if run.State == learning.RunCompleted {
+			if cp.ResearchEvidence != nil {
+				result.EvidenceID = cp.ResearchEvidence.ID
+			}
+			for _, ref := range cp.ResearchReferences {
+				if ref.Evidence != nil {
+					result.EvidenceIDs = append(result.EvidenceIDs, ref.Evidence.ID)
+				}
+			}
 		}
 	}
 	return result
@@ -92,7 +100,10 @@ func researchTransitionID(runID string, index int) string {
 	return base32.StdEncoding.WithPadding(base32.NoPadding).EncodeToString(sum[:16])
 }
 
-func (c *LearningCoordinator) EnqueueResearch(ctx context.Context, cfg learning.Config, query string) (string, error) {
+func (c *LearningCoordinator) EnqueueResearch(ctx context.Context, cfg learning.Config, query string, sourceTarget int) (string, error) {
+	if sourceTarget != 1 && sourceTarget != 2 {
+		return "", fmt.Errorf("learning research requires one or two sources")
+	}
 	query = strings.TrimSpace(query)
 	if err := cfg.Validate(); err != nil {
 		return "", err
@@ -104,7 +115,7 @@ func (c *LearningCoordinator) EnqueueResearch(ctx context.Context, cfg learning.
 		return "", fmt.Errorf("learning research requires a 1–2000 byte public question")
 	}
 	id := rand.Text()
-	if err := c.create(ctx, learning.Partition{Public: true}, id, rand.Text(), query); err != nil {
+	if err := c.create(ctx, learning.Partition{Public: true}, id, rand.Text(), query, sourceTarget); err != nil {
 		return "", err
 	}
 	return id, nil
@@ -129,6 +140,10 @@ func (c *LearningCoordinator) WorkResearch(ctx context.Context, cfg learning.Con
 
 	if terminalLearningRun(record.Run.State) || record.Run.State == learning.RunPaused {
 		return researchWorkerResult(record), nil
+	}
+	sourceTarget := max(1, record.SourceTarget)
+	if sourceTarget == 2 && model != nil {
+		return result, fmt.Errorf("two-source research does not support single-excerpt summarization")
 	}
 	lease, err := c.Acquire(ctx, id, time.Minute)
 	if err != nil {
@@ -159,7 +174,7 @@ func (c *LearningCoordinator) WorkResearch(ctx context.Context, cfg learning.Con
 		Version:    1, Budget: cfg.PerQuestion,
 		Steps: []string{"discover", "fetch", "select_excerpt", "record_source"}, AllowedSourceClasses: []string{"public"},
 		StopConditions:       []string{"source_recorded", "no_qualified_source", "budget_exhausted", "cancelled"},
-		EvidenceRequirements: learning.EvidenceRequirements{MinIndependentSources: 1},
+		EvidenceRequirements: learning.EvidenceRequirements{MinIndependentSources: sourceTarget},
 	}
 	if record.PlanBudget != nil {
 		plan.Budget = *record.PlanBudget
@@ -185,6 +200,13 @@ func (c *LearningCoordinator) WorkResearch(ctx context.Context, cfg learning.Con
 		case learning.RunPlanned:
 			run.State = learning.RunRunning
 		case learning.RunRunning:
+			if sourceTarget == 2 {
+				current.Run = run
+				if err := c.advanceMultiSource(ctx, lease, cfg, plan, allow, search, fetch, reader, current); err != nil {
+					return result, err
+				}
+				continue
+			}
 			if cp.NextIntent == "summarize" {
 				if run.Spent.Requests > 3 {
 					// The previous model call may have completed. Keep the
@@ -234,7 +256,11 @@ func (c *LearningCoordinator) WorkResearch(ctx context.Context, cfg learning.Con
 			var source *learning.Source
 			var evidence *learning.Evidence
 			if cp.NextIntent == "search" {
-				uri, err = c.researchSearch(ctx, lease, cfg, plan, allow, search)
+				var candidates []string
+				candidates, err = c.researchSearch(ctx, lease, cfg, plan, allow, search)
+				if len(candidates) != 0 {
+					uri = candidates[0]
+				}
 			} else if cp.NextIntent == "fetch" {
 				source, evidence, err = c.researchFetch(ctx, lease, cfg, plan, allow, fetch, reader, cp.ResearchURI)
 			} else {
@@ -274,13 +300,17 @@ func (c *LearningCoordinator) WorkResearch(ctx context.Context, cfg learning.Con
 				cp.ResearchURI, cp.NextIntent = uri, "fetch"
 			}
 		case learning.RunValidating:
+			if sourceTarget == 2 && len(cp.ResearchReferences) != 2 {
+				run.State, run.StopReason = learning.RunUnresolved, "insufficient_independent_sources"
+				break
+			}
 			if !researchCitationAllowed(cfg, allow, run) {
 				run.State, run.StopReason = learning.RunUnresolved, "policy_changed"
 				break
 			}
 			// The manual worker validates at most one excerpt from one
 			// source. Coverage is evidence collection, not factual confidence.
-			if cp.ResearchEvidence != nil {
+			if sourceTarget == 1 && cp.ResearchEvidence != nil {
 				run.CoverageScore = 1 / float64(plan.EvidenceRequirements.MinIndependentSources)
 			}
 			run.State, cp.NextIntent, cp.OperationID = learning.RunCommitting, "commit", rand.Text()
@@ -297,6 +327,9 @@ func (c *LearningCoordinator) WorkResearch(ctx context.Context, cfg learning.Con
 				return result, nil
 			}
 			run.State, run.StopReason = learning.RunCompleted, "source_recorded"
+			if sourceTarget == 2 {
+				run.StopReason = "independent_excerpts_recorded"
+			}
 		default:
 			return result, fmt.Errorf("invalid research worker state %q", run.State)
 		}
@@ -310,7 +343,7 @@ func (c *LearningCoordinator) WorkResearch(ctx context.Context, cfg learning.Con
 }
 
 func (c *LearningCoordinator) researchSearch(ctx context.Context, lease learning.Lease, cfg learning.Config, plan learning.Plan,
-	allow func(string) bool, search learning.SearchProvider) (string, error) {
+	allow func(string) bool, search learning.SearchProvider) ([]string, error) {
 	ms := min(int64(15_000), cfg.PerQuestion.WallTimeMillis)
 	var hits []learning.SearchHit
 	charge := learning.Budget{Requests: 1, WallTimeMillis: ms}
@@ -321,14 +354,18 @@ func (c *LearningCoordinator) researchSearch(ctx context.Context, lease learning
 		return usage, err
 	})
 	if err != nil {
-		return "", err
+		return nil, err
 	}
+	var uris []string
 	for _, hit := range hits[:min(5, len(hits))] {
 		if cfg.Permissions.ResearchURI(hit.URI) && allow(hit.URI) {
-			return hit.URI, nil
+			uris = append(uris, hit.URI)
+			if plan.EvidenceRequirements.MinIndependentSources == 1 {
+				break
+			}
 		}
 	}
-	return "", nil
+	return uris, nil
 }
 
 func (c *LearningCoordinator) researchFetch(ctx context.Context, lease learning.Lease, cfg learning.Config, plan learning.Plan,
@@ -350,7 +387,8 @@ func (c *LearningCoordinator) researchFetch(ctx context.Context, lease learning.
 	}
 	source := doc.Source
 	if source.CanonicalURI != uri || len(source.Title) > 256 || len(source.ContentHash) != 64 ||
-		len(source.Publisher) > 253 || source.License != "" || source.TrustClass != "public_reference" ||
+		len(source.Publisher) > 253 || len(source.SyndicationOrigin) > 253 || !allow(source.SyndicationOrigin) ||
+		cfg.Permissions.Excludes(learning.ConversationTurn{Transcript: source.SyndicationOrigin}) || source.License != "" || source.TrustClass != "public_reference" ||
 		!allow(source.Title) || cfg.Permissions.Excludes(learning.ConversationTurn{Transcript: source.Title}) {
 		return nil, nil, nil
 	}
@@ -405,43 +443,43 @@ func (c *LearningCoordinator) commitResearch(ctx context.Context, cfg learning.C
 	if committed || err != nil {
 		return err
 	}
-	if !researchCitationAllowed(cfg, allow, run) {
+	if (record.SourceTarget == 2 && (run.Checkpoint == nil || len(run.Checkpoint.ResearchReferences) != 2)) ||
+		!researchCitationAllowed(cfg, allow, run) {
 		return c.failResearchCommit(ctx, lease, "policy_changed")
 	}
 	cp := run.Checkpoint
-	source := cp.ResearchSource
+	refs := checkpointResearchReferences(cp)
 	partition := learning.Partition{Public: true}
 	next, err := c.repo.Snapshot(ctx, partition)
 	if err != nil {
 		return err
 	}
-	found := false
-	for _, prior := range next.Sources {
-		if prior.ID == source.ID {
-			if prior.ContentHash != source.ContentHash || prior.CanonicalURI != source.CanonicalURI {
-				return c.failResearchCommit(ctx, lease, "source_identity_conflict")
-			}
-			found = true
-			break
-		}
-	}
-	if !found {
-		next.Sources = append(next.Sources, *source)
-	}
 	note := learning.Note{
-		Record: source.Record, ID: run.ID, Title: question, Revision: 1,
-		Summary:   "Public source retrieved. Relevance and factual claims have not been reviewed.",
-		SourceIDs: []string{source.ID},
+		Record: refs[0].Source.Record, ID: run.ID, Title: question, Revision: 1,
+		Summary: "Public source retrieved. Relevance and factual claims have not been reviewed.",
 	}
-	if evidence := cp.ResearchEvidence; evidence != nil {
-		if !slices.ContainsFunc(next.Evidence, func(prior learning.Evidence) bool { return prior.ID == evidence.ID }) {
-			next.Evidence = append(next.Evidence, *evidence)
+	for _, ref := range refs {
+		source := ref.Source
+		index := slices.IndexFunc(next.Sources, func(prior learning.Source) bool { return prior.ID == source.ID })
+		if index == -1 {
+			next.Sources = append(next.Sources, source)
+		} else if prior := next.Sources[index]; prior.ContentHash != source.ContentHash || prior.CanonicalURI != source.CanonicalURI {
+			return c.failResearchCommit(ctx, lease, "source_identity_conflict")
 		}
-		note.EvidenceIDs = []string{evidence.ID}
-		note.Summary = "Public source retrieved with a matching excerpt. Factual claims have not been reviewed."
-		if cp.ResearchSummary != "" {
-			note.Summary = "Unreviewed model summary of the cited excerpt: " + cp.ResearchSummary
+		note.SourceIDs = append(note.SourceIDs, source.ID)
+		if evidence := ref.Evidence; evidence != nil {
+			if !slices.ContainsFunc(next.Evidence, func(prior learning.Evidence) bool { return prior.ID == evidence.ID }) {
+				next.Evidence = append(next.Evidence, *evidence)
+			}
+			note.EvidenceIDs = append(note.EvidenceIDs, evidence.ID)
+			note.Summary = "Public source retrieved with a matching excerpt. Factual claims have not been reviewed."
 		}
+	}
+	if len(refs) > 1 {
+		note.Summary = "Public sources retrieved with distinct excerpts. Factual claims have not been reviewed."
+	}
+	if cp.ResearchSummary != "" {
+		note.Summary = "Unreviewed model summary of the cited excerpt: " + cp.ResearchSummary
 	}
 	next.Notes = append(next.Notes, note)
 	_, err = c.repo.Commit(ctx, partition, next.Version, lease, cp.OperationID, next)
@@ -453,21 +491,41 @@ func (c *LearningCoordinator) commitResearch(ctx context.Context, cfg learning.C
 
 func researchCitationAllowed(cfg learning.Config, allow func(string) bool, run learning.Run) bool {
 	cp := run.Checkpoint
-	if cp == nil || cp.ResearchSource == nil || !run.Spent.Fits(cfg.PerQuestion) {
+	if cp == nil || !run.Spent.Fits(cfg.PerQuestion) ||
+		!run.Spent.Fits(cfg.PerRun) || !run.Spent.Fits(cfg.GlobalDaily) {
 		return false
 	}
-	source := cp.ResearchSource
-	if !cfg.Permissions.ResearchURI(source.CanonicalURI) || !allow(source.CanonicalURI) ||
-		!allow(source.Title) || cfg.Permissions.Excludes(learning.ConversationTurn{Transcript: source.Title}) {
+	refs := checkpointResearchReferences(cp)
+	if len(refs) == 0 {
 		return false
 	}
-	evidence := cp.ResearchEvidence
-	if cp.ResearchSummary != "" && (evidence == nil || !allow(cp.ResearchSummary) ||
-		cfg.Permissions.Excludes(learning.ConversationTurn{Transcript: cp.ResearchSummary})) {
-		return false
+	for i, ref := range refs {
+		source := ref.Source
+		if !cfg.Permissions.ResearchURI(source.CanonicalURI) || !allow(source.CanonicalURI) ||
+			!allow(source.Title) || cfg.Permissions.Excludes(learning.ConversationTurn{Transcript: source.Title}) {
+			return false
+		}
+		evidence := ref.Evidence
+		if len(refs) > 1 && (evidence == nil || !independentResearchReference(ref, refs[:i])) {
+			return false
+		}
+		if evidence != nil && (!evidence.MatchesSourceExcerpt(source) || !allow(evidence.ExcerptOrSummary) ||
+			cfg.Permissions.Excludes(learning.ConversationTurn{Transcript: evidence.ExcerptOrSummary})) {
+			return false
+		}
 	}
-	return evidence == nil || (evidence.MatchesSourceExcerpt(*source) && allow(evidence.ExcerptOrSummary) &&
-		!cfg.Permissions.Excludes(learning.ConversationTurn{Transcript: evidence.ExcerptOrSummary}))
+	return cp.ResearchSummary == "" || (cp.ResearchEvidence != nil && allow(cp.ResearchSummary) &&
+		!cfg.Permissions.Excludes(learning.ConversationTurn{Transcript: cp.ResearchSummary}))
+}
+
+func checkpointResearchReferences(cp *learning.Checkpoint) []learning.ResearchReference {
+	if len(cp.ResearchReferences) != 0 {
+		return cp.ResearchReferences
+	}
+	if cp.ResearchSource != nil {
+		return []learning.ResearchReference{{Source: *cp.ResearchSource, Evidence: cp.ResearchEvidence}}
+	}
+	return nil
 }
 
 func (c *LearningCoordinator) failResearchCommit(ctx context.Context, lease learning.Lease, reason string) error {

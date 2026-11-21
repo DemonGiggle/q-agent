@@ -9,6 +9,7 @@ import (
 	"strings"
 	"testing"
 
+	"q-agent/internal/config"
 	"q-agent/internal/learning"
 )
 
@@ -64,4 +65,27 @@ func TestLearningConfigureAndDryRun(t *testing.T) {
 	if err := event.Validate(); err != nil || event.RunID != preview.Run.ID {
 		t.Fatalf("invalid audit event: %+v, %v", event, err)
 	}
+}
+
+func TestLearningCapturePolicy(t *testing.T) {
+	app := config.Defaults()
+	app.StateDir = t.TempDir()
+	check := func(want bool) {
+		t.Helper()
+		got := learningMemoryLimits(app)
+		if got.LearnFromDMs != want || got.LearnFromGroups {
+			t.Fatalf("unexpected capture policy: %+v", got)
+		}
+	}
+	check(false)
+	path := learningPolicyPath(app.StateDir)
+	if err := os.MkdirAll(filepath.Dir(path), 0700); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(path, []byte(`{"enabled":true,"permissions":{"include_private_chats":true}}`), 0600); err != nil {
+		t.Fatal(err)
+	}
+	check(true)
+	app.Memory.Enabled = false
+	check(false)
 }

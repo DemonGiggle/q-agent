@@ -8,6 +8,7 @@ import (
 	"flag"
 	"fmt"
 	"io"
+	"log"
 	"os"
 	"path/filepath"
 	"time"
@@ -36,7 +37,7 @@ func runLearning(ctx context.Context, args []string, input io.Reader, output io.
 	if err != nil {
 		return err
 	}
-	policyPath := filepath.Join(app.StateDir, "learning", "policy.json")
+	policyPath := learningPolicyPath(app.StateDir)
 	cfg := learning.DefaultConfig()
 	enc := json.NewEncoder(output)
 	enc.SetIndent("", "  ")
@@ -52,12 +53,8 @@ func runLearning(ctx context.Context, args []string, input io.Reader, output io.
 		}
 		return enc.Encode(cfg)
 	}
-	f, err := os.Open(policyPath)
+	cfg, err = loadLearningConfig(policyPath)
 	if err != nil {
-		return err
-	}
-	defer f.Close()
-	if err := decodeLearningConfig(f, &cfg); err != nil {
 		return err
 	}
 
@@ -83,6 +80,42 @@ func runLearning(ctx context.Context, args []string, input io.Reader, output io.
 		return err
 	}
 	return enc.Encode(preview)
+}
+
+func learningPolicyPath(stateDir string) string {
+	return filepath.Join(stateDir, "learning", "policy.json")
+}
+
+func loadLearningConfig(path string) (learning.Config, error) {
+	cfg := learning.DefaultConfig()
+	f, err := os.Open(path)
+	if err != nil {
+		return cfg, err
+	}
+	defer f.Close()
+	err = decodeLearningConfig(f, &cfg)
+	return cfg, err
+}
+
+// Read the opt-in once at startup. Chat never polls the learning policy, and
+// a missing or invalid learning policy leaves history capture disabled.
+func learningMemoryLimits(app config.Config) state.MemoryLimits {
+	limits := state.MemoryLimits{
+		MaxBytes: app.Memory.MaxBytes, MaxPendingBytes: app.Memory.MaxPendingBytes,
+	}
+	if !app.Memory.Enabled {
+		return limits
+	}
+	cfg, err := loadLearningConfig(learningPolicyPath(app.StateDir))
+	if err != nil {
+		if !errors.Is(err, os.ErrNotExist) {
+			log.Print("[LEARNING] Invalid or unreadable policy; conversation history capture disabled")
+		}
+		return limits
+	}
+	limits.LearnFromDMs = cfg.Enabled && cfg.Permissions.IncludePrivateChats
+	limits.LearnFromGroups = cfg.Enabled && cfg.Permissions.IncludeGroupChats
+	return limits
 }
 
 func decodeLearningConfig(input io.Reader, cfg *learning.Config) error {

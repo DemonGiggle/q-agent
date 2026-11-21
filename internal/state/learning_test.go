@@ -18,7 +18,7 @@ func TestLearningReaderScopeAndDigest(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	s, err := Open(t.TempDir(), policy)
+	s, err := Open(t.TempDir(), policy, MemoryLimits{LearnFromGroups: true})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -97,5 +97,37 @@ func TestLearningReaderScopeAndDigest(t *testing.T) {
 	}
 	if turns, err := reader.Recent(ctx, query); err != nil || len(turns) != 0 {
 		t.Fatalf("cleared memory returned %+v, err=%v", turns, err)
+	}
+}
+
+func TestLearningHistoryStampRequiresOptIn(t *testing.T) {
+	for _, tc := range []struct {
+		name  string
+		chat  int64
+		limit MemoryLimits
+		want  bool
+	}{
+		{name: "default", chat: 1},
+		{name: "group opt-in leaves DMs alone", chat: 1, limit: MemoryLimits{LearnFromGroups: true}},
+		{name: "DM opt-in", chat: 1, limit: MemoryLimits{LearnFromDMs: true}, want: true},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			s, err := Open(t.TempDir(), nil, tc.limit)
+			if err != nil {
+				t.Fatal(err)
+			}
+			route := platform.Message{Platform: "telegram", ChatID: tc.chat}
+			conversation := Conversation{Pairs: []Pair{{User: "question", Answer: "answer"}}}
+			if err := s.CommitExchange(route, "update:telegram:1", conversation, time.Now()); err != nil {
+				t.Fatal(err)
+			}
+			saved, err := s.Load(route.ConversationKey())
+			if err != nil {
+				t.Fatal(err)
+			}
+			if got := saved.Pairs[0].Learning != nil; got != tc.want {
+				t.Fatalf("source metadata present = %v, want %v", got, tc.want)
+			}
+		})
 	}
 }

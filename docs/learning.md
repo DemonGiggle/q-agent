@@ -26,6 +26,22 @@ scheduled work. Each successful invocation appends a separate
 `ResearchPlanned` event with generated references. Audit contains no question
 or transcript text. The audit sink rejects changes to an existing event ID.
 
+## Resource constraints
+
+Keep ACA on the same binary and reuse existing state, provider and
+scheduler infrastructure. The default chat path does not start a learning
+worker, issue provider calls, or write learning metadata. The service reads
+the optional policy once at startup when memory is enabled. Short-history
+origin markers are added only for chat types explicitly enabled in the
+policy. Restart the service after changing those capture settings.
+
+Start with bounded local processing and keyword retrieval. Keep network
+and research work out of the chat path, and add optional indexes only when
+measurements justify them. For architecture PRs, compare stripped release
+binary size and report any change to idle/background work or chat-path I/O.
+Measure relevant query latency or allocation changes when adding live
+recall or research processing.
+
 ## Component contracts
 
 | Component | Boundary |

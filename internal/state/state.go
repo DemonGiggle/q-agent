@@ -109,6 +109,8 @@ func Open(dir string, policy *redaction.Policy, limits ...MemoryLimits) (*Store,
 	}
 	s := &Store{dir: dir, policy: policy, cursor: -1, memories: map[string]ChatMemory{}, recent: map[string][]RecentMessage{}, atomic: Atomic, memoryLimits: MemoryLimits{MaxBytes: 8192, MaxPendingBytes: DefaultMaxPendingBytes}}
 	if len(limits) > 0 {
+		s.memoryLimits.LearnFromDMs = limits[0].LearnFromDMs
+		s.memoryLimits.LearnFromGroups = limits[0].LearnFromGroups
 		if limits[0].MaxBytes > 0 {
 			s.memoryLimits.MaxBytes = limits[0].MaxBytes
 		}

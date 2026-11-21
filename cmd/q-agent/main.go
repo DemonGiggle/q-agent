@@ -259,7 +259,7 @@ func serveWithMaintenance(ctx context.Context, c config.Config, policy *redactio
 		workspaces = &workspace.Manager{Dir: filepath.Join(c.StateDir, "workspaces"), Image: c.Sandbox.BaseImage, Sandbox: options}
 		tools = func(root string) agent.Tools { return &sandbox.Runner{Options: options, RootFS: root} }
 	}
-	store, err := state.Open(c.StateDir, policy, state.MemoryLimits{MaxBytes: c.Memory.MaxBytes, MaxPendingBytes: c.Memory.MaxPendingBytes})
+	store, err := state.Open(c.StateDir, policy, learningMemoryLimits(c))
 	if err != nil {
 		return err
 	}

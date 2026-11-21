@@ -90,6 +90,19 @@ charged call with no saved outcome stops as `UNRESOLVED`. The worker
 does not repeat that uncertain call. This manual entry point starts no
 scheduler or idle task.
 
+## Find previously read sources
+
+```sh
+printf '%s\n' '藤原氏 關白' | q-agent learning recall --config ./config.toml
+```
+
+Recall ranks matching public notes by keywords in titles, summaries and
+verified excerpts. It returns up to five matches with their source URLs,
+fetch dates and excerpt locators, applying the current domain and text
+policies before ranking. No matches produces an empty array. The command
+reads the current snapshot on demand and uses no model or auxiliary index
+files. Telegram recall is a separate integration.
+
 ## Resource constraints
 
 Keep ACA on the same binary and reuse existing state, provider and
@@ -173,8 +186,10 @@ Calls run with a deadline capped by the active lease and UTC day. A run
 has one in-flight call, and cancelling or releasing its lease interrupts the
 call context. Adapters must honor context and enforce their declared upper
 bounds before dispatch. The provider call path introduces no permanent
-timer, polling loop or background goroutine. The rest of the research
-pipeline and its audit events are follow-up work.
+timer, polling loop or background goroutine. The structured-output boundary validates against a host schema using the
+existing JSON Schema library. An invalid output permits one separately
+budgeted retry. Provider and cancellation errors stop immediately. The live
+model adapter and remaining research events are follow-up work.
 
 ## Follow-up issues
 

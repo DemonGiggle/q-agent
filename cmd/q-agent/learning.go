@@ -22,8 +22,8 @@ import (
 )
 
 func runLearning(ctx context.Context, args []string, input io.Reader, output io.Writer) error {
-	if len(args) == 0 || (args[0] != "configure" && args[0] != "trigger" && args[0] != "search" && args[0] != "enqueue" && args[0] != "work") {
-		return fmt.Errorf("usage: q-agent learning configure|trigger|search|enqueue|work [--config FILE]; pass input on stdin")
+	if len(args) == 0 || (args[0] != "configure" && args[0] != "trigger" && args[0] != "search" && args[0] != "enqueue" && args[0] != "work" && args[0] != "recall") {
+		return fmt.Errorf("usage: q-agent learning configure|trigger|search|enqueue|work|recall [--config FILE]; pass input on stdin")
 	}
 
 	flags := flag.NewFlagSet("learning "+args[0], flag.ContinueOnError)
@@ -75,6 +75,14 @@ func runLearning(ctx context.Context, args []string, input io.Reader, output io.
 	policy, err := redaction.New(redaction.Config{}, configuredSecrets(app))
 	if err != nil {
 		return err
+	}
+	if args[0] == "recall" {
+		results, err := state.NewLearningRepository(app.StateDir, nil).RecallPublic(
+			ctx, cfg, string(data), func(s string) bool { return !policy.ContainsSecret(s) }, 5)
+		if err != nil {
+			return err
+		}
+		return enc.Encode(results)
 	}
 	if args[0] == "search" || args[0] == "enqueue" || args[0] == "work" {
 		if !cfg.Enabled || (args[0] != "work" && policy.ContainsSecret(string(data))) ||

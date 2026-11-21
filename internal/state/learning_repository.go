@@ -27,7 +27,7 @@ var ErrLearningPartitionFull = errors.New("learning partition exceeds storage li
 type LearningLeaseGuard func(ctx context.Context, partition learning.Partition, lease learning.Lease, operationID string, write func() error) error
 
 // LearningRepository uses the host's single-owner state directory. Use one
-// instance per serving process while holding the existing state directory
+// instance per serving process while holding the learning state directory
 // lock. Its mutex is independent of chat state. Construction performs no I/O.
 type LearningRepository struct {
 	dir   string

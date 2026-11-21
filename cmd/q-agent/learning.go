@@ -15,13 +15,14 @@ import (
 
 	"q-agent/internal/config"
 	"q-agent/internal/learning"
+	"q-agent/internal/localtools"
 	"q-agent/internal/redaction"
 	"q-agent/internal/state"
 )
 
 func runLearning(ctx context.Context, args []string, input io.Reader, output io.Writer) error {
-	if len(args) == 0 || (args[0] != "configure" && args[0] != "trigger") {
-		return fmt.Errorf("usage: q-agent learning configure|trigger [--config FILE]; pass input on stdin")
+	if len(args) == 0 || (args[0] != "configure" && args[0] != "trigger" && args[0] != "search") {
+		return fmt.Errorf("usage: q-agent learning configure|trigger|search [--config FILE]; pass input on stdin")
 	}
 
 	flags := flag.NewFlagSet("learning "+args[0], flag.ContinueOnError)
@@ -46,7 +47,7 @@ func runLearning(ctx context.Context, args []string, input io.Reader, output io.
 			return err
 		}
 		if cfg.Schedule.Enabled {
-			return fmt.Errorf("M0 supports manual dry-run only; set schedule.enabled to false")
+			return fmt.Errorf("learning supports manual commands only; set schedule.enabled to false")
 		}
 		if err := state.Atomic(policyPath, cfg); err != nil {
 			return err
@@ -72,6 +73,22 @@ func runLearning(ctx context.Context, args []string, input io.Reader, output io.
 	}
 	policy, err := redaction.New(redaction.Config{}, configuredSecrets(app))
 	if err != nil {
+		return err
+	}
+	if args[0] == "search" {
+		if !cfg.Enabled || policy.ContainsSecret(string(data)) || !cfg.Permissions.AllowsDomain(localtools.LearningSearchDomain) {
+			return learning.ErrDenied
+		}
+		unlock, err := state.Lock(filepath.Join(app.StateDir, "learning"))
+		if err != nil {
+			return err
+		}
+		defer unlock()
+		discovery, err := state.NewLearningCoordinator(app.StateDir).Discover(
+			ctx, cfg, localtools.LearningSearch{Permissions: cfg.Permissions}, string(data))
+		if discovery.RunID != "" {
+			err = errors.Join(err, enc.Encode(discovery))
+		}
 		return err
 	}
 	preview, err := learning.DryRun(ctx, cfg, policy.Redact(string(data)), time.Now(),

@@ -31,6 +31,7 @@ func (c *LearningCoordinator) advanceMultiSource(ctx context.Context, lease lear
 	var evidence *learning.Evidence
 	var candidates []string
 	var err error
+	before := run.Spent.Requests
 	switch cp.NextIntent {
 	case "search":
 		if run.Spent.Requests != 0 {
@@ -43,7 +44,7 @@ func (c *LearningCoordinator) advanceMultiSource(ctx context.Context, lease lear
 		if attempt < 0 || len(cp.ResearchCandidates) > multiSourceMaxAttempts {
 			return fmt.Errorf("invalid multi-source checkpoint")
 		}
-		if run.Spent.Requests != int64(1+2*attempt) {
+		if before != researchCheckpointRequests(cp, int64(1+researchFetchRequests*attempt)) {
 			return stop("interrupted_provider_call")
 		}
 		if attempt >= len(cp.ResearchCandidates) {
@@ -78,7 +79,8 @@ func (c *LearningCoordinator) advanceMultiSource(ctx context.Context, lease lear
 		}
 		cp.ResearchCandidates, cp.NextIntent = candidates, "fetch_multiple"
 	} else {
-		if run.Spent.Requests != int64(1+2*(cp.ResearchAttempt+1)) {
+		charged := run.Spent.Requests - before
+		if charged != researchFetchRequests && charged != 2*researchFetchRequests {
 			return stop("provider_failed")
 		}
 		cp.ResearchAttempt++
@@ -93,9 +95,10 @@ func (c *LearningCoordinator) advanceMultiSource(ctx context.Context, lease lear
 		if plan.EvidenceRequirements.HasRequiredSources(cp.ResearchReferences) {
 			run.State, cp.NextIntent = learning.RunValidating, "validate"
 		} else if cp.ResearchAttempt == len(cp.ResearchCandidates) {
-			return stop("insufficient_independent_sources")
+			run.State, run.StopReason, cp.NextIntent = learning.RunUnresolved, "insufficient_independent_sources", ""
 		}
 	}
+	cp.ResearchRequests = run.Spent.Requests
 	return c.Checkpoint(ctx, lease, current.Version, run)
 }
 

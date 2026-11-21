@@ -85,10 +85,11 @@ the saved excerpt. When present, the work response includes the
 cross-source verification are later stages.
 
 To resume after a crash, invoke work with the same run ID after the
-lease expires. A saved source or successful commit can be reused. A
-charged call with no saved outcome stops as `UNRESOLVED`. The worker
-does not repeat that uncertain call. This manual entry point starts no
-scheduler or idle task.
+lease expires. A saved search result, source or successful commit can
+be reused. A charged search or fetch with an unknown outcome stops as
+`UNRESOLVED`. The worker follows the same rule for a retry whose
+reservation was saved but whose result was interrupted. The manual
+entry point runs in the foreground.
 
 ## Cross-check collection with two sources
 
@@ -340,8 +341,13 @@ charged on error or cancellation to account for uncertain provider usage.
 Calls run with a deadline capped by the active lease and UTC day. A run
 has one in-flight call, and cancelling or releasing its lease interrupts the
 call context. Adapters must honor context and enforce their declared upper
-bounds before dispatch. The provider call path introduces no permanent
-timer, polling loop or background goroutine. The structured-output
+bounds before dispatch. A worker can retry each read-only search or fetch
+once after HTTP 502, 503 or 504 when the response has no `Retry-After`.
+The retry reserves its full call cost and a 250 ms cancellable backoff
+before waiting. A fetch retry repeats the robots check and the document
+request under the same access policy. Rate limits, access denials and
+unknown transport outcomes end the attempt. The standalone `learning
+search` command still makes one request. The structured-output
 boundary validates against a host schema using the existing JSON Schema
 library. An invalid output permits one separately budgeted retry. Provider
 and cancellation errors stop immediately. Additional research events and
@@ -355,8 +361,9 @@ multi-source synthesis are follow-up work.
   The manual worker connects search, fetch, source reading, and the local
   structured model adapter. Recall uses the keyword index.
 - #72 has durable leases, cancellation, checkpoints and a tested commit
-  fence. Provider dispatch now enforces budget reservations, cancellation,
-  and deadlines. The manual worker adds checkpointed collection and a
+  fence. Provider dispatch enforces budget reservations, cancellation,
+  deadlines, and one retry for eligible HTTP responses. The manual worker
+  adds checkpointed collection and a
   fenced reference-note commit and replays durable transitions into the
   shared audit log. The planner applies publication age, exact-host
   overrides, and an opt-in single-authority rule. Evidence synthesis

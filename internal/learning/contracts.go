@@ -8,6 +8,10 @@ import (
 
 var ErrVersionConflict = errors.New("learning version conflict")
 
+// ErrRetryableHTTP identifies a completed HTTP response that permits one
+// bounded retry of a read-only discovery or fetch.
+var ErrRetryableHTTP = errors.New("temporary research HTTP response")
+
 // Partition is resolved by the trusted host. The zero value is invalid;
 // public storage and each authorized private scope have separate partitions.
 type Partition struct {

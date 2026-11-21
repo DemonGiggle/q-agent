@@ -16,6 +16,7 @@ import (
 )
 
 const maxLearningLedgerBytes = 64 << 10
+const researchRetryDelay = 250 * time.Millisecond
 
 var (
 	ErrLearningBudget         = errors.New("learning provider budget exhausted")
@@ -69,6 +70,31 @@ func (c *LearningCoordinator) CallProvider(ctx context.Context, lease learning.L
 		return ErrLearningProviderUsage
 	}
 	return err
+}
+
+func (c *LearningCoordinator) callResearchHTTP(ctx context.Context, lease learning.Lease, cfg learning.Config,
+	plan learning.Plan, charge learning.Budget, call func(context.Context) (learning.Budget, error)) error {
+	timeout := time.Duration(charge.WallTimeMillis) * time.Millisecond
+	err := c.CallProvider(ctx, lease, cfg, plan, charge, timeout, call)
+	if !errors.Is(err, learning.ErrRetryableHTTP) {
+		return err
+	}
+	// Reserve both the retry and the wait before starting backoff. This
+	// keeps cancellation, the lease and the daily budget active while waiting.
+	charge.WallTimeMillis += researchRetryDelay.Milliseconds()
+	return c.CallProvider(ctx, lease, cfg, plan, charge, timeout+researchRetryDelay, func(callCtx context.Context) (learning.Budget, error) {
+		timer := time.NewTimer(researchRetryDelay)
+		defer timer.Stop()
+		select {
+		case <-callCtx.Done():
+			return learning.Budget{}, callCtx.Err()
+		case <-timer.C:
+			if err := callCtx.Err(); err != nil {
+				return learning.Budget{}, err
+			}
+			return call(callCtx)
+		}
+	})
 }
 
 func (c *LearningCoordinator) admitProvider(ctx context.Context, lease learning.Lease, cfg learning.Config, plan learning.Plan, cost learning.Budget, timeout time.Duration) (context.Context, error) {

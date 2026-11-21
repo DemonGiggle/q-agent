@@ -35,6 +35,10 @@ func (s LearningSearch) search(ctx context.Context, client *http.Client, endpoin
 	results, err := findWebResults(ctx, client, endpoint, query, limit)
 	usage := learning.Budget{Requests: 1}
 	if err != nil {
+		var response webStatusError
+		if errors.As(err, &response) && retryableLearningHTTP(response.status, response.retryAfter) {
+			return nil, usage, learning.ErrRetryableHTTP
+		}
 		var requestError *url.Error
 		if errors.As(err, &requestError) {
 			err = requestError.Err
@@ -49,4 +53,9 @@ func (s LearningSearch) search(ctx context.Context, client *http.Client, endpoin
 		}
 	}
 	return hits, usage, nil
+}
+
+func retryableLearningHTTP(status int, retryAfter bool) bool {
+	return !retryAfter && (status == http.StatusBadGateway ||
+		status == http.StatusServiceUnavailable || status == http.StatusGatewayTimeout)
 }

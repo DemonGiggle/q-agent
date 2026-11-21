@@ -52,6 +52,10 @@ func (f LearningFetch) fetch(ctx context.Context, client *http.Client, uri strin
 		if err != nil {
 			return nil, fmt.Errorf("research source request failed")
 		}
+		if retryableLearningHTTP(resp.StatusCode, resp.Header.Get("Retry-After") != "") {
+			resp.Body.Close()
+			return nil, learning.ErrRetryableHTTP
+		}
 		return resp, nil
 	}
 	robots, err := request((&url.URL{Scheme: u.Scheme, Host: u.Host, Path: "/robots.txt"}).String())

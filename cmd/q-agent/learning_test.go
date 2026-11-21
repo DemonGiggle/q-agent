@@ -30,7 +30,11 @@ func TestLearningConfigureAndDryRun(t *testing.T) {
 	if err := runLearning(ctx, configure, strings.NewReader(`{"enabled":true,"schedule":{"enabled":true}}`), out); err == nil {
 		t.Fatal("configure accepted enabled schedule")
 	}
-	if err := runLearning(ctx, configure, strings.NewReader(`{"enabled":true,"permissions":{"excluded_terms":["blocked"]}}`), out); err != nil {
+	if err := runLearning(ctx, configure, strings.NewReader(`{"enabled":true,"source_policy":{"domains":{"*.example.org":{"single_authority":true}}}}`), out); err == nil {
+		t.Fatal("configure accepted wildcard authority")
+	}
+	policy := `{"enabled":true,"permissions":{"excluded_terms":["blocked"],"allow_domains":["example.org"]},"source_policy":{"max_age_days":30,"domains":{"records.example.org":{"single_authority":true,"max_age_days":90}}}}`
+	if err := runLearning(ctx, configure, strings.NewReader(policy), out); err != nil {
 		t.Fatal(err)
 	}
 	out.Reset()
@@ -47,6 +51,11 @@ func TestLearningConfigureAndDryRun(t *testing.T) {
 	}
 	if preview.Plan.QuestionID != preview.Question.ID || preview.Run.PlanID != preview.Plan.ID {
 		t.Fatalf("broken preview references: %+v", preview)
+	}
+	requirements := preview.Plan.EvidenceRequirements
+	if !requirements.AllowSingleAuthority || requirements.MinIndependentSources != 2 ||
+		requirements.SourcePolicy == nil || requirements.SourcePolicy.MaxAgeDays != 30 {
+		t.Fatalf("unexpected preview source policy: %+v", requirements)
 	}
 	dir = filepath.Join(dir, "data")
 	entries, err := os.ReadDir(dir)

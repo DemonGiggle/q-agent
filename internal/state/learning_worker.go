@@ -171,10 +171,11 @@ func (c *LearningCoordinator) WorkResearch(ctx context.Context, cfg learning.Con
 	plan := learning.Plan{
 		Record: record.Run.Record, ID: record.Run.PlanID, Goal: question,
 		QuestionID: platform.WorkspaceKey(strings.ToLower(strings.Join(strings.Fields(question), " ")), 0),
-		Version:    1, Budget: cfg.PerQuestion,
+		Version:    1, Budget: cfg.PerQuestion, Subquestions: []string{question},
 		Steps: []string{"discover", "fetch", "select_excerpt", "record_source"}, AllowedSourceClasses: []string{"public"},
-		StopConditions:       []string{"source_recorded", "no_qualified_source", "budget_exhausted", "cancelled"},
-		EvidenceRequirements: learning.EvidenceRequirements{MinIndependentSources: sourceTarget},
+		StopConditions: []string{"source_recorded", "independent_excerpts_recorded", "authority_source_recorded",
+			"no_qualified_source", "insufficient_independent_sources", "budget_exhausted", "cancelled"},
+		EvidenceRequirements: cfg.ResearchRequirements(sourceTarget),
 	}
 	if record.PlanBudget != nil {
 		plan.Budget = *record.PlanBudget
@@ -218,7 +219,7 @@ func (c *LearningCoordinator) WorkResearch(ctx context.Context, cfg learning.Con
 				if model == nil {
 					return result, fmt.Errorf("resume this run with learning work --summarize")
 				}
-				if cp.ResearchEvidence == nil || !researchCitationAllowed(cfg, allow, run) {
+				if cp.ResearchEvidence == nil || !c.researchCitationAllowed(cfg, allow, run) {
 					run.State, run.StopReason = learning.RunUnresolved, "policy_changed"
 					break
 				}
@@ -300,11 +301,12 @@ func (c *LearningCoordinator) WorkResearch(ctx context.Context, cfg learning.Con
 				cp.ResearchURI, cp.NextIntent = uri, "fetch"
 			}
 		case learning.RunValidating:
-			if sourceTarget == 2 && len(cp.ResearchReferences) != 2 {
+			if sourceTarget == 2 && !plan.EvidenceRequirements.HasRequiredSources(cp.ResearchReferences) {
 				run.State, run.StopReason = learning.RunUnresolved, "insufficient_independent_sources"
 				break
 			}
-			if !researchCitationAllowed(cfg, allow, run) {
+			if !c.researchCitationAllowed(cfg, allow, run) {
+				run.CoverageScore = 0
 				run.State, run.StopReason = learning.RunUnresolved, "policy_changed"
 				break
 			}
@@ -315,7 +317,7 @@ func (c *LearningCoordinator) WorkResearch(ctx context.Context, cfg learning.Con
 			}
 			run.State, cp.NextIntent, cp.OperationID = learning.RunCommitting, "commit", rand.Text()
 		case learning.RunCommitting:
-			if err := c.commitResearch(ctx, cfg, lease, allow, question, run); err != nil {
+			if err := c.commitResearch(ctx, cfg, lease, allow, plan, run); err != nil {
 				return result, err
 			}
 			current, err = c.Get(ctx, id)
@@ -329,6 +331,9 @@ func (c *LearningCoordinator) WorkResearch(ctx context.Context, cfg learning.Con
 			run.State, run.StopReason = learning.RunCompleted, "source_recorded"
 			if sourceTarget == 2 {
 				run.StopReason = "independent_excerpts_recorded"
+				if len(cp.ResearchReferences) == 1 {
+					run.StopReason = "authority_source_recorded"
+				}
 			}
 		default:
 			return result, fmt.Errorf("invalid research worker state %q", run.State)
@@ -395,6 +400,9 @@ func (c *LearningCoordinator) researchFetch(ctx context.Context, lease learning.
 	if err := source.Validate(); err != nil {
 		return nil, nil, err
 	}
+	if !cfg.SourcePolicy.Accepts(source, c.now()) {
+		return nil, nil, nil
+	}
 	if len(doc.Body) > learningDocumentLimit {
 		return nil, nil, learning.ErrInvalidSourceContent
 	}
@@ -432,7 +440,7 @@ func (c *LearningCoordinator) researchSummary(ctx context.Context, lease learnin
 }
 
 func (c *LearningCoordinator) commitResearch(ctx context.Context, cfg learning.Config, lease learning.Lease,
-	allow func(string) bool, question string, run learning.Run) error {
+	allow func(string) bool, plan learning.Plan, run learning.Run) error {
 	record, err := c.load(run.ID)
 	if err != nil {
 		return err
@@ -443,8 +451,8 @@ func (c *LearningCoordinator) commitResearch(ctx context.Context, cfg learning.C
 	if committed || err != nil {
 		return err
 	}
-	if (record.SourceTarget == 2 && (run.Checkpoint == nil || len(run.Checkpoint.ResearchReferences) != 2)) ||
-		!researchCitationAllowed(cfg, allow, run) {
+	if !c.researchCitationAllowed(cfg, allow, run) ||
+		(record.SourceTarget == 2 && !plan.EvidenceRequirements.HasRequiredSources(run.Checkpoint.ResearchReferences)) {
 		return c.failResearchCommit(ctx, lease, "policy_changed")
 	}
 	cp := run.Checkpoint
@@ -455,7 +463,7 @@ func (c *LearningCoordinator) commitResearch(ctx context.Context, cfg learning.C
 		return err
 	}
 	note := learning.Note{
-		Record: refs[0].Source.Record, ID: run.ID, Title: question, Revision: 1,
+		Record: refs[0].Source.Record, ID: run.ID, Title: plan.Goal, Revision: 1,
 		Summary: "Public source retrieved. Relevance and factual claims have not been reviewed.",
 	}
 	for _, ref := range refs {
@@ -465,6 +473,10 @@ func (c *LearningCoordinator) commitResearch(ctx context.Context, cfg learning.C
 			next.Sources = append(next.Sources, source)
 		} else if prior := next.Sources[index]; prior.ContentHash != source.ContentHash || prior.CanonicalURI != source.CanonicalURI {
 			return c.failResearchCommit(ctx, lease, "source_identity_conflict")
+		} else if prior.PublishedAt == nil && source.PublishedAt != nil {
+			// Re-observing the same body can fill publication metadata
+			// for sources stored before the fetcher extracted it.
+			next.Sources[index].PublishedAt = source.PublishedAt
 		}
 		note.SourceIDs = append(note.SourceIDs, source.ID)
 		if evidence := ref.Evidence; evidence != nil {
@@ -489,7 +501,7 @@ func (c *LearningCoordinator) commitResearch(ctx context.Context, cfg learning.C
 	return err
 }
 
-func researchCitationAllowed(cfg learning.Config, allow func(string) bool, run learning.Run) bool {
+func (c *LearningCoordinator) researchCitationAllowed(cfg learning.Config, allow func(string) bool, run learning.Run) bool {
 	cp := run.Checkpoint
 	if cp == nil || !run.Spent.Fits(cfg.PerQuestion) ||
 		!run.Spent.Fits(cfg.PerRun) || !run.Spent.Fits(cfg.GlobalDaily) {
@@ -499,10 +511,12 @@ func researchCitationAllowed(cfg learning.Config, allow func(string) bool, run l
 	if len(refs) == 0 {
 		return false
 	}
+	now := c.now()
 	for i, ref := range refs {
 		source := ref.Source
 		if !cfg.Permissions.ResearchURI(source.CanonicalURI) || !allow(source.CanonicalURI) ||
-			!allow(source.Title) || cfg.Permissions.Excludes(learning.ConversationTurn{Transcript: source.Title}) {
+			!allow(source.Title) || cfg.Permissions.Excludes(learning.ConversationTurn{Transcript: source.Title}) ||
+			!cfg.SourcePolicy.Accepts(source, now) {
 			return false
 		}
 		evidence := ref.Evidence

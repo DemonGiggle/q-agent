@@ -82,7 +82,7 @@ func DryRun(ctx context.Context, cfg Config, question string, now time.Time, aud
 	p := Plan{
 		Record: record, ID: rand.Text(), QuestionID: q.ID, Goal: q.Text, Version: 1,
 		Subquestions: []string{q.Text}, Steps: []string{"discover", "read", "validate_evidence", "distill"},
-		EvidenceRequirements: EvidenceRequirements{MinIndependentSources: 2, AllowSingleAuthority: true},
+		EvidenceRequirements: cfg.ResearchRequirements(2),
 		AllowedSourceClasses: []string{"public"},
 		StopConditions:       []string{"goal_met", "no_qualified_evidence", "budget_exhausted", "cancelled"},
 		Budget:               cfg.PerQuestion,

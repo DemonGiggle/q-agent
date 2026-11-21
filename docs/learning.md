@@ -106,6 +106,47 @@ coverage remains available in status and the knowledge store receives no
 partial note. The default single-source path still supports
 `learning work --summarize`.
 
+## Apply publication and authority rules
+
+Set an optional `source_policy` in the JSON sent to `learning configure`.
+Keep the rest of your learning policy in the same input.
+
+```json
+{
+  "enabled": true,
+  "permissions": {
+    "allow_domains": ["records.example.org", "reference.example.net"]
+  },
+  "source_policy": {
+    "max_age_days": 30,
+    "domains": {
+      "records.example.org": {
+        "max_age_days": 90,
+        "single_authority": true
+      }
+    }
+  }
+}
+```
+
+A positive age accepts declarations dated on or after the UTC calendar day
+that many days ago, up to the fetch time. Missing, malformed, conflicting
+and future declarations are ineligible when an age applies. The fetcher
+reads `article:published_time` and `datePublished` metadata declared in the
+HTML head. Dates are publisher declarations. An omitted age or zero disables
+the date requirement. A rule for an exact host can override the default
+age, including by setting it to zero. Host rules use lowercase DNS names.
+The existing allowlist and blocklist still govern every source request.
+
+An allowed host with `single_authority: true` can satisfy a two-source plan
+with one date-eligible source and a matching, verifiable excerpt. Status
+reports `authority_source_recorded` with coverage 0.5, the ratio of one
+verified excerpt to the original two-source target. The worker stores a
+reference note and its citation. The policy does not generate a Claim.
+Each invocation uses the current policy to check saved sources before
+reuse and commit. `learning trigger` shows the configured rules in the
+offline plan preview.
+
 
 ## Inspect a research run
 
@@ -317,7 +358,9 @@ multi-source synthesis are follow-up work.
   fence. Provider dispatch now enforces budget reservations, cancellation,
   and deadlines. The manual worker adds checkpointed collection and a
   fenced reference-note commit and replays durable transitions into the
-  shared audit log. Evidence synthesis stays open.
+  shared audit log. The planner applies publication age, exact-host
+  overrides, and an opt-in single-authority rule. Evidence synthesis
+  stays open.
 - #73 owns chat recall and its share of the context budget. Recall uses
   authorized evidence and a separate failure path from normal chat.
 - #74 owns Claim lifecycle and atomic Revision history. Use evidence links

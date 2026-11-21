@@ -82,14 +82,39 @@ func (f LearningFetch) fetch(ctx context.Context, client *http.Client, uri strin
 	}
 	usage.Documents = 1
 	title, syndicationOrigin := "", ""
+	var published time.Time
+	ambiguousPublication := false
 	if media == "text/html" {
 		z := html.NewTokenizer(bytes.NewReader(body))
+		inHead, headClosed := false, false
 		for kind := z.Next(); kind != html.ErrorToken; kind = z.Next() {
+			if kind == html.EndTagToken {
+				name, _ := z.TagName()
+				if string(name) == "head" {
+					inHead, headClosed = false, true
+				}
+				continue
+			}
 			if kind == html.StartTagToken || kind == html.SelfClosingTagToken {
 				tag := z.Token()
-				if tag.Data == "meta" && learningRobotsOptOut(attr(tag, "content")) &&
-					(strings.EqualFold(attr(tag, "name"), "robots") || strings.EqualFold(attr(tag, "name"), "q-agent")) {
-					return doc, usage, learning.ErrDenied
+				switch tag.Data {
+				case "head":
+					inHead = !headClosed && kind == html.StartTagToken
+				case "body":
+					inHead, headClosed = false, true
+				case "meta":
+					content := attr(tag, "content")
+					name := attr(tag, "name")
+					if (strings.EqualFold(name, "robots") || strings.EqualFold(name, "q-agent")) && learningRobotsOptOut(content) {
+						return doc, usage, learning.ErrDenied
+					}
+					if inHead && (strings.EqualFold(attr(tag, "property"), "article:published_time") ||
+						strings.EqualFold(attr(tag, "itemprop"), "datePublished")) {
+						declared := parseLearningPublication(content)
+						ambiguousPublication = ambiguousPublication || declared.IsZero() ||
+							(!published.IsZero() && !published.Equal(declared))
+						published = declared
+					}
 				}
 				if tag.Data == "link" && strings.EqualFold(attr(tag, "rel"), "canonical") && syndicationOrigin == "" {
 					canonical, err := u.Parse(attr(tag, "href"))
@@ -108,6 +133,10 @@ func (f LearningFetch) fetch(ctx context.Context, client *http.Client, uri strin
 		}
 	}
 	now := time.Now().UTC()
+	var publishedAt *time.Time
+	if !ambiguousPublication && !published.IsZero() && !published.After(now) {
+		publishedAt = &published
+	}
 	hash := sha256.Sum256(body)
 	contentHash := hex.EncodeToString(hash[:])
 	id := sha256.Sum256([]byte(uri + ":" + contentHash))
@@ -116,9 +145,20 @@ func (f LearningFetch) fetch(ctx context.Context, client *http.Client, uri strin
 		Source: learning.Source{
 			Record: learning.Record{SchemaVersion: learning.SchemaVersion, CreatedAt: now, UpdatedAt: now},
 			ID:     hex.EncodeToString(id[:]), CanonicalURI: uri, SyndicationOrigin: syndicationOrigin, Title: title, Publisher: u.Hostname(),
-			FetchedAt: now, ContentHash: contentHash, TrustClass: "public_reference",
+			PublishedAt: publishedAt, FetchedAt: now, ContentHash: contentHash, TrustClass: "public_reference",
 		},
 	}, usage, nil
+}
+
+func parseLearningPublication(raw string) time.Time {
+	raw = strings.TrimSpace(raw)
+	if ts, err := time.Parse(time.RFC3339, raw); err == nil {
+		return ts.UTC()
+	}
+	if day, err := time.Parse(time.DateOnly, raw); err == nil {
+		return day
+	}
+	return time.Time{}
 }
 
 // An absent robots file is allowed. A present file is supported only when it

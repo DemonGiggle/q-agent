@@ -23,7 +23,7 @@ func (c *LearningCoordinator) advanceMultiSource(ctx context.Context, lease lear
 		run.State, run.StopReason, cp.NextIntent = learning.RunUnresolved, reason, ""
 		return c.Checkpoint(ctx, lease, current.Version, run)
 	}
-	if len(cp.ResearchReferences) != 0 && !researchCitationAllowed(cfg, allow, run) {
+	if len(cp.ResearchReferences) != 0 && !c.researchCitationAllowed(cfg, allow, run) {
 		run.CoverageScore = 0
 		return stop("policy_changed")
 	}
@@ -90,7 +90,7 @@ func (c *LearningCoordinator) advanceMultiSource(ctx context.Context, lease lear
 		}
 		target := plan.EvidenceRequirements.MinIndependentSources
 		run.CoverageScore = float64(len(cp.ResearchReferences)) / float64(target)
-		if len(cp.ResearchReferences) >= target {
+		if plan.EvidenceRequirements.HasRequiredSources(cp.ResearchReferences) {
 			run.State, cp.NextIntent = learning.RunValidating, "validate"
 		} else if cp.ResearchAttempt == len(cp.ResearchCandidates) {
 			return stop("insufficient_independent_sources")

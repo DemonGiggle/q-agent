@@ -8,6 +8,7 @@ import (
 	"net/netip"
 	"strings"
 	"testing"
+	"time"
 
 	"q-agent/internal/learning"
 )
@@ -16,6 +17,45 @@ type learningTransport func(*http.Request) (*http.Response, error)
 
 func (tr learningTransport) RoundTrip(req *http.Request) (*http.Response, error) {
 	return tr(req)
+}
+
+func TestLearningFetchDeclaredPublication(t *testing.T) {
+	const og = `<meta property="article:published_time" content="2026-01-02T12:30:00+08:00">`
+	const same = `<meta itemprop="datePublished" content="2026-01-02T04:30:00Z">`
+	for _, tc := range []struct {
+		name, html, want string
+	}{
+		{"same instant", "<head>" + og + same + "</head>", "2026-01-02T04:30:00Z"},
+		{"schema date", `<head><meta itemprop="datePublished" content="2026-01-02"></head>`, "2026-01-02T00:00:00Z"},
+		{"conflict", `<head>` + og + `<meta itemprop="datePublished" content="2025-01-02"></head>`, ""},
+		{"malformed", `<head>` + og + `<meta itemprop="datePublished" content="yesterday"></head>`, ""},
+		{"future", `<head><meta itemprop="datePublished" content="2999-01-02"></head>`, ""},
+		{"body only", "<head></head><body>" + og + "</body>", ""},
+		{"head after body", "<body><head>" + og + "</head></body>", ""},
+		{"modification only", `<head><meta property="article:modified_time" content="2026-01-02"></head>`, ""},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			client := &http.Client{Transport: learningTransport(func(r *http.Request) (*http.Response, error) {
+				if r.URL.Path == "/robots.txt" {
+					return &http.Response{StatusCode: http.StatusNotFound, Body: http.NoBody}, nil
+				}
+				return &http.Response{StatusCode: http.StatusOK, Header: http.Header{"Content-Type": {"text/html"}},
+					Body: io.NopCloser(strings.NewReader(tc.html))}, nil
+			})}
+			fetcher := LearningFetch{Permissions: learning.PermissionConfig{AllowDomains: []string{"example.org"}}}
+			doc, usage, err := fetcher.fetch(context.Background(), client, "https://example.org/document", 1024)
+			if err != nil || usage.Requests != 2 {
+				t.Fatalf("fetch = %+v, %v", usage, err)
+			}
+			got := ""
+			if doc.Source.PublishedAt != nil {
+				got = doc.Source.PublishedAt.Format(time.RFC3339)
+			}
+			if got != tc.want {
+				t.Fatalf("declared publication = %q, want %q", got, tc.want)
+			}
+		})
+	}
 }
 
 func TestLearningFetchPolicy(t *testing.T) {

@@ -90,14 +90,15 @@ type ScheduleConfig struct {
 }
 
 type Config struct {
-	SchemaVersion string           `json:"schema_version"`
-	Enabled       bool             `json:"enabled"`
-	Schedule      ScheduleConfig   `json:"schedule"`
-	Permissions   PermissionConfig `json:"permissions"`
-	Selection     SelectionConfig  `json:"selection"`
-	GlobalDaily   Budget           `json:"global_daily"`
-	PerRun        Budget           `json:"per_run"`
-	PerQuestion   Budget           `json:"per_question"`
+	SchemaVersion string                `json:"schema_version"`
+	Enabled       bool                  `json:"enabled"`
+	Schedule      ScheduleConfig        `json:"schedule"`
+	Permissions   PermissionConfig      `json:"permissions"`
+	SourcePolicy  *ResearchSourcePolicy `json:"source_policy,omitempty"`
+	Selection     SelectionConfig       `json:"selection"`
+	GlobalDaily   Budget                `json:"global_daily"`
+	PerRun        Budget                `json:"per_run"`
+	PerQuestion   Budget                `json:"per_question"`
 }
 
 // Defaults keep both learning and scheduling opt-in. Budget figures are
@@ -135,6 +136,9 @@ func (c Config) Validate() error {
 	if !c.GlobalDaily.hasLimits() || !c.PerRun.hasLimits() || !c.PerQuestion.hasLimits() ||
 		!c.PerQuestion.Fits(c.PerRun) || !c.PerRun.Fits(c.GlobalDaily) {
 		return fmt.Errorf("learning budgets must be positive and nested")
+	}
+	if err := c.SourcePolicy.validate(); err != nil {
+		return err
 	}
 	return c.Selection.Validate()
 }

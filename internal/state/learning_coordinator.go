@@ -126,7 +126,9 @@ func (c *LearningCoordinator) save(record storedLearningRun) error {
 				reason = string(record.Run.State)
 			}
 			record.Transitions = append(record.Transitions, LearningWorkerTransition{
-				State: record.Run.State, At: record.Run.UpdatedAt, Reason: reason,
+				EventID: researchTransitionID(record.Run.ID, len(record.Transitions)),
+				State:   record.Run.State, At: record.Run.UpdatedAt, Reason: reason,
+				Usage: &record.Run.Spent,
 			})
 		}
 	}

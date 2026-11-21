@@ -186,3 +186,41 @@ func TestLearningFrontierUsesOnlyAuthorizedTopic(t *testing.T) {
 		t.Fatalf("filtered frontier = %s, %v", out.String(), err)
 	}
 }
+
+func TestLearningStatusReadsMetadataWithoutLease(t *testing.T) {
+	dir := t.TempDir()
+	app := filepath.Join(dir, "config.toml")
+	if err := os.WriteFile(app, []byte("state_dir = 'data'\n"), 0600); err != nil {
+		t.Fatal(err)
+	}
+	ctx := context.Background()
+	out := new(bytes.Buffer)
+	run := func(command, data string) error {
+		out.Reset()
+		return runLearning(ctx, []string{command, "--config", app}, strings.NewReader(data), out)
+	}
+	if err := run("configure", `{"enabled":true}`); err != nil {
+		t.Fatal(err)
+	}
+	const question = "A distinct phrase to avoid leaking in status"
+	if err := run("enqueue", question); err != nil {
+		t.Fatal(err)
+	}
+	var original state.LearningWorkerResult
+	if err := json.Unmarshal(out.Bytes(), &original); err != nil || original.RunID == "" {
+		t.Fatalf("enqueue = %s, %v", out.String(), err)
+	}
+	unlock, err := state.Lock(filepath.Join(dir, "data", "learning"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer unlock()
+	if err := run("status", original.RunID); err != nil {
+		t.Fatal(err)
+	}
+	var status state.LearningWorkerResult
+	if err := json.Unmarshal(out.Bytes(), &status); err != nil || status.State != learning.RunQueued ||
+		len(status.Transitions) != 1 || status.Transitions[0].EventID == "" || strings.Contains(out.String(), question) {
+		t.Fatalf("status = %s, %v", out.String(), err)
+	}
+}

@@ -36,3 +36,44 @@ func TestLearningSearchProvider(t *testing.T) {
 		t.Fatalf("blocked provider: %+v, %v", usage, err)
 	}
 }
+
+func TestLearningHTTPRetryClassification(t *testing.T) {
+	const uri = "https://example.org/document"
+	for _, tc := range []struct {
+		name       string
+		status     int
+		retryAfter string
+		want       bool
+	}{
+		{"bad gateway", http.StatusBadGateway, "", true},
+		{"unavailable", http.StatusServiceUnavailable, "", true},
+		{"gateway timeout", http.StatusGatewayTimeout, "", true},
+		{"retry after", http.StatusServiceUnavailable, "30", false},
+		{"rate limit", http.StatusTooManyRequests, "", false},
+		{"forbidden", http.StatusForbidden, "", false},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			permissions := learning.PermissionConfig{AllowDomains: []string{"example.org"}}
+			search := LearningSearch{Permissions: permissions}
+			fetch := LearningFetch{Permissions: permissions}
+			client := &http.Client{Transport: learningTransport(func(req *http.Request) (*http.Response, error) {
+				response := &http.Response{StatusCode: tc.status, Header: make(http.Header), Body: http.NoBody}
+				if req.URL.Path == "/robots.txt" {
+					response.StatusCode = http.StatusNotFound
+				} else if tc.retryAfter != "" {
+					response.Header.Set("Retry-After", tc.retryAfter)
+				}
+				return response, nil
+			})}
+			ctx := context.Background()
+			_, usage, err := search.search(ctx, client, uri, "public question", 5)
+			if err == nil || errors.Is(err, learning.ErrRetryableHTTP) != tc.want || usage.Requests != 1 {
+				t.Fatalf("search usage = %+v, error = %v", usage, err)
+			}
+			_, usage, err = fetch.fetch(ctx, client, uri, 1024)
+			if err == nil || errors.Is(err, learning.ErrRetryableHTTP) != tc.want || usage.Requests != 2 {
+				t.Fatalf("fetch usage = %+v, error = %v", usage, err)
+			}
+		})
+	}
+}

@@ -97,6 +97,15 @@ type webPage struct {
 	truncated      bool
 }
 
+type webStatusError struct {
+	status     int
+	retryAfter bool
+}
+
+func (e webStatusError) Error() string {
+	return fmt.Sprintf("web request returned HTTP %d (site may require authentication, rate-limit requests, or present a bot challenge)", e.status)
+}
+
 func getWeb(ctx context.Context, client *http.Client, raw string) (page webPage, err error) {
 	defer func() {
 		// A site's own 20-second timeout is a recoverable tool failure. Only
@@ -122,7 +131,7 @@ func getWeb(ctx context.Context, client *http.Client, raw string) (page webPage,
 	}
 	defer resp.Body.Close()
 	if resp.StatusCode != http.StatusOK {
-		return page, fmt.Errorf("web request returned HTTP %d (site may require authentication, rate-limit requests, or present a bot challenge)", resp.StatusCode)
+		return page, webStatusError{status: resp.StatusCode, retryAfter: resp.Header.Get("Retry-After") != ""}
 	}
 	page.url = resp.Request.URL.String()
 	contentType := resp.Header.Get("Content-Type")

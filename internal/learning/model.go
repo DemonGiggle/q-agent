@@ -124,8 +124,10 @@ type ResearchReference struct {
 }
 
 type Checkpoint struct {
-	ResearchCandidates    []string            `json:"research_candidates,omitempty"`
-	ResearchAttempt       int                 `json:"research_attempt,omitempty"`
+	ResearchCandidates []string `json:"research_candidates,omitempty"`
+	ResearchAttempt    int      `json:"research_attempt,omitempty"`
+	// ResearchRequests is the reserved request count at the last saved HTTP outcome.
+	ResearchRequests      int64               `json:"research_requests,omitempty"`
 	ResearchReferences    []ResearchReference `json:"research_references,omitempty"`
 	ResearchURI           string              `json:"research_uri,omitempty"`
 	ResearchSource        *Source             `json:"research_source,omitempty"`

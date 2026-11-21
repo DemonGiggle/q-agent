@@ -54,6 +54,55 @@ func TestLearningProviderBudgetSurvivesRestart(t *testing.T) {
 	}
 }
 
+func TestLearningResearchHTTPRetryLimit(t *testing.T) {
+	for _, tc := range []struct {
+		name     string
+		firstErr error
+		wantErr  error
+		limit    int64
+		calls    int64
+	}{
+		{"one retry", learning.ErrRetryableHTTP, learning.ErrRetryableHTTP, 3, 2},
+		{"budget exhausted", learning.ErrRetryableHTTP, ErrLearningBudget, 1, 1},
+		{"unknown outcome", context.DeadlineExceeded, context.DeadlineExceeded, 3, 1},
+		{"policy denial", learning.ErrDenied, learning.ErrDenied, 3, 1},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			ctx := context.Background()
+			c := NewLearningCoordinator(t.TempDir())
+			cfg := learning.DefaultConfig()
+			cfg.Enabled, cfg.PerQuestion.Requests = true, tc.limit
+			plan := providerTestPlan(cfg.PerQuestion)
+			lease := startProviderRun(t, c, plan)
+			charge := learning.Budget{Requests: 1, WallTimeMillis: 1000}
+			var calls int64
+			var first time.Time
+			err := c.callResearchHTTP(ctx, lease, cfg, plan, charge, func(ctx context.Context) (learning.Budget, error) {
+				calls++
+				run, err := c.Get(ctx, lease.RunID)
+				wall := calls * charge.WallTimeMillis
+				if calls == 1 {
+					first = time.Now()
+				} else {
+					wall += researchRetryDelay.Milliseconds()
+					if time.Since(first) < researchRetryDelay {
+						t.Error("retry skipped backoff")
+					}
+				}
+				if err != nil || run.Run.Spent.Requests != calls || run.Run.Spent.WallTimeMillis != wall {
+					t.Fatalf("dispatched before reserving budget: %+v, %v", run, err)
+				}
+				return charge, tc.firstErr
+			})
+			run, getErr := c.Get(ctx, lease.RunID)
+			if !errors.Is(err, tc.wantErr) || getErr != nil || calls != tc.calls ||
+				(tc.wantErr == ErrLearningBudget && run.Run.State != learning.RunBudgetExhausted) {
+				t.Fatalf("run = %+v, calls = %d, errors = %v / %v", run, calls, err, getErr)
+			}
+		})
+	}
+}
+
 func TestLearningProviderSharedLimits(t *testing.T) {
 	ctx := context.Background()
 	c := NewLearningCoordinator(t.TempDir())

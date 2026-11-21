@@ -17,6 +17,7 @@ import (
 )
 
 const learningDocumentLimit = 128 << 10
+const researchFetchRequests = 2
 
 type LearningWorkerTransition struct {
 	EventID string            `json:"event_id,omitempty"`
@@ -209,7 +210,7 @@ func (c *LearningCoordinator) WorkResearch(ctx context.Context, cfg learning.Con
 				continue
 			}
 			if cp.NextIntent == "summarize" {
-				if run.Spent.Requests > 3 {
+				if run.Spent.Requests != researchCheckpointRequests(cp, 1+researchFetchRequests) {
 					// The previous model call may have completed. Keep the
 					// source without repeating an uncheckpointed call.
 					cp.ResearchSummaryStatus = "interrupted"
@@ -249,7 +250,7 @@ func (c *LearningCoordinator) WorkResearch(ctx context.Context, cfg learning.Con
 			// Calls reserve before dispatch. If the process stopped before
 			// checkpointing an output, its call outcome is unknown.
 			if (cp.NextIntent == "search" && run.Spent.Requests != 0) ||
-				(cp.NextIntent == "fetch" && run.Spent.Requests != 1) {
+				(cp.NextIntent == "fetch" && run.Spent.Requests != researchCheckpointRequests(cp, 1)) {
 				run.State, run.StopReason = learning.RunUnresolved, "interrupted_provider_call"
 				break
 			}
@@ -280,6 +281,7 @@ func (c *LearningCoordinator) WorkResearch(ctx context.Context, cfg learning.Con
 			}
 			current, run = latest, latest.Run
 			cp = run.Checkpoint
+			cp.ResearchRequests = run.Spent.Requests
 			if err != nil || (uri == "" && source == nil) {
 				run.State, run.StopReason = learning.RunUnresolved, "no_qualified_source"
 				if errors.Is(err, learning.ErrInvalidSourceContent) {
@@ -347,12 +349,19 @@ func (c *LearningCoordinator) WorkResearch(ctx context.Context, cfg learning.Con
 	}
 }
 
+func researchCheckpointRequests(cp *learning.Checkpoint, legacy int64) int64 {
+	if cp.ResearchRequests == 0 {
+		return legacy
+	}
+	return cp.ResearchRequests
+}
+
 func (c *LearningCoordinator) researchSearch(ctx context.Context, lease learning.Lease, cfg learning.Config, plan learning.Plan,
 	allow func(string) bool, search learning.SearchProvider) ([]string, error) {
 	ms := min(int64(15_000), cfg.PerQuestion.WallTimeMillis)
 	var hits []learning.SearchHit
 	charge := learning.Budget{Requests: 1, WallTimeMillis: ms}
-	err := c.CallProvider(ctx, lease, cfg, plan, charge, time.Duration(ms)*time.Millisecond, func(ctx context.Context) (learning.Budget, error) {
+	err := c.callResearchHTTP(ctx, lease, cfg, plan, charge, func(ctx context.Context) (learning.Budget, error) {
 		var usage learning.Budget
 		var err error
 		hits, usage, err = search.Search(ctx, plan.Goal, 5)
@@ -379,9 +388,9 @@ func (c *LearningCoordinator) researchFetch(ctx context.Context, lease learning.
 		return nil, nil, nil
 	}
 	ms := min(int64(10_000), cfg.PerQuestion.WallTimeMillis)
-	charge := learning.Budget{Requests: 2, Documents: 1, WallTimeMillis: ms, StorageBytes: 24 << 10}
+	charge := learning.Budget{Requests: researchFetchRequests, Documents: 1, WallTimeMillis: ms, StorageBytes: 24 << 10}
 	var doc learning.FetchedDocument
-	err := c.CallProvider(ctx, lease, cfg, plan, charge, time.Duration(ms)*time.Millisecond, func(ctx context.Context) (learning.Budget, error) {
+	err := c.callResearchHTTP(ctx, lease, cfg, plan, charge, func(ctx context.Context) (learning.Budget, error) {
 		var usage learning.Budget
 		var err error
 		doc, usage, err = fetch.Fetch(ctx, uri, learningDocumentLimit)

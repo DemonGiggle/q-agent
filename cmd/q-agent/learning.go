@@ -11,6 +11,7 @@ import (
 	"log"
 	"os"
 	"path/filepath"
+	"slices"
 	"strings"
 	"time"
 
@@ -23,8 +24,8 @@ import (
 )
 
 func runLearning(ctx context.Context, args []string, input io.Reader, output io.Writer) error {
-	if len(args) == 0 || (args[0] != "configure" && args[0] != "trigger" && args[0] != "search" && args[0] != "enqueue" && args[0] != "work" && args[0] != "recall") {
-		return fmt.Errorf("usage: q-agent learning configure|trigger|search|enqueue|work|recall [--config FILE]; pass input on stdin")
+	if len(args) == 0 || (args[0] != "configure" && args[0] != "trigger" && args[0] != "search" && args[0] != "enqueue" && args[0] != "work" && args[0] != "recall" && args[0] != "frontier") {
+		return fmt.Errorf("usage: q-agent learning configure|trigger|search|enqueue|work|recall|frontier [--config FILE]; pass input on stdin")
 	}
 
 	flags := flag.NewFlagSet("learning "+args[0], flag.ContinueOnError)
@@ -32,6 +33,11 @@ func runLearning(ctx context.Context, args []string, input io.Reader, output io.
 	var summarize bool
 	if args[0] == "work" {
 		flags.BoolVar(&summarize, "summarize", false, "summarize a public excerpt through local Ollama")
+	}
+	var chatID, topicID int64
+	if args[0] == "frontier" {
+		flags.Int64Var(&chatID, "chat-id", 0, "authorized Telegram chat ID")
+		flags.Int64Var(&topicID, "topic-id", 0, "Telegram topic ID")
 	}
 	if err := flags.Parse(args[1:]); err != nil {
 		return err
@@ -63,6 +69,14 @@ func runLearning(ctx context.Context, args []string, input io.Reader, output io.
 	cfg, err = loadLearningConfig(policyPath)
 	if err != nil {
 		return err
+	}
+
+	if args[0] == "frontier" {
+		frontier, err := collectLearningFrontier(ctx, app, cfg, chatID, topicID)
+		if err != nil {
+			return err
+		}
+		return enc.Encode(frontier)
 	}
 
 	data, err := io.ReadAll(io.LimitReader(input, 4097))
@@ -143,6 +157,46 @@ func runLearning(ctx context.Context, args []string, input io.Reader, output io.
 		return err
 	}
 	return enc.Encode(preview)
+}
+
+func collectLearningFrontier(ctx context.Context, app config.Config, cfg learning.Config, chatID, topicID int64) ([]learning.FrontierEntry, error) {
+	if !cfg.Enabled || !app.Memory.Enabled || chatID == 0 || topicID < 0 {
+		return nil, learning.ErrDenied
+	}
+	visibility := learning.GroupChat
+	if chatID > 0 {
+		if !cfg.Permissions.IncludePrivateChats || !slices.Contains(app.Telegram.AllowedUsers, chatID) {
+			return nil, learning.ErrDenied
+		}
+		visibility = learning.PrivateChat
+	} else if !cfg.Permissions.IncludeGroupChats || !slices.Contains(app.Telegram.AllowedGroups, chatID) {
+		return nil, learning.ErrDenied
+	}
+	policy, err := redaction.New(redaction.Config{}, configuredSecrets(app))
+	if err != nil {
+		return nil, err
+	}
+	allow := func(text string) bool {
+		return !strings.Contains(text, redaction.Marker) && !policy.ContainsSecret(text) &&
+			!cfg.Permissions.Excludes(learning.ConversationTurn{Transcript: text})
+	}
+	const platformName = "telegram"
+	reader := state.NewFileLearningReader(app.StateDir, policy, func(_ context.Context, scope learning.Scope) bool {
+		return scope.Platform == platformName && scope.ChatID == chatID && scope.Visibility == visibility &&
+			scope.TopicID != nil && *scope.TopicID == topicID
+	}, func(_ learning.Scope, turn learning.ConversationTurn) bool {
+		return !allow(turn.Transcript)
+	})
+	unlock, err := state.Lock(filepath.Join(app.StateDir, "learning"))
+	if err != nil {
+		return nil, err
+	}
+	defer unlock()
+	now := time.Now().UTC()
+	return state.NewLearningRepository(app.StateDir, nil).CollectConversationFrontier(ctx, reader, learning.ConversationQuery{
+		Scope: learning.Scope{Platform: platformName, ChatID: chatID, TopicID: &topicID, Visibility: visibility},
+		From:  now.Add(-48 * time.Hour), Until: now,
+	}, now, allow)
 }
 
 func learningPolicyPath(stateDir string) string {

@@ -121,6 +121,24 @@ policies before ranking. No matches produces an empty array. The command
 reads the current snapshot on demand and uses no model or auxiliary index
 files. Telegram recall is a separate integration.
 
+## Collect local research candidates
+
+```sh
+q-agent learning frontier --chat-id -1001234567890 --topic-id 7 --config ./config.toml
+```
+
+Enable learning and the relevant chat type in the learning policy. The
+requested chat must also be authorized by the Telegram service configuration.
+The command uses up to 24 completed exchanges from that topic's last 48
+hours. Explicit user questions produce related research candidates with
+origin references and a deterministic score. Repeated and near-duplicate
+questions reuse the same entry. The frontier stores up to 64 candidates per
+topic. Newly excluded text is withheld from results.
+
+Candidates stay in their private topic partition. This local command
+does not invoke a provider or transfer a candidate to a public research
+run. Automatic scheduling and approved egress are separate steps.
+
 ## Resource constraints
 
 Keep ACA on the same binary and reuse existing state, provider and

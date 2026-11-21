@@ -273,19 +273,18 @@ func TestHostStdioStderrRedacted(t *testing.T) {
 		t.Fatal("host conn lacks Diagnostic")
 	}
 	deadline := time.Now().Add(10 * time.Second)
+	// The stderr copier can report the noise before the credential line.
+	// Wait for that complete line before checking its redaction marker.
 	for {
 		text := diag.Diagnostic()
-		if strings.Contains(text, "helper starting") || strings.Contains(text, "helper noise") {
-			if strings.Contains(text, stdioTestFakeToken) {
-				t.Fatalf("raw token in diagnostics: %q", text)
-			}
-			if !strings.Contains(text, redaction.Marker) {
-				t.Fatalf("expected redaction marker in diagnostics: %q", text)
-			}
+		if strings.Contains(text, stdioTestFakeToken) {
+			t.Fatalf("raw token in diagnostics: %q", text)
+		}
+		if strings.Contains(text, "helper credential "+redaction.Marker+" end\n") {
 			return
 		}
 		if time.Now().After(deadline) {
-			t.Fatalf("no stderr diagnostics captured: %q", text)
+			t.Fatalf("redacted credential line missing from stderr diagnostics: %q", text)
 		}
 		time.Sleep(20 * time.Millisecond)
 	}

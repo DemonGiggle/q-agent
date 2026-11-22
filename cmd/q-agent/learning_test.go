@@ -27,8 +27,8 @@ func TestLearningConfigureAndDryRun(t *testing.T) {
 	out := new(bytes.Buffer)
 	configure := []string{"configure", "--config", app}
 	trigger := []string{"trigger", "--config", app}
-	if err := runLearning(ctx, configure, strings.NewReader(`{"enabled":true,"schedule":{"enabled":true}}`), out); err == nil {
-		t.Fatal("configure accepted enabled schedule")
+	if err := runLearning(ctx, configure, strings.NewReader(`{"schedule":{"enabled":true}}`), out); err == nil {
+		t.Fatal("configure accepted a schedule when learning is disabled")
 	}
 	if err := runLearning(ctx, configure, strings.NewReader(`{"enabled":true,"source_policy":{"domains":{"*.example.org":{"single_authority":true}}}}`), out); err == nil {
 		t.Fatal("configure accepted wildcard authority")

@@ -70,6 +70,7 @@ type Runtime struct {
 	scheduleCancel    context.CancelFunc
 	scheduleDone      chan struct{}
 	scheduleWake      chan struct{}
+	nightResearch     bool
 	digestCancel      context.CancelFunc
 	digestDone        chan struct{}
 	digestWake        chan struct{}

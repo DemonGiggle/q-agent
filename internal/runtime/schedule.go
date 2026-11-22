@@ -138,6 +138,7 @@ func (r *Runtime) StartScheduler(ctx context.Context) error {
 	go func() {
 		defer close(r.scheduleDone)
 		r.report(r.dispatchScheduled(schedulerCtx))
+		r.dispatchNightResearch(schedulerCtx, time.Now())
 		timer := time.NewTimer(untilNextMinute())
 		defer timer.Stop()
 		for schedulerCtx.Err() == nil {
@@ -149,6 +150,9 @@ func (r *Runtime) StartScheduler(ctx context.Context) error {
 			case <-timer.C:
 				r.report(r.Store.ScanDue(time.Now()))
 				timer.Reset(untilNextMinute())
+				r.report(r.dispatchScheduled(schedulerCtx))
+				r.dispatchNightResearch(schedulerCtx, time.Now())
+				continue
 			}
 			r.report(r.dispatchScheduled(schedulerCtx))
 		}

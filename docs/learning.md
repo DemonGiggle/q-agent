@@ -348,9 +348,38 @@ seven days, a slot gives it preference after manual choices. The
 take precedence over quota ranking after policy and cooldown checks.
 The result explains each selection and does not change queue status.
 
-Candidates stay in their private topic partition. This local command
-does not invoke a provider or transfer a candidate to a public research
-run. Automatic scheduling and approved egress are separate steps.
+## Run approved research overnight
+
+Enable the learning policy and set a schedule. For example, include this
+schedule in the JSON sent to `learning configure` and restart the service.
+
+```json
+{"enabled":true,"schedule":{"enabled":true,"timezone":"Asia/Taipei","window_start":"02:00","window_end":"05:00","idle_minutes":30}}
+```
+
+Preserve other settings when configuring the policy. Keep memory enabled,
+allow the search service and the intended public source domains, and
+enable chat recall to use completed research in Telegram.
+
+```sh
+printf '%s\n' "$run_id" | q-agent learning schedule --config ./config.toml
+```
+
+Supply a queued run ID from `learning enqueue` or `learning frontier
+--enqueue`. Scheduled work uses the approved public question already in
+that run. A chat candidate still requires an operator-reviewed public
+question at the frontier handoff. The overnight queue accepts one pending
+run and starts at most one per local window. It dispatches only after the
+configured idle interval when no interactive or scheduled chat task is
+active or queued. Work uses existing source policy and budgets and stores
+a cited note for recall. The scheduler does not send a Telegram message.
+
+The service checks the current policy before dispatch, so disabling the
+schedule also blocks dispatch. Restart the service to enable scheduling or
+move the window outside the startup policy's hours. An interrupted run
+keeps its normal checkpoint and lease semantics. To withdraw approval,
+pass the same ID to `learning schedule --remove` when the learning
+directory lock is available.
 
 ## Resource constraints
 
@@ -466,6 +495,6 @@ multi-source synthesis are follow-up work.
   applies a shared context budget and can emit metadata-only recall events.
 - #74 owns Claim lifecycle and atomic Revision history. Use evidence links
   to record support/refutation per Claim, and keep prior versions queryable.
-- #76 owns provider egress, ACL for any remote controls, and deletion across
-  durable knowledge/indexes/backups. Conversation-derived egress and
-  scheduling need their own policy controls.
+- #76 owns further provider egress controls, ACL for remote controls, and
+  deletion across durable knowledge, indexes and backups. Nightly execution
+  accepts explicitly approved public run IDs.

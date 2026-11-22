@@ -1,7 +1,6 @@
 package main
 
 import (
-	"bytes"
 	"context"
 	"encoding/json"
 	"errors"
@@ -25,13 +24,16 @@ import (
 )
 
 func runLearning(ctx context.Context, args []string, input io.Reader, output io.Writer) error {
-	if len(args) == 0 || !slices.Contains([]string{"configure", "trigger", "search", "enqueue", "work", "recall", "note", "frontier", "status", "pause", "resume", "audit"}, args[0]) {
-		return fmt.Errorf("usage: q-agent learning configure|trigger|search|enqueue|work|recall|note|frontier|status|pause|resume|audit [--config FILE]; pass input on stdin")
+	if len(args) == 0 || !slices.Contains([]string{"configure", "trigger", "search", "enqueue", "schedule", "work", "recall", "note", "frontier", "status", "pause", "resume", "audit"}, args[0]) {
+		return fmt.Errorf("usage: q-agent learning configure|trigger|search|enqueue|schedule|work|recall|note|frontier|status|pause|resume|audit [--config FILE]; pass input on stdin")
 	}
 
 	flags := flag.NewFlagSet("learning "+args[0], flag.ContinueOnError)
 	path := flags.String("config", config.DefaultPath, "q-agent TOML configuration")
-	var summarize, claims bool
+	var summarize, claims, removeSchedule bool
+	if args[0] == "schedule" {
+		flags.BoolVar(&removeSchedule, "remove", false, "remove a run from the overnight queue")
+	}
 	var sources int
 	if args[0] == "enqueue" {
 		flags.IntVar(&sources, "sources", 1, "verified source target (1 or 2)")
@@ -64,23 +66,19 @@ func runLearning(ctx context.Context, args []string, input io.Reader, output io.
 	if err != nil {
 		return err
 	}
-	policyPath := learningPolicyPath(app.StateDir)
-	cfg := learning.DefaultConfig()
 	enc := json.NewEncoder(output)
 	enc.SetIndent("", "  ")
 	if args[0] == "configure" {
-		if err := decodeLearningConfig(input, &cfg); err != nil {
+		cfg, err := state.ReadLearningPolicy(input)
+		if err != nil {
 			return err
 		}
-		if cfg.Schedule.Enabled {
-			return fmt.Errorf("learning supports manual commands only; set schedule.enabled to false")
-		}
-		if err := state.Atomic(policyPath, cfg); err != nil {
+		if err := state.Atomic(learningPolicyPath(app.StateDir), cfg); err != nil {
 			return err
 		}
 		return enc.Encode(cfg)
 	}
-	cfg, err = loadLearningConfig(policyPath)
+	cfg, err := state.LoadLearningPolicy(app.StateDir)
 	if err != nil {
 		return err
 	}
@@ -102,7 +100,7 @@ func runLearning(ctx context.Context, args []string, input io.Reader, output io.
 	}
 	// Check against the caller's raw text before redaction and apply the
 	// same exclusion policy again to the sanitized planning input.
-	runIDInput := slices.Contains([]string{"work", "status", "pause", "resume", "audit", "note"}, args[0])
+	runIDInput := slices.Contains([]string{"work", "status", "pause", "resume", "audit", "note", "schedule"}, args[0])
 	if !runIDInput && cfg.Permissions.Excludes(learning.ConversationTurn{Transcript: string(data)}) {
 		return learning.ErrDenied
 	}
@@ -112,6 +110,28 @@ func runLearning(ctx context.Context, args []string, input io.Reader, output io.
 	}
 	coordinator := state.NewLearningCoordinator(app.StateDir)
 	allow := func(s string) bool { return !policy.ContainsSecret(s) }
+	if args[0] == "schedule" {
+		unlock, err := state.Lock(filepath.Join(app.StateDir, "learning"))
+		if err != nil {
+			return err
+		}
+		defer unlock()
+		id := strings.TrimSpace(string(data))
+		if removeSchedule {
+			err = coordinator.RemoveScheduledResearch(id)
+		} else {
+			err = coordinator.ScheduleResearch(ctx, cfg, id, func(s string) bool {
+				return allow(s) && !strings.Contains(s, redaction.Marker) && !trust.Suspicious(s)
+			})
+		}
+		if err != nil {
+			return err
+		}
+		return enc.Encode(struct {
+			RunID     string `json:"run_id"`
+			Scheduled bool   `json:"scheduled"`
+		}{RunID: id, Scheduled: !removeSchedule})
+	}
 	writeResearchResult := func(id string, result any) error {
 		// Checkpoints already committed at this boundary. Cancellation and
 		// audit I/O errors must not change the reported research outcome.
@@ -329,24 +349,12 @@ func learningPolicyPath(stateDir string) string {
 	return filepath.Join(stateDir, "learning", "policy.json")
 }
 
-func loadLearningConfig(path string) (learning.Config, error) {
-	cfg := learning.DefaultConfig()
-	f, err := os.Open(path)
-	if err != nil {
-		return cfg, err
-	}
-	defer f.Close()
-	err = decodeLearningConfig(f, &cfg)
-	return cfg, err
-}
-
-// Load the policy once at startup. Missing or invalid policy disables
-// automatic learning features until the service is restarted.
+// Load initial opt-ins for learning features when the service starts.
 func startupLearningConfig(app config.Config) learning.Config {
 	if !app.Memory.Enabled {
 		return learning.Config{}
 	}
-	cfg, err := loadLearningConfig(learningPolicyPath(app.StateDir))
+	cfg, err := state.LoadLearningPolicy(app.StateDir)
 	if err != nil {
 		if !errors.Is(err, os.ErrNotExist) {
 			log.Print("[LEARNING] Invalid or unreadable policy; automatic learning disabled")
@@ -362,27 +370,4 @@ func learningMemoryLimits(app config.Config, cfg learning.Config) state.MemoryLi
 		LearnFromDMs:    app.Memory.Enabled && cfg.Enabled && cfg.Permissions.IncludePrivateChats,
 		LearnFromGroups: app.Memory.Enabled && cfg.Enabled && cfg.Permissions.IncludeGroupChats,
 	}
-}
-
-func decodeLearningConfig(input io.Reader, cfg *learning.Config) error {
-	const maxSize = 64 << 10
-	data, err := io.ReadAll(io.LimitReader(input, maxSize+1))
-	if err != nil {
-		return err
-	}
-	if len(data) > maxSize {
-		return fmt.Errorf("learning configuration exceeds 64 KiB")
-	}
-	decoder := json.NewDecoder(bytes.NewReader(data))
-	decoder.DisallowUnknownFields()
-	if err := decoder.Decode(&cfg); err != nil {
-		return fmt.Errorf("invalid learning configuration: %w", err)
-	}
-	if err := decoder.Decode(new(any)); !errors.Is(err, io.EOF) {
-		return fmt.Errorf("learning configuration must contain one JSON object")
-	}
-	if cfg == nil {
-		return fmt.Errorf("learning configuration requires an object")
-	}
-	return cfg.Validate()
 }

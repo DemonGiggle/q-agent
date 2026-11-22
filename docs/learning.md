@@ -228,8 +228,9 @@ deadline, retry, and audit limits as excerpt summaries. It accepts one or
 two verified excerpts and sends their text in order. The host maps the
 returned `supports`, `refutes` and `context` labels to the existing
 Evidence IDs and source locators. A draft with support is stored as a
-`hypothesis`. A draft with refutation remains `unresolved` and keeps
-the cited evidence on both sides. If there is no direct evidence or the
+`hypothesis`. Supporting and refuting evidence together make it
+`disputed`, with citations on both sides. A claim with refutation alone
+remains `unresolved`. If there is no direct evidence or the
 model abstains, the run ends `UNRESOLVED` with its checkpoint and audit.
 
 A successful commit writes the draft, evidence and reference note
@@ -238,6 +239,35 @@ Use the same `--claims` flag when resuming before the model stage. A
 saved draft can finish committing without another model call. The
 checkpoint also carries the open question ID and accepted source
 fingerprints for future research.
+
+### Review and inspect claim history
+
+```sh
+printf '%s\n' "$claim_id" | q-agent learning claim-history --config ./config.toml
+printf '%s\n' '{"claim_id":"CLAIM_ID","expected_revision":1,"action":"review","reason":"Checked the independent citations"}' |
+  q-agent learning claim-edit --config ./config.toml
+```
+
+Research may add independent evidence to a uniquely matched, unscoped
+proposition. A match uses normalized subject, predicate, and object and
+can use an operator-recorded subject alias. Copies and reprints do not
+reinforce a claim. Ambiguous matches remain separate drafts. Supporting
+and refuting evidence together mark a claim disputed and keep both sets
+of citations. Confidence uses independent, direct, fresh, public-reference
+evidence and records the counts that inform the score.
+
+The local edit commands require the current revision and a reason.
+`review` can promote a hypothesis with two fresh independent supporting
+sources. `qualify` replaces the alias and qualifier lists and accepts
+`valid_from` and `valid_to` as RFC 3339 timestamps for when the claim
+applies. `contradict` accepts `refuting_evidence_ids` that the operator
+has checked against the claim. `stale` marks an approved claim for
+revalidation. `supersede` accepts a supported `replacement_id` for the
+same subject and predicate. `rollback` restores the previous wording and
+scope as a new revision and retains accumulated evidence. History returns
+the current state, prior snapshots recorded by edits, and replacement
+lineage. Legacy claims begin retaining complete snapshots at their first
+tracked edit. Concurrent edits check the expected revision before writing.
 
 ## Find previously read sources
 
@@ -489,12 +519,13 @@ multi-source synthesis are follow-up work.
   fenced reference-note commit and replays durable transitions into the
   shared audit log. The planner applies publication age, exact-host
   overrides, and an opt-in single-authority rule. Optional claim drafting
-  associates verified evidence with a hypothesis or unresolved draft.
+  associates verified evidence with a hypothesis, disputed claim, or
+  unresolved draft.
 - #73 owns note and claim recall. Telegram and the CLI can retrieve
   authorized cited notes with keywords and date/domain filters. Chat
   applies a shared context budget and can emit metadata-only recall events.
-- #74 owns Claim lifecycle and atomic Revision history. Use evidence links
-  to record support/refutation per Claim, and keep prior versions queryable.
+- #74 provides atomic claim revisions, evidence-based conflict handling,
+  explicit review, and replacement history.
 - #76 owns further provider egress controls, ACL for remote controls, and
   deletion across durable knowledge, indexes and backups. Nightly execution
   accepts explicitly approved public run IDs.

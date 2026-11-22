@@ -86,6 +86,9 @@ func researchWorkerResult(record storedLearningRun) LearningWorkerResult {
 		if run.State == learning.RunCompleted {
 			if cp.ResearchClaim != nil {
 				result.ClaimID = cp.ResearchClaim.ID
+				if cp.PublishedClaimID != "" {
+					result.ClaimID = cp.PublishedClaimID
+				}
 			}
 			if cp.ResearchEvidence != nil {
 				result.EvidenceID = cp.ResearchEvidence.ID
@@ -369,6 +372,17 @@ func (c *LearningCoordinator) workResearch(ctx context.Context, cfg learning.Con
 			if terminalLearningRun(run.State) {
 				return result, nil
 			}
+			if cp.ResearchClaim != nil {
+				snapshot, err := c.repo.Snapshot(ctx, learning.Partition{Public: true})
+				if err != nil {
+					return result, err
+				}
+				at := slices.IndexFunc(snapshot.Notes, func(note learning.Note) bool { return note.ID == run.ID })
+				if at < 0 || len(snapshot.Notes[at].ClaimIDs) != 1 {
+					return result, fmt.Errorf("committed claim is missing from its research note")
+				}
+				cp.PublishedClaimID = snapshot.Notes[at].ClaimIDs[0]
+			}
 			run.State, run.StopReason = learning.RunCompleted, "source_recorded"
 			if sourceTarget == 2 {
 				run.StopReason = "independent_excerpts_recorded"
@@ -542,8 +556,11 @@ func (c *LearningCoordinator) commitResearch(ctx context.Context, cfg learning.C
 		note.Summary = "Unreviewed model summary of the cited excerpt: " + cp.ResearchSummary
 	}
 	if cp.ResearchClaim != nil {
-		note.ClaimIDs = []string{cp.ResearchClaim.ID}
-		next.Claims = append(next.Claims, *cp.ResearchClaim)
+		id := evolveResearchClaim(&next, cfg, allow, *cp.ResearchClaim, c.now())
+		if id == "" {
+			return c.failResearchCommit(ctx, lease, "policy_changed")
+		}
+		note.ClaimIDs = []string{id}
 	}
 	next.Notes = append(next.Notes, note)
 	_, err = c.repo.Commit(ctx, partition, next.Version, lease, cp.OperationID, next)

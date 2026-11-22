@@ -142,18 +142,7 @@ func publicRecallView(snapshot learning.KnowledgeSnapshot, cfg learning.Config, 
 	}
 	claims := make(map[string]learning.Claim, len(snapshot.Claims))
 	for _, claim := range snapshot.Claims {
-		if claim.Validate() != nil || len(claim.Evidence) == 0 ||
-			!allowed(claim.Subject+" "+claim.Predicate+" "+claim.Object) {
-			continue
-		}
-		valid := true
-		for key, value := range claim.Qualifiers {
-			if !allowed(key) || !allowed(value) {
-				valid = false
-				break
-			}
-		}
-		if !valid {
+		if claim.Validate() != nil || len(claim.Evidence) == 0 || !claimTextsAllowed(cfg, allow, claim) {
 			continue
 		}
 		if slices.ContainsFunc(claim.Evidence, func(link learning.EvidenceLink) bool {
@@ -186,10 +175,14 @@ func publicRecallView(snapshot learning.KnowledgeSnapshot, cfg learning.Config, 
 		noteClaims := note.ClaimIDs
 		note.ClaimIDs = nil
 		for _, id := range noteClaims {
-			if claim, ok := claims[id]; ok && !slices.ContainsFunc(claim.Evidence, func(link learning.EvidenceLink) bool {
-				return !slices.Contains(note.EvidenceIDs, link.EvidenceID)
-			}) {
+			if claim, ok := claims[id]; ok {
 				note.ClaimIDs = append(note.ClaimIDs, id)
+				note.EvidenceIDs = slices.Clone(note.EvidenceIDs)
+				for _, link := range claim.Evidence {
+					if !slices.Contains(note.EvidenceIDs, link.EvidenceID) {
+						note.EvidenceIDs = append(note.EvidenceIDs, link.EvidenceID)
+					}
+				}
 			}
 		}
 		if note.BodyRef == "" && auditID.MatchString(note.ID) {

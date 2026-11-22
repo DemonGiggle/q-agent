@@ -24,7 +24,7 @@ func TestLearningClaimDraftAndRecovery(t *testing.T) {
 		uncertain            bool
 	}{
 		{name: "support and context", output: start + `["supports","context"]}}`, status: "hypothesis", state: learning.RunCompleted},
-		{name: "opposition and crash recovery", output: start + `["supports","refutes"]}}`, status: "unresolved", state: learning.RunCompleted, interrupt: true},
+		{name: "opposition and crash recovery", output: start + `["supports","refutes"]}}`, status: "disputed", state: learning.RunCompleted, interrupt: true},
 		{name: "only background", output: start + `["context","context"]}}`, state: learning.RunUnresolved},
 		{name: "abstention", output: `{"claim":null}`, state: learning.RunUnresolved},
 		{name: "wrong relation count", output: start + `["supports"]}}`, state: learning.RunUnresolved},
@@ -150,7 +150,9 @@ func TestLearningClaimDraftAndRecovery(t *testing.T) {
 				t.Fatalf("claim publication: %+v, result = %+v", snap, result)
 			}
 			claim := snap.Claims[0]
-			if claim.Status != tc.status || claim.Confidence != 0 || len(claim.Evidence) != 2 ||
+			if claim.Status != tc.status || claim.ConfidenceReason == "" || len(claim.Evidence) != 2 ||
+				len(snap.Revisions) != 1 || snap.Revisions[0].Decision != "ADD" ||
+				(tc.interrupt && (claim.Confidence != 0 || claim.Qualifiers[conflictQualifier] == "")) ||
 				claim.Evidence[0].Relation != "supports" || claim.Evidence[0].EvidenceID != snap.Evidence[0].ID ||
 				claim.Evidence[1].EvidenceID != snap.Evidence[1].ID ||
 				(tc.interrupt && claim.Evidence[1].Relation != "refutes") ||

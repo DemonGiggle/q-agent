@@ -56,6 +56,9 @@ func TestLearningRecallInInteractiveChat(t *testing.T) {
 		}},
 	}
 	dir := filepath.Join(r.Config.StateDir, "learning")
+	if err := state.Atomic(filepath.Join(dir, "policy.json"), r.Learning); err != nil {
+		t.Fatal(err)
+	}
 	path := filepath.Join(dir, "knowledge", "public.json")
 	if err := state.Atomic(path, struct {
 		Schema   string                     `json:"schema_version"`
@@ -127,7 +130,7 @@ func TestLearningRecallInInteractiveChat(t *testing.T) {
 				}
 			}
 		}
-		if i == 0 && (hits != 1 || size+len(priorResearchInstruction) > r.Config.Memory.MaxContextBytes/3) {
+		if i == 0 && (len(req.Tools) != 0 || hits != 1 || size+len(priorResearchInstruction) > r.Config.Memory.MaxContextBytes/3) {
 			t.Fatalf("relevant chat hits=%d, bytes=%d", hits, size)
 		}
 		if i > 0 && hits != 0 {
@@ -146,5 +149,13 @@ func TestLearningRecallInInteractiveChat(t *testing.T) {
 		len(event.ClaimRefs) != 1 || event.ClaimRefs[0] != claim.ID ||
 		strings.Contains(string(raw), query) || strings.Contains(string(raw), quote) || strings.Contains(string(raw), uri) {
 		t.Fatalf("recall event = %s, %v", raw, err)
+	}
+	changed := r.Learning
+	changed.Permissions.BlockDomains = []string{"example.org"}
+	if err := state.Atomic(filepath.Join(dir, "policy.json"), changed); err != nil {
+		t.Fatal(err)
+	}
+	if _, recalled := r.taskHistory(ctx, input(20, 1, 0, 1, query), state.Conversation{}, true); recalled.content != "" {
+		t.Fatal("policy revocation did not take effect on the next response")
 	}
 }

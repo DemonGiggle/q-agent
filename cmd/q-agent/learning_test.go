@@ -3,8 +3,10 @@ package main
 import (
 	"bytes"
 	"context"
+	"crypto/rand"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"os"
 	"path/filepath"
 	"strings"
@@ -64,19 +66,21 @@ func TestLearningConfigureAndDryRun(t *testing.T) {
 	}
 	audit := filepath.Join(dir, "learning", "audit")
 	events, err := os.ReadDir(audit)
-	if err != nil || len(events) != 1 {
+	if err != nil || len(events) != 2 {
 		t.Fatalf("audit files: %v, %v", events, err)
 	}
-	raw, err := os.ReadFile(filepath.Join(audit, events[0].Name()))
-	if err != nil || bytes.Contains(raw, []byte(question)) {
-		t.Fatalf("audit contents invalid: err=%v", err)
-	}
-	var event learning.Event
-	if err := json.Unmarshal(raw, &event); err != nil {
-		t.Fatal(err)
-	}
-	if err := event.Validate(); err != nil || event.RunID != preview.Run.ID {
-		t.Fatalf("invalid audit event: %+v, %v", event, err)
+	for _, item := range events {
+		raw, err := os.ReadFile(filepath.Join(audit, item.Name()))
+		if err != nil || bytes.Contains(raw, []byte(question)) || bytes.Contains(raw, []byte("example.org")) {
+			t.Fatalf("audit contents invalid: err=%v", err)
+		}
+		var event learning.Event
+		if err := json.Unmarshal(raw, &event); err != nil {
+			t.Fatal(err)
+		}
+		if err := event.Validate(); err != nil || (event.Type == learning.ResearchPlanned && event.RunID != preview.Run.ID) {
+			t.Fatalf("invalid audit event: %+v, %v", event, err)
+		}
 	}
 }
 
@@ -318,6 +322,9 @@ func TestLearningAuditReplaysAfterStorageFailure(t *testing.T) {
 		t.Fatal(err)
 	}
 	auditDir := filepath.Join(dir, "data", "learning", "audit")
+	if err := os.Rename(auditDir, auditDir+".before"); err != nil {
+		t.Fatal(err)
+	}
 	if err := os.WriteFile(auditDir, nil, 0600); err != nil {
 		t.Fatal(err)
 	}
@@ -339,6 +346,9 @@ func TestLearningAuditReplaysAfterStorageFailure(t *testing.T) {
 	if err := os.Remove(auditDir); err != nil {
 		t.Fatal(err)
 	}
+	if err := os.Rename(auditDir+".before", auditDir); err != nil {
+		t.Fatal(err)
+	}
 	if err := command("resume", id); err != nil {
 		t.Fatal(err)
 	}
@@ -346,7 +356,7 @@ func TestLearningAuditReplaysAfterStorageFailure(t *testing.T) {
 		t.Fatalf("resume = %s, %v", &out, err)
 	}
 	entries, err := os.ReadDir(auditDir)
-	if err != nil || len(entries) != 3 {
+	if err != nil || len(entries) != 4 {
 		t.Fatalf("automatic replay saved %d files, %v", len(entries), err)
 	}
 	if err := command("audit", id); err != nil {
@@ -387,7 +397,7 @@ func TestLearningAuditReplaysAfterStorageFailure(t *testing.T) {
 		}
 	}
 	entries, err = os.ReadDir(auditDir)
-	if err != nil || len(entries) != 3 {
+	if err != nil || len(entries) != 4 {
 		t.Fatalf("explicit replay saved %d files, %v", len(entries), err)
 	}
 	if err := command("configure", `{"enabled":true,"permissions":{"excluded_terms":["Distinct text"]}}`); err != nil {
@@ -395,5 +405,124 @@ func TestLearningAuditReplaysAfterStorageFailure(t *testing.T) {
 	}
 	if err := command("audit", id); !errors.Is(err, learning.ErrDenied) || out.Len() != 0 {
 		t.Fatalf("audit of excluded question = %s, %v", &out, err)
+	}
+}
+
+func TestLearningPrivateFrontierLifecycle(t *testing.T) {
+	ctx := context.Background()
+	dir := t.TempDir()
+	app := filepath.Join(dir, "config.toml")
+	if err := os.WriteFile(app, []byte("state_dir = 'data'\n[telegram]\nallowed_groups = [-100]\n"), 0600); err != nil {
+		t.Fatal(err)
+	}
+	store, err := state.Open(filepath.Join(dir, "data"), nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	const erasedText = "What made the private astronomical archive unusual?"
+	const retainedText = "What methods did the paper workshop use?"
+	for i, message := range []struct {
+		topic int64
+		text  string
+	}{
+		{7, erasedText}, {7, retainedText}, {8, "How was the water mill built?"},
+	} {
+		route := platform.Message{Platform: "telegram", ChatID: -100, TopicID: message.topic}
+		if err := store.CommitExchange(route, fmt.Sprintf("update:telegram:%d", i+1), state.Conversation{Pairs: []state.Pair{{User: message.text}}}, time.Now().Add(-time.Minute)); err != nil {
+			t.Fatal(err)
+		}
+	}
+	invoke := func(input string, args ...string) (string, error) {
+		var out strings.Builder
+		err := runLearning(ctx, append(args, "--config", app), strings.NewReader(input), &out)
+		return strings.TrimSpace(out.String()), err
+	}
+	run := func(input string, args ...string) string {
+		t.Helper()
+		out, err := invoke(input, args...)
+		if err != nil {
+			t.Fatal(err)
+		}
+		return out
+	}
+	const enabled = `{"enabled":true,"permissions":{"include_group_chats":true,"allow_domains":["example.org"]}}`
+	run(enabled, "configure")
+	var entries []learning.FrontierEntry
+	if err := json.Unmarshal([]byte(run("", "frontier", "--chat-id", "-100", "--topic-id", "7")), &entries); err != nil || len(entries) != 2 {
+		t.Fatalf("frontier = %+v, %v", entries, err)
+	}
+	var eraseID, retainedID string
+	for _, entry := range entries {
+		if strings.Contains(entry.Question.Text, "astronomical archive") {
+			eraseID = entry.Question.ID
+		} else {
+			retainedID = entry.Question.ID
+		}
+	}
+	if eraseID == "" || retainedID == "" {
+		t.Fatalf("lost a private lead: %+v", entries)
+	}
+	run("", "frontier", "--chat-id", "-100", "--topic-id", "7", "--mute", retainedID)
+	if out := run("", "frontier", "--chat-id", "-100", "--topic-id", "7", "--select"); strings.Contains(out, retainedID) {
+		t.Fatalf("muted candidate selected: %s", out)
+	}
+	run("", "frontier", "--chat-id", "-100", "--topic-id", "7", "--pin", retainedID)
+	if out := run("", "frontier", "--chat-id", "-100", "--topic-id", "7", "--select"); !strings.Contains(out, "manual_priority") {
+		t.Fatalf("pinned candidate omitted: %s", out)
+	}
+	dir = filepath.Join(dir, "data", "learning", "knowledge")
+	files, err := filepath.Glob(filepath.Join(dir, "*.json"))
+	if err != nil || len(files) != 1 {
+		t.Fatalf("partition files = %v, %v", files, err)
+	}
+	raw, err := os.ReadFile(files[0])
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, copy := range []string{files[0] + ".bak.1", filepath.Join(dir, ".atomic-123")} {
+		if err := os.WriteFile(copy, raw, 0600); err != nil {
+			t.Fatal(err)
+		}
+	}
+	run(`{"enabled":true,"permissions":{"include_group_chats":true,"excluded_topics":[{"chat_id":-100,"topic_id":7}]}}`, "configure")
+	if _, err := invoke("", "export", "--chat-id", "-100", "--topic-id", "7"); !errors.Is(err, learning.ErrDenied) {
+		t.Fatalf("blacklisted topic exported: %v", err)
+	}
+	run(`{"enabled":false}`, "configure")
+	id := rand.Text()
+	args := []string{"delete", "--chat-id", "-100", "--topic-id", "7", "--candidate", eraseID, "--request-id", id}
+	first := run("", args...)
+	if second := run("", args...); first != second || strings.Contains(first, "astronomical") {
+		t.Fatalf("receipt is unstable or contains deleted text: %s, %s", first, second)
+	}
+	if _, err := invoke("", "delete", "--chat-id", "-99", "--topic-id", "7"); !errors.Is(err, learning.ErrDenied) {
+		t.Fatalf("unauthorized scope erased: %v", err)
+	}
+	raw, err = os.ReadFile(files[0])
+	if err != nil || bytes.Contains(raw, []byte("astronomical")) || !bytes.Contains(raw, []byte("paper workshop")) {
+		t.Fatalf("wrong data after erasure: %s, %v", raw, err)
+	}
+	for _, copy := range []string{files[0] + ".bak.1", filepath.Join(dir, ".atomic-123")} {
+		if _, err := os.Stat(copy); !errors.Is(err, os.ErrNotExist) {
+			t.Fatalf("erased copy %s is still present: %v", copy, err)
+		}
+	}
+	run(enabled, "configure")
+	if out := run("", "frontier", "--chat-id", "-100", "--topic-id", "7"); strings.Contains(out, "astronomical") || !strings.Contains(out, "paper workshop") {
+		t.Fatalf("frontier after reopening: %s", out)
+	}
+	if out := run("", "export", "--public"); strings.Contains(out, "paper workshop") || strings.Contains(out, "astronomical") {
+		t.Fatalf("private data leaked into public export: %s", out)
+	}
+	if out := run("", "frontier", "--chat-id", "-100", "--topic-id", "8"); !strings.Contains(out, "water mill") {
+		t.Fatalf("another topic affected by deletion: %s", out)
+	}
+	run("", "frontier", "--chat-id", "-100", "--topic-id", "7", "--dismiss", retainedID)
+	if out := run("", "frontier", "--chat-id", "-100", "--topic-id", "7"); out != "[]" {
+		t.Fatalf("dismissed candidate shown as active: %s", out)
+	}
+	run("", "delete", "--chat-id", "-100", "--topic-id", "7")
+	if out := run("", "frontier", "--chat-id", "-100", "--topic-id", "7", "--status", "all"); out != "[]" {
+		t.Fatalf("erased topic unexpectedly rebuilt: %s", out)
 	}
 }

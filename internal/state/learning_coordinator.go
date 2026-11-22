@@ -246,6 +246,9 @@ func (c *LearningCoordinator) guard(ctx context.Context, partition learning.Part
 		record.Run.State != learning.RunCommitting || record.Run.Checkpoint == nil || record.Run.Checkpoint.OperationID != operationID {
 		return learning.ErrDenied
 	}
+	if c.cancelRequested(lease.RunID) {
+		return context.Canceled
+	}
 	return write()
 }
 
@@ -336,6 +339,10 @@ func (c *LearningCoordinator) Checkpoint(ctx context.Context, lease learning.Lea
 }
 
 func (c *LearningCoordinator) Cancel(ctx context.Context, runID string) error {
+	return c.cancelResearch(ctx, runID, "cancelled")
+}
+
+func (c *LearningCoordinator) cancelResearch(ctx context.Context, runID, reason string) error {
 	c.mu.Lock()
 	defer c.mu.Unlock()
 	if err := ctx.Err(); err != nil {
@@ -368,7 +375,7 @@ func (c *LearningCoordinator) Cancel(ctx context.Context, runID string) error {
 	}
 	record.ResumeState = ""
 	record.Run.State = learning.RunCancelled
-	record.Run.StopReason = "cancelled"
+	record.Run.StopReason = reason
 	record.Run.EndedAt = &record.Run.UpdatedAt
 	record.ExpiresAt = nil
 	record.Version++

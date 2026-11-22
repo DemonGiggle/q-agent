@@ -138,7 +138,8 @@ func validAuditMetadata(event learning.Event) bool {
 		return knownResearchState(learning.RunState(event.Outcome)) && safeResearchReason(event.Reason) == event.Reason
 	}
 	return event.Reason == "" && event.Spent == nil &&
-		((event.Type == learning.ResearchPlanned && event.Outcome == "dry_run") ||
+		((event.Type == learning.PolicyConfigured && event.Outcome == "applied" && len(event.ObjectRefs) == 1) ||
+			(event.Type == learning.ResearchPlanned && event.Outcome == "dry_run") ||
 			(event.Type == learning.ModelCallReserved && event.Outcome == "reserved"))
 }
 

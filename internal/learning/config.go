@@ -9,11 +9,27 @@ import (
 )
 
 type PermissionConfig struct {
-	IncludePrivateChats bool     `json:"include_private_chats"`
-	IncludeGroupChats   bool     `json:"include_group_chats"`
-	ExcludedTerms       []string `json:"excluded_terms,omitempty"`
-	AllowDomains        []string `json:"allow_domains,omitempty"`
-	BlockDomains        []string `json:"block_domains,omitempty"`
+	IncludePrivateChats bool                `json:"include_private_chats"`
+	IncludeGroupChats   bool                `json:"include_group_chats"`
+	ExcludedTerms       []string            `json:"excluded_terms,omitempty"`
+	AllowDomains        []string            `json:"allow_domains,omitempty"`
+	BlockDomains        []string            `json:"block_domains,omitempty"`
+	ExcludedTopics      []ConversationTopic `json:"excluded_topics,omitempty"`
+	PrivateFrontierDays int                 `json:"private_frontier_days,omitempty"`
+}
+
+type ConversationTopic struct {
+	ChatID  int64 `json:"chat_id"`
+	TopicID int64 `json:"topic_id"`
+}
+
+func (p PermissionConfig) ExcludesTopic(chatID, topicID int64) bool {
+	for _, topic := range p.ExcludedTopics {
+		if topic.ChatID == chatID && topic.TopicID == topicID {
+			return true
+		}
+	}
+	return false
 }
 
 // Excludes is a deterministic local hook; future topic classification also
@@ -143,6 +159,14 @@ func (c Config) Validate() error {
 	if !c.GlobalDaily.hasLimits() || !c.PerRun.hasLimits() || !c.PerQuestion.hasLimits() ||
 		!c.PerQuestion.Fits(c.PerRun) || !c.PerRun.Fits(c.GlobalDaily) {
 		return fmt.Errorf("learning budgets must be positive and nested")
+	}
+	if c.Permissions.PrivateFrontierDays < 0 || c.Permissions.PrivateFrontierDays > 3650 {
+		return fmt.Errorf("learning private frontier retention must be between 0 and 3650 days")
+	}
+	for _, topic := range c.Permissions.ExcludedTopics {
+		if topic.ChatID == 0 || topic.TopicID < 0 {
+			return fmt.Errorf("invalid excluded learning topic")
+		}
 	}
 	if err := c.SourcePolicy.validate(); err != nil {
 		return err

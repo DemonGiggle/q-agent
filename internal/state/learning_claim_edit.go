@@ -2,10 +2,8 @@ package state
 
 import (
 	"context"
-	"encoding/json"
 	"fmt"
 	"math"
-	"path/filepath"
 	"reflect"
 	"slices"
 	"strings"
@@ -60,10 +58,7 @@ func (r *LearningRepository) ClaimHistory(ctx context.Context, cfg learning.Conf
 			if event.EntityType != "claim" || event.EntityID != id {
 				continue
 			}
-			if !allow(event.Reason) || cfg.Permissions.Excludes(learning.ConversationTurn{Transcript: event.Reason}) ||
-				slices.ContainsFunc(event.EvidenceIDs, func(id string) bool { _, ok := refs[id]; return !ok }) ||
-				(event.Before != nil && (!claimTextsAllowed(cfg, allow, *event.Before) ||
-					!allClaimReferencesAllowed(refs, event.Before.Evidence))) {
+			if !claimRevisionAllowed(event, cfg, allow, func(id string) bool { _, ok := refs[id]; return ok }) {
 				return nil, learning.ErrDenied
 			}
 			entry.Revisions = append(entry.Revisions, event)
@@ -75,6 +70,15 @@ func (r *LearningRepository) ClaimHistory(ctx context.Context, cfg learning.Conf
 		return nil, learning.ErrDenied
 	}
 	return history, nil
+}
+
+func claimRevisionAllowed(event learning.RevisionEvent, cfg learning.Config, allow, evidenceAllowed func(string) bool) bool {
+	if !allow(event.Reason) || cfg.Permissions.Excludes(learning.ConversationTurn{Transcript: event.Reason}) ||
+		slices.ContainsFunc(event.EvidenceIDs, func(id string) bool { return !evidenceAllowed(id) }) {
+		return false
+	}
+	return event.Before == nil || (claimTextsAllowed(cfg, allow, *event.Before) &&
+		!slices.ContainsFunc(event.Before.Evidence, func(link learning.EvidenceLink) bool { return !evidenceAllowed(link.EvidenceID) }))
 }
 
 // EditPublicClaim applies one explicitly reviewed change. The caller
@@ -210,22 +214,9 @@ func (r *LearningRepository) EditPublicClaim(ctx context.Context, cfg learning.C
 }
 
 func (r *LearningRepository) savePublicKnowledge(ctx context.Context, data learningPartition, next learning.KnowledgeSnapshot) error {
-	if err := next.ValidateReferences(); err != nil {
-		return err
-	}
 	if err := next.ValidateClaimHistory(data.Snapshot); err != nil {
 		return err
 	}
 	data.Snapshot = next
-	body, err := json.Marshal(data)
-	if err != nil {
-		return err
-	}
-	if len(body) > maxLearningPartitionBytes {
-		return ErrLearningPartitionFull
-	}
-	if err := ctx.Err(); err != nil {
-		return err
-	}
-	return atomicBytes(filepath.Join(r.dir, "public.json"), body)
+	return r.saveLearningPartition(ctx, "public", data)
 }

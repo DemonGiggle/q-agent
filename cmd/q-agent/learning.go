@@ -2,6 +2,7 @@ package main
 
 import (
 	"context"
+	"crypto/rand"
 	"encoding/json"
 	"errors"
 	"flag"
@@ -10,6 +11,7 @@ import (
 	"log"
 	"os"
 	"path/filepath"
+	"reflect"
 	"slices"
 	"strings"
 	"time"
@@ -24,13 +26,16 @@ import (
 )
 
 func runLearning(ctx context.Context, args []string, input io.Reader, output io.Writer) error {
-	if len(args) == 0 || !slices.Contains([]string{"configure", "trigger", "search", "enqueue", "schedule", "work", "recall", "note", "claim-history", "claim-edit", "frontier", "status", "pause", "resume", "audit"}, args[0]) {
-		return fmt.Errorf("usage: q-agent learning configure|trigger|search|enqueue|schedule|work|recall|note|claim-history|claim-edit|frontier|status|pause|resume|audit [--config FILE]; pass input on stdin")
+	if len(args) == 0 || !slices.Contains([]string{"configure", "trigger", "search", "enqueue", "schedule", "work", "recall", "note", "claim-history", "claim-edit", "frontier", "status", "pause", "resume", "cancel", "audit", "export", "delete", "archive"}, args[0]) {
+		return fmt.Errorf("usage: q-agent learning configure|trigger|search|enqueue|schedule|work|recall|note|claim-history|claim-edit|frontier|status|pause|resume|cancel|audit|export|delete|archive [--config FILE]; pass input on stdin")
 	}
 
 	flags := flag.NewFlagSet("learning "+args[0], flag.ContinueOnError)
 	path := flags.String("config", config.DefaultPath, "q-agent TOML configuration")
-	var summarize, claims, removeSchedule bool
+	var summarize, claims, removeSchedule, restoreNote bool
+	if args[0] == "archive" {
+		flags.BoolVar(&restoreNote, "restore", false, "restore an archived note to recall")
+	}
 	if args[0] == "schedule" {
 		flags.BoolVar(&removeSchedule, "remove", false, "remove a run from the overnight queue")
 	}
@@ -43,10 +48,20 @@ func runLearning(ctx context.Context, args []string, input io.Reader, output io.
 		flags.BoolVar(&claims, "claims", false, "draft a claim from verified excerpts through local Ollama")
 	}
 	var frontier frontierOptions
-	if args[0] == "frontier" {
+	if slices.Contains([]string{"frontier", "export", "delete"}, args[0]) {
 		flags.Int64Var(&frontier.chatID, "chat-id", 0, "authorized Telegram chat ID")
 		flags.Int64Var(&frontier.topicID, "topic-id", 0, "Telegram topic ID")
-		flags.BoolVar(&frontier.public, "public", false, "use the public knowledge frontier")
+		flags.BoolVar(&frontier.public, "public", false, "use public knowledge")
+	}
+	var deleteCandidate, requestID string
+	if args[0] == "delete" {
+		flags.StringVar(&deleteCandidate, "candidate", "", "erase only this conversation candidate")
+		flags.StringVar(&requestID, "request-id", "", "reuse a receipt ID for an idempotent retry")
+	}
+	if args[0] == "frontier" {
+		flags.StringVar(&frontier.pin, "pin", "", "prioritize a visible candidate")
+		flags.StringVar(&frontier.mute, "mute", "", "skip a candidate during selection")
+		flags.StringVar(&frontier.dismiss, "dismiss", "", "dismiss a candidate")
 		flags.BoolVar(&frontier.selectOnly, "select", false, "show the policy-selected shortlist")
 		flags.StringVar(&frontier.origin, "origin", "", "filter by candidate origin")
 		flags.StringVar(&frontier.status, "status", "candidate", "filter by status or use all")
@@ -66,6 +81,13 @@ func runLearning(ctx context.Context, args []string, input io.Reader, output io.
 	if err != nil {
 		return err
 	}
+	if slices.Contains([]string{"frontier", "work", "enqueue", "search", "schedule", "pause", "resume", "claim-edit", "archive", "delete", "export"}, args[0]) {
+		unlock, err := state.Lock(filepath.Join(app.StateDir, "learning"))
+		if err != nil {
+			return err
+		}
+		defer unlock()
+	}
 	enc := json.NewEncoder(output)
 	enc.SetIndent("", "  ")
 	if args[0] == "configure" {
@@ -73,18 +95,75 @@ func runLearning(ctx context.Context, args []string, input io.Reader, output io.
 		if err != nil {
 			return err
 		}
+		if prior, err := state.LoadLearningPolicy(app.StateDir); err == nil && reflect.DeepEqual(prior, cfg) {
+			return enc.Encode(cfg)
+		}
+		if err := ctx.Err(); err != nil {
+			return err
+		}
 		if err := state.Atomic(learningPolicyPath(app.StateDir), cfg); err != nil {
 			return err
+		}
+		id := rand.Text()
+		audit := state.LearningAudit{Dir: filepath.Join(app.StateDir, "learning", "audit")}
+		if err := audit.Append(context.WithoutCancel(ctx), learning.Event{SchemaVersion: learning.SchemaVersion,
+			Type: learning.PolicyConfigured, ID: id, RunID: id, At: time.Now().UTC(), Outcome: "applied", ObjectRefs: []string{id}}); err != nil {
+			log.Print("learning policy applied; failed to write audit metadata")
 		}
 		return enc.Encode(cfg)
 	}
 	cfg, err := state.LoadLearningPolicy(app.StateDir)
+	if args[0] == "delete" {
+		// Erasure remains available after opting out or removing the policy.
+		partition, err := authorizedLearningPartition(app, cfg, frontier, true)
+		if err != nil || partition.Scope == nil {
+			return learning.ErrDenied
+		}
+		if requestID == "" {
+			requestID = rand.Text()
+		}
+		receipt, err := state.NewLearningRepository(app.StateDir, nil).DeletePrivateLearning(
+			ctx, *partition.Scope, deleteCandidate, requestID, time.Now())
+		if err != nil {
+			return err
+		}
+		return enc.Encode(receipt)
+	}
 	if err != nil {
 		return err
 	}
 
 	if args[0] == "frontier" {
 		result, err := collectLearningFrontier(ctx, app, cfg, frontier, input)
+		if err != nil {
+			return err
+		}
+		return enc.Encode(result)
+	}
+
+	if args[0] == "export" {
+		partition, err := authorizedLearningPartition(app, cfg, frontier, false)
+		if err != nil {
+			return err
+		}
+		policy, err := redaction.New(redaction.Config{}, configuredSecrets(app))
+		if err != nil {
+			return err
+		}
+		allow := func(text string) bool { return !policy.ContainsSecret(text) && !trust.Suspicious(text) }
+		repo := state.NewLearningRepository(app.StateDir, nil)
+		if partition.Public {
+			result, err := repo.ExportPublicLearning(ctx, cfg, allow)
+			if err != nil {
+				return err
+			}
+			return enc.Encode(result)
+		}
+		now := time.Now().UTC()
+		cutoff := privateLearningCutoff(cfg, now)
+		result, err := repo.ExportPrivateLearning(ctx, *partition.Scope, cutoff, func(text string) bool {
+			return allow(text) && !cfg.Permissions.Excludes(learning.ConversationTurn{Transcript: text})
+		})
 		if err != nil {
 			return err
 		}
@@ -100,7 +179,7 @@ func runLearning(ctx context.Context, args []string, input io.Reader, output io.
 	}
 	// Check against the caller's raw text before redaction and apply the
 	// same exclusion policy again to the sanitized planning input.
-	runIDInput := slices.Contains([]string{"work", "status", "pause", "resume", "audit", "note", "schedule", "claim-history", "claim-edit"}, args[0])
+	runIDInput := slices.Contains([]string{"work", "status", "pause", "resume", "cancel", "audit", "note", "schedule", "claim-history", "claim-edit", "archive"}, args[0])
 	if !runIDInput && cfg.Permissions.Excludes(learning.ConversationTurn{Transcript: string(data)}) {
 		return learning.ErrDenied
 	}
@@ -109,7 +188,27 @@ func runLearning(ctx context.Context, args []string, input io.Reader, output io.
 		return err
 	}
 	coordinator := state.NewLearningCoordinator(app.StateDir)
-	allow := func(s string) bool { return !policy.ContainsSecret(s) }
+	allow := func(s string) bool { return !policy.ContainsSecret(s) && !trust.Suspicious(s) }
+	if args[0] == "archive" {
+		note, err := state.NewLearningRepository(app.StateDir, nil).SetLearningNoteArchived(ctx, cfg,
+			strings.TrimSpace(string(data)), !restoreNote, allow, time.Now())
+		if err != nil {
+			return err
+		}
+		return enc.Encode(note)
+	}
+	if args[0] == "cancel" {
+		result, err := coordinator.RequestResearchCancel(ctx, cfg, strings.TrimSpace(string(data)), allow)
+		if err != nil {
+			return err
+		}
+		if !result.Requested {
+			if _, err := coordinator.ExportResearchAudit(ctx, cfg, result.RunID, allow); err != nil {
+				log.Printf("learning audit pending for run %s (replay with q-agent learning audit)", result.RunID)
+			}
+		}
+		return enc.Encode(result)
+	}
 	if args[0] == "claim-history" || args[0] == "claim-edit" {
 		repo := state.NewLearningRepository(app.StateDir, nil)
 		if args[0] == "claim-history" {
@@ -128,11 +227,6 @@ func runLearning(ctx context.Context, args []string, input io.Reader, output io.
 		if err := decoder.Decode(new(any)); !errors.Is(err, io.EOF) {
 			return fmt.Errorf("claim edit requires exactly one JSON object")
 		}
-		unlock, err := state.Lock(filepath.Join(app.StateDir, "learning"))
-		if err != nil {
-			return err
-		}
-		defer unlock()
 		claim, err := repo.EditPublicClaim(ctx, cfg, edit, allow, time.Now())
 		if err != nil {
 			return err
@@ -140,17 +234,12 @@ func runLearning(ctx context.Context, args []string, input io.Reader, output io.
 		return enc.Encode(claim)
 	}
 	if args[0] == "schedule" {
-		unlock, err := state.Lock(filepath.Join(app.StateDir, "learning"))
-		if err != nil {
-			return err
-		}
-		defer unlock()
 		id := strings.TrimSpace(string(data))
 		if removeSchedule {
 			err = coordinator.RemoveScheduledResearch(id)
 		} else {
 			err = coordinator.ScheduleResearch(ctx, cfg, id, func(s string) bool {
-				return allow(s) && !strings.Contains(s, redaction.Marker) && !trust.Suspicious(s)
+				return allow(s) && !strings.Contains(s, redaction.Marker)
 			})
 		}
 		if err != nil {
@@ -185,11 +274,6 @@ func runLearning(ctx context.Context, args []string, input io.Reader, output io.
 	}
 
 	if args[0] == "pause" || args[0] == "resume" {
-		unlock, err := state.Lock(filepath.Join(app.StateDir, "learning"))
-		if err != nil {
-			return err
-		}
-		defer unlock()
 		result, err := coordinator.SetResearchPaused(
 			ctx, cfg, strings.TrimSpace(string(data)), allow, args[0] == "pause")
 		if err != nil {
@@ -200,7 +284,7 @@ func runLearning(ctx context.Context, args []string, input io.Reader, output io.
 
 	if args[0] == "recall" {
 		results, err := state.NewLearningRepository(app.StateDir, nil).RecallPublic(
-			ctx, cfg, string(data), func(s string) bool { return !policy.ContainsSecret(s) }, 5)
+			ctx, cfg, string(data), allow, 5)
 		if err != nil {
 			return err
 		}
@@ -224,11 +308,6 @@ func runLearning(ctx context.Context, args []string, input io.Reader, output io.
 			(args[0] == "search" && !cfg.Permissions.AllowsDomain(localtools.LearningSearchDomain)) {
 			return learning.ErrDenied
 		}
-		unlock, err := state.Lock(filepath.Join(app.StateDir, "learning"))
-		if err != nil {
-			return err
-		}
-		defer unlock()
 		search := localtools.LearningSearch{Permissions: cfg.Permissions}
 		switch args[0] {
 		case "enqueue":
@@ -240,6 +319,19 @@ func runLearning(ctx context.Context, args []string, input io.Reader, output io.
 				RunID string `json:"run_id"`
 			}{RunID: id})
 		case "work":
+			id := strings.TrimSpace(string(data))
+			if len(cfg.Permissions.AllowDomains) == 0 || !cfg.Permissions.AllowsDomain(localtools.LearningSearchDomain) {
+				result, err := coordinator.ResearchStatus(ctx, cfg, id, allow)
+				if err != nil {
+					return err
+				}
+				switch result.State {
+				case learning.RunPaused, learning.RunCancelled, learning.RunCompleted, learning.RunFailed, learning.RunUnresolved, learning.RunBudgetExhausted:
+					return writeResearchResult(id, result)
+				default:
+					return learning.ErrDenied
+				}
+			}
 			var model learning.ModelProvider
 			if summarize || claims {
 				if app.Provider.Name != "ollama" {
@@ -255,8 +347,8 @@ func runLearning(ctx context.Context, args []string, input io.Reader, output io.
 			if claims {
 				work = coordinator.WorkResearchWithClaims
 			}
-			result, err := work(ctx, cfg, strings.TrimSpace(string(data)), func(s string) bool {
-				return !policy.ContainsSecret(s) &&
+			result, err := work(ctx, cfg, id, func(s string) bool {
+				return allow(s) && !strings.Contains(s, redaction.Marker) &&
 					!cfg.Permissions.Excludes(learning.ConversationTurn{Transcript: s})
 			}, search, fetch, localtools.LearningDocumentReader{}, model)
 			if result.RunID != "" {
@@ -279,11 +371,12 @@ func runLearning(ctx context.Context, args []string, input io.Reader, output io.
 }
 
 type frontierOptions struct {
-	chatID, topicID int64
-	public          bool
-	selectOnly      bool
-	origin, status  string
-	enqueue         string
+	chatID, topicID    int64
+	public             bool
+	selectOnly         bool
+	origin, status     string
+	enqueue            string
+	pin, mute, dismiss string
 }
 
 func collectLearningFrontier(ctx context.Context, app config.Config, cfg learning.Config, options frontierOptions, input io.Reader) (any, error) {
@@ -297,22 +390,21 @@ func collectLearningFrontier(ctx context.Context, app config.Config, cfg learnin
 		!slices.Contains([]string{"candidate", "queued", "resolved", "unresolved", "dismissed", "all"}, options.status) {
 		return nil, fmt.Errorf("invalid learning frontier options")
 	}
-	partition := learning.Partition{Public: options.public}
-	if !options.public {
-		if !app.Memory.Enabled || options.chatID == 0 || options.topicID < 0 {
-			return nil, learning.ErrDenied
-		}
-		visibility := learning.GroupChat
-		if options.chatID > 0 {
-			if !cfg.Permissions.IncludePrivateChats || !slices.Contains(app.Telegram.AllowedUsers, options.chatID) {
-				return nil, learning.ErrDenied
-			}
-			visibility = learning.PrivateChat
-		} else if !cfg.Permissions.IncludeGroupChats || !slices.Contains(app.Telegram.AllowedGroups, options.chatID) {
-			return nil, learning.ErrDenied
-		}
-		partition.Scope = &learning.Scope{Platform: "telegram", ChatID: options.chatID, TopicID: &options.topicID, Visibility: visibility}
+	partition, err := authorizedLearningPartition(app, cfg, options, false)
+	if err != nil {
+		return nil, err
 	}
+	var action, target string
+	for _, choice := range []struct{ action, id string }{{"pin", options.pin}, {"mute", options.mute}, {"dismiss", options.dismiss}} {
+		if choice.id == "" {
+			continue
+		}
+		if action != "" || options.enqueue != "" || options.selectOnly || options.origin != "" || options.status != "candidate" {
+			return nil, fmt.Errorf("choose one frontier operation")
+		}
+		action, target = choice.action, choice.id
+	}
+
 	policy, err := redaction.New(redaction.Config{}, configuredSecrets(app))
 	if err != nil {
 		return nil, err
@@ -321,11 +413,6 @@ func collectLearningFrontier(ctx context.Context, app config.Config, cfg learnin
 		return !strings.Contains(text, redaction.Marker) && !policy.ContainsSecret(text) &&
 			!cfg.Permissions.Excludes(learning.ConversationTurn{Transcript: text})
 	}
-	unlock, err := state.Lock(filepath.Join(app.StateDir, "learning"))
-	if err != nil {
-		return nil, err
-	}
-	defer unlock()
 	now := time.Now().UTC()
 	repo := state.NewLearningRepository(app.StateDir, nil)
 	var entries []learning.FrontierEntry
@@ -341,8 +428,8 @@ func collectLearningFrontier(ctx context.Context, app config.Config, cfg learnin
 		}, func(_ learning.Scope, turn learning.ConversationTurn) bool {
 			return !allow(turn.Transcript)
 		})
-		query := learning.ConversationQuery{Scope: scope, From: now.Add(-48 * time.Hour), Until: now}
-		entries, err = repo.ConversationFrontier(ctx, reader, query, now, allow)
+		query := learning.ConversationQuery{Scope: scope, From: now.Add(-state.ConversationFrontierLookback), Until: now}
+		entries, err = repo.ConversationFrontier(ctx, reader, query, now, privateLearningCutoff(cfg, now), allow)
 	}
 	if err != nil {
 		return nil, err
@@ -351,6 +438,9 @@ func collectLearningFrontier(ctx context.Context, app config.Config, cfg learnin
 	entries, err = coordinator.RefreshFrontier(ctx, partition, entries)
 	if err != nil {
 		return nil, err
+	}
+	if action != "" {
+		return repo.EditLearningFrontier(ctx, partition, entries, target, action, now)
 	}
 	if options.enqueue != "" {
 		var approved string
@@ -372,6 +462,37 @@ func collectLearningFrontier(ctx context.Context, app config.Config, cfg learnin
 		return learning.SelectFrontier(entries, cfg.Selection, now, allow), nil
 	}
 	return state.ListLearningFrontier(entries, now, allow, options.origin, options.status), nil
+}
+
+func authorizedLearningPartition(app config.Config, cfg learning.Config, options frontierOptions, erasing bool) (learning.Partition, error) {
+	var empty learning.Partition
+	if options.public {
+		if options.chatID != 0 || options.topicID != 0 || !cfg.Enabled || erasing {
+			return empty, learning.ErrDenied
+		}
+		return learning.Partition{Public: true}, nil
+	}
+	if options.chatID == 0 || options.topicID < 0 || (!erasing && (!cfg.Enabled || !app.Memory.Enabled ||
+		cfg.Permissions.ExcludesTopic(options.chatID, options.topicID))) {
+		return empty, learning.ErrDenied
+	}
+	visibility := learning.GroupChat
+	if options.chatID > 0 {
+		if !slices.Contains(app.Telegram.AllowedUsers, options.chatID) || (!erasing && !cfg.Permissions.IncludePrivateChats) {
+			return empty, learning.ErrDenied
+		}
+		visibility = learning.PrivateChat
+	} else if !slices.Contains(app.Telegram.AllowedGroups, options.chatID) || (!erasing && !cfg.Permissions.IncludeGroupChats) {
+		return empty, learning.ErrDenied
+	}
+	return learning.Partition{Scope: &learning.Scope{Platform: "telegram", ChatID: options.chatID, TopicID: &options.topicID, Visibility: visibility}}, nil
+}
+
+func privateLearningCutoff(cfg learning.Config, now time.Time) time.Time {
+	if cfg.Permissions.PrivateFrontierDays == 0 {
+		return time.Time{}
+	}
+	return now.AddDate(0, 0, -cfg.Permissions.PrivateFrontierDays)
 }
 
 func learningPolicyPath(stateDir string) string {

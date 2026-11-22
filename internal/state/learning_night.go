@@ -138,12 +138,20 @@ func (c *LearningCoordinator) RunScheduledResearch(ctx context.Context, cfg lear
 		}
 		return c.revalidateLearningSource(ctx, cfg, allow, fetch)
 	}
-	if search == nil {
-		return nil
-	}
 	run, err := c.readAuthorizedResearch(ctx, cfg, id, allow)
+	if errors.Is(err, learning.ErrDenied) || (err == nil && search == nil) {
+		record, loadErr := c.load(id)
+		if loadErr != nil && !errors.Is(loadErr, os.ErrNotExist) {
+			return loadErr
+		}
+		if loadErr == nil && record.PartitionKey == "public" && !terminalLearningRun(record.Run.State) {
+			if err := c.cancelResearch(ctx, id, "policy_changed"); err != nil && !errors.Is(err, ErrLearningCommitted) {
+				return err
+			}
+		}
+		err = learning.ErrDenied
+	}
 	if errors.Is(err, learning.ErrDenied) || errors.Is(err, os.ErrNotExist) {
-		// A policy edit or deleted run invalidates the outstanding approval.
 		if night.Active != "" {
 			night.Active = ""
 		} else {
@@ -154,7 +162,7 @@ func (c *LearningCoordinator) RunScheduledResearch(ctx context.Context, cfg lear
 	if err != nil {
 		return err
 	}
-	if run.Run.State == learning.RunPaused {
+	if run.Run.State == learning.RunPaused && !c.cancelRequested(id) {
 		return nil
 	}
 	if terminalLearningRun(run.Run.State) && night.Active == "" {

@@ -160,7 +160,17 @@ func (c *LearningCoordinator) workResearch(ctx context.Context, cfg learning.Con
 	}
 	question := record.Question
 
-	if terminalLearningRun(record.Run.State) || record.Run.State == learning.RunPaused {
+	if terminalLearningRun(record.Run.State) {
+		return researchWorkerResult(record), nil
+	}
+	if c.cancelRequested(id) {
+		if err := c.applyResearchCancel(ctx, id); err != nil && !errors.Is(err, ErrLearningCommitted) {
+			return result, err
+		} else if err == nil {
+			return c.ResearchStatus(ctx, cfg, id, allow)
+		}
+	}
+	if record.Run.State == learning.RunPaused {
 		return researchWorkerResult(record), nil
 	}
 	sourceTarget := max(1, record.SourceTarget)
@@ -173,6 +183,12 @@ func (c *LearningCoordinator) workResearch(ctx context.Context, cfg learning.Con
 	}
 	defer func() {
 		releaseCtx := context.WithoutCancel(ctx)
+		if c.cancelRequested(id) {
+			err := c.applyResearchCancel(releaseCtx, id)
+			if err != nil && !errors.Is(err, ErrLearningCommitted) && !errors.Is(err, learning.ErrDenied) {
+				retErr = errors.Join(retErr, err)
+			}
+		}
 		if ctx.Err() != nil && !scheduled {
 			latest, err := c.load(id)
 			retErr = errors.Join(retErr, ctx.Err(), err)
@@ -182,13 +198,21 @@ func (c *LearningCoordinator) workResearch(ctx context.Context, cfg learning.Con
 				}
 			}
 		}
-		retErr = errors.Join(retErr, c.Release(releaseCtx, lease))
+		releaseErr := c.Release(releaseCtx, lease)
 		latest, err := c.load(id)
-		retErr = errors.Join(retErr, err)
 		if err == nil {
 			result = researchWorkerResult(latest)
+			if result.State == learning.RunCancelled && ctx.Err() == nil && errors.Is(retErr, context.Canceled) {
+				retErr = nil
+			}
 		}
+		retErr = errors.Join(retErr, releaseErr, err)
 	}()
+
+	workCtx, stopWork := context.WithCancel(ctx)
+	defer stopWork()
+	stopWatching := c.watchResearchCancel(workCtx, id, stopWork)
+	defer stopWatching()
 
 	plan := learning.Plan{
 		Record: record.Run.Record, ID: record.Run.PlanID, Goal: question,
@@ -207,7 +231,7 @@ func (c *LearningCoordinator) workResearch(ctx context.Context, cfg learning.Con
 	}
 
 	for {
-		current, err := c.Get(ctx, id)
+		current, err := c.Get(workCtx, id)
 		if err != nil {
 			return result, err
 		}
@@ -233,14 +257,14 @@ func (c *LearningCoordinator) workResearch(ctx context.Context, cfg learning.Con
 				if draftClaims {
 					claimModel = model
 				}
-				if err := c.advanceResearchClaim(ctx, lease, cfg, plan, allow, current, claimModel); err != nil {
+				if err := c.advanceResearchClaim(workCtx, lease, cfg, plan, allow, current, claimModel); err != nil {
 					return result, err
 				}
 				continue
 			}
 			if sourceTarget == 2 {
 				current.Run = run
-				if err := c.advanceMultiSource(ctx, lease, cfg, plan, allow, search, fetch, reader, current, draftClaims); err != nil {
+				if err := c.advanceMultiSource(workCtx, lease, cfg, plan, allow, search, fetch, reader, current, draftClaims); err != nil {
 					return result, err
 				}
 				continue
@@ -260,11 +284,11 @@ func (c *LearningCoordinator) workResearch(ctx context.Context, cfg learning.Con
 					run.State, run.StopReason = learning.RunUnresolved, "policy_changed"
 					break
 				}
-				summary, modelErr := c.researchSummary(ctx, lease, cfg, plan, model, *cp.ResearchEvidence)
-				if errors.Is(modelErr, ErrLearningBudget) || ctx.Err() != nil {
+				summary, modelErr := c.researchSummary(workCtx, lease, cfg, plan, model, *cp.ResearchEvidence)
+				if errors.Is(modelErr, ErrLearningBudget) || workCtx.Err() != nil {
 					return result, modelErr
 				}
-				current, err = c.Get(ctx, id)
+				current, err = c.Get(workCtx, id)
 				if err != nil {
 					return result, err
 				}
@@ -295,20 +319,20 @@ func (c *LearningCoordinator) workResearch(ctx context.Context, cfg learning.Con
 			var evidence *learning.Evidence
 			if cp.NextIntent == "search" {
 				var candidates []string
-				candidates, err = c.researchSearch(ctx, lease, cfg, plan, allow, search)
+				candidates, err = c.researchSearch(workCtx, lease, cfg, plan, allow, search)
 				if len(candidates) != 0 {
 					uri = candidates[0]
 				}
 			} else if cp.NextIntent == "fetch" {
-				source, evidence, err = c.researchFetch(ctx, lease, cfg, plan, allow, fetch, reader, cp.ResearchURI)
+				source, evidence, err = c.researchFetch(workCtx, lease, cfg, plan, allow, fetch, reader, cp.ResearchURI)
 			} else {
 				return result, fmt.Errorf("invalid research checkpoint intent")
 			}
-			if errors.Is(err, ErrLearningBudget) || ctx.Err() != nil {
+			if errors.Is(err, ErrLearningBudget) || workCtx.Err() != nil {
 				return result, err
 			}
 			// Reservation changed the checkpoint version and usage.
-			latest, getErr := c.Get(ctx, id)
+			latest, getErr := c.Get(workCtx, id)
 			if getErr != nil {
 				return result, errors.Join(err, getErr)
 			}
@@ -361,10 +385,10 @@ func (c *LearningCoordinator) workResearch(ctx context.Context, cfg learning.Con
 			}
 			run.State, cp.NextIntent, cp.OperationID = learning.RunCommitting, "commit", rand.Text()
 		case learning.RunCommitting:
-			if err := c.commitResearch(ctx, cfg, lease, allow, plan, run); err != nil {
+			if err := c.commitResearch(workCtx, cfg, lease, allow, plan, run); err != nil {
 				return result, err
 			}
-			current, err = c.Get(ctx, id)
+			current, err = c.Get(workCtx, id)
 			if err != nil {
 				return result, err
 			}
@@ -373,7 +397,7 @@ func (c *LearningCoordinator) workResearch(ctx context.Context, cfg learning.Con
 				return result, nil
 			}
 			if cp.ResearchClaim != nil {
-				snapshot, err := c.repo.Snapshot(ctx, learning.Partition{Public: true})
+				snapshot, err := c.repo.Snapshot(workCtx, learning.Partition{Public: true})
 				if err != nil {
 					return result, err
 				}
@@ -396,7 +420,7 @@ func (c *LearningCoordinator) workResearch(ctx context.Context, cfg learning.Con
 		if terminalLearningRun(run.State) {
 			cp.NextIntent = ""
 		}
-		if err := c.Checkpoint(ctx, lease, current.Version, run); err != nil {
+		if err := c.Checkpoint(workCtx, lease, current.Version, run); err != nil {
 			return result, err
 		}
 	}

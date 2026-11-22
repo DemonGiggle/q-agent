@@ -85,7 +85,7 @@ func SelectFrontier(entries []FrontierEntry, policy SelectionConfig, now time.Ti
 		if q.ID == "" || seen[q.ID] || origin < 0 || q.Status != "candidate" || q.Score == nil ||
 			q.Depth > policy.MaxDepth || !allow(q.Text) ||
 			(q.CooldownUntil != nil && now.Before(*q.CooldownUntil)) ||
-			slices.Contains(policy.MutedIDs, q.ID) || slices.ContainsFunc(q.TopicIDs, func(id string) bool {
+			entry.OperatorSelection == "mute" || slices.Contains(policy.MutedIDs, q.ID) || slices.ContainsFunc(q.TopicIDs, func(id string) bool {
 			return slices.Contains(policy.BannedTopicIDs, id)
 		}) {
 			continue
@@ -97,7 +97,7 @@ func SelectFrontier(entries []FrontierEntry, policy SelectionConfig, now time.Ti
 		}) {
 			continue
 		}
-		pinned := slices.Contains(policy.PinnedIDs, q.ID)
+		pinned := entry.OperatorSelection == "pin" || slices.Contains(policy.PinnedIDs, q.ID)
 		priority := q.Priority
 		if override, ok := policy.PriorityOverrides[q.ID]; ok {
 			priority = override

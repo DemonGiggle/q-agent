@@ -48,9 +48,10 @@ type learningReceipt struct {
 }
 
 type learningPartition struct {
-	Schema   string                     `json:"schema_version"`
-	Snapshot learning.KnowledgeSnapshot `json:"snapshot"`
-	Receipts map[string]learningReceipt `json:"receipts"`
+	Schema    string                     `json:"schema_version"`
+	Snapshot  learning.KnowledgeSnapshot `json:"snapshot"`
+	Receipts  map[string]learningReceipt `json:"receipts"`
+	Deletions []privateLearningDeletion  `json:"deletions,omitempty"`
 }
 
 func learningPartitionKey(partition learning.Partition) (string, error) {
@@ -168,10 +169,11 @@ func (r *LearningRepository) Commit(ctx context.Context, partition learning.Part
 		}
 		data.Receipts[operationID] = receipt
 		persisted, err := json.Marshal(struct {
-			Schema   string                     `json:"schema_version"`
-			Snapshot json.RawMessage            `json:"snapshot"`
-			Receipts map[string]learningReceipt `json:"receipts"`
-		}{data.Schema, body, data.Receipts})
+			Schema    string                     `json:"schema_version"`
+			Snapshot  json.RawMessage            `json:"snapshot"`
+			Receipts  map[string]learningReceipt `json:"receipts"`
+			Deletions []privateLearningDeletion  `json:"deletions,omitempty"`
+		}{data.Schema, body, data.Receipts, data.Deletions})
 		if err != nil {
 			return err
 		}

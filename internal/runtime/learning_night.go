@@ -47,6 +47,14 @@ func (r *Runtime) nightResearchBusyLocked() bool {
 }
 
 func (r *Runtime) runNightResearch(ctx context.Context, now time.Time, search learning.SearchProvider, fetch learning.DocumentFetcher) error {
+	unlock, err := state.Lock(filepath.Join(r.Config.StateDir, "learning"))
+	if errors.Is(err, syscall.EWOULDBLOCK) {
+		return nil
+	}
+	if err != nil {
+		return err
+	}
+	defer unlock()
 	cfg, err := state.LoadLearningPolicy(r.Config.StateDir)
 	if errors.Is(err, os.ErrNotExist) {
 		return nil
@@ -55,8 +63,7 @@ func (r *Runtime) runNightResearch(ctx context.Context, now time.Time, search le
 		return err
 	}
 	window := cfg.Schedule.Window(now)
-	if !cfg.Enabled || window == "" || cfg.Schedule.Window(now.Add(time.Minute)) != window ||
-		len(cfg.Permissions.AllowDomains) == 0 {
+	if !cfg.Enabled || window == "" || cfg.Schedule.Window(now.Add(time.Minute)) != window {
 		return nil
 	}
 	if cfg.Schedule.IdleMinutes > 0 {
@@ -71,25 +78,14 @@ func (r *Runtime) runNightResearch(ctx context.Context, now time.Time, search le
 			}
 		}
 	}
-	unlock, err := state.Lock(filepath.Join(r.Config.StateDir, "learning"))
-	if errors.Is(err, syscall.EWOULDBLOCK) {
-		return nil
-	}
-	if err != nil {
-		return err
-	}
-	defer unlock()
 	r.mu.Lock()
 	busy := r.nightResearchBusyLocked()
 	r.mu.Unlock()
 	if busy {
 		return nil
 	}
-	if !cfg.Permissions.AllowsDomain(localtools.LearningSearchDomain) {
+	if len(cfg.Permissions.AllowDomains) == 0 || !cfg.Permissions.AllowsDomain(localtools.LearningSearchDomain) {
 		search = nil
-		if cfg.SourcePolicy == nil || cfg.SourcePolicy.RevalidateDays == 0 {
-			return nil
-		}
 	} else if search == nil {
 		search = localtools.LearningSearch{Permissions: cfg.Permissions}
 	}

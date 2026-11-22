@@ -13,6 +13,7 @@ func (r *Runtime) learningConversationReader(origin platform.Message, policy lea
 	return r.Store.NewLearningReader(func(_ context.Context, scope learning.Scope) bool {
 		return r.Config.Memory.Enabled && r.allowed(origin) && scope.Platform == origin.Platform &&
 			scope.ChatID == origin.ChatID && scope.TopicID != nil && *scope.TopicID == origin.TopicID &&
+			!policy.ExcludesTopic(origin.ChatID, origin.TopicID) &&
 			(policy.IncludePrivateChats || scope.Visibility != learning.PrivateChat) &&
 			(policy.IncludeGroupChats || scope.Visibility != learning.GroupChat)
 	}, func(scope learning.Scope, turn learning.ConversationTurn) bool {

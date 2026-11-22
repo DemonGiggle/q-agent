@@ -59,7 +59,7 @@ func TestLearningNightResearchReachesChatRecall(t *testing.T) {
 	scope := learning.Scope{Platform: "telegram", ChatID: 1, TopicID: &topic, Visibility: learning.PrivateChat}
 	repo := state.NewLearningRepository(r.Config.StateDir, nil)
 	entries, err := repo.ConversationFrontier(ctx, r.learningConversationReader(route, cfg.Permissions, nil),
-		learning.ConversationQuery{Scope: scope, From: before.Add(-time.Hour), Until: before}, before, allow)
+		learning.ConversationQuery{Scope: scope, From: before.Add(-time.Hour), Until: before}, before, time.Time{}, allow)
 	if err != nil || len(entries) != 1 {
 		t.Fatalf("conversation frontier = %+v, %v", entries, err)
 	}

@@ -118,10 +118,10 @@ func (r *LearningRepository) publicRecallView(ctx context.Context, cfg learning.
 	if err != nil {
 		return learningRecallView{}, err
 	}
-	return publicRecallView(snapshot, cfg, allow, intent, onlyID, false), nil
+	return publicRecallView(snapshot, cfg, allow, intent, onlyID, false, false), nil
 }
 
-func publicRecallView(snapshot learning.KnowledgeSnapshot, cfg learning.Config, allow func(string) bool, intent learning.RecallQuery, onlyID string, frontier bool) learningRecallView {
+func publicRecallView(snapshot learning.KnowledgeSnapshot, cfg learning.Config, allow func(string) bool, intent learning.RecallQuery, onlyID string, frontier, exporting bool) learningRecallView {
 	allowed := func(s string) bool {
 		return allow(s) && !cfg.Permissions.Excludes(learning.ConversationTurn{Transcript: s})
 	}
@@ -161,7 +161,7 @@ func publicRecallView(snapshot learning.KnowledgeSnapshot, cfg learning.Config, 
 	notes := make(map[string]learning.Note, len(noteSet))
 	hasNoteTopics := false
 	for _, note := range noteSet {
-		if (onlyID != "" && note.ID != onlyID) || len(note.SourceIDs) == 0 || !allowed(note.Title) || !allowed(note.Summary) {
+		if (onlyID != "" && note.ID != onlyID) || (onlyID == "" && !exporting && note.ArchivedAt != nil) || len(note.SourceIDs) == 0 || !allowed(note.Title) || !allowed(note.Summary) {
 			continue
 		}
 		valid, matches := true, false
@@ -197,7 +197,7 @@ func publicRecallView(snapshot learning.KnowledgeSnapshot, cfg learning.Config, 
 		current.Notes = append(current.Notes, note)
 		notes[note.ID] = note
 	}
-	if frontier || (hasNoteTopics && onlyID == "" && !intent.Recent) {
+	if frontier || exporting || (hasNoteTopics && onlyID == "" && !intent.Recent) {
 		topics := make(map[string]bool, len(snapshot.Topics))
 		safe := func(value string) bool { return !allowed(value) }
 		for _, topic := range snapshot.Topics {

@@ -76,7 +76,7 @@ func TestLearningFreshnessAndAssociation(t *testing.T) {
 				}
 				snapshot.Claims = append(snapshot.Claims, claim)
 			}
-			lease := learning.Lease{RunID: rand.Text(), Fence: 1, ExpiresAt: now.Add(time.Minute)}
+			lease := learning.Lease{RunID: rand.Text(), Fence: 1, ExpiresAt: time.Now().Add(time.Minute)}
 			if _, err := repo.Commit(ctx, public, 0, lease, rand.Text(), snapshot); err != nil {
 				t.Fatal(err)
 			}

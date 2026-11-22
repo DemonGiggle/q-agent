@@ -272,15 +272,16 @@ func (c Claim) Validate() error {
 
 type Note struct {
 	Record
-	ID          string   `json:"note_id"`
-	Title       string   `json:"title"`
-	TopicIDs    []string `json:"topic_ids"`
-	Summary     string   `json:"summary"`
-	BodyRef     string   `json:"body_ref"`
-	ClaimIDs    []string `json:"claim_ids"`
-	SourceIDs   []string `json:"source_ids"`
-	EvidenceIDs []string `json:"evidence_ids,omitempty"`
-	Revision    uint64   `json:"revision"`
+	ID          string     `json:"note_id"`
+	Title       string     `json:"title"`
+	TopicIDs    []string   `json:"topic_ids"`
+	Summary     string     `json:"summary"`
+	BodyRef     string     `json:"body_ref"`
+	ClaimIDs    []string   `json:"claim_ids"`
+	SourceIDs   []string   `json:"source_ids"`
+	EvidenceIDs []string   `json:"evidence_ids,omitempty"`
+	Revision    uint64     `json:"revision"`
+	ArchivedAt  *time.Time `json:"archived_at,omitempty"`
 }
 
 type Relation struct {
@@ -323,10 +324,11 @@ type RecallEvent struct {
 }
 
 type FrontierEntry struct {
-	Question    Question             `json:"question"`
-	DependsOn   []string             `json:"depends_on"`
-	Transitions []FrontierTransition `json:"transitions"`
-	RunID       string               `json:"run_id,omitempty"`
+	Question          Question             `json:"question"`
+	DependsOn         []string             `json:"depends_on"`
+	Transitions       []FrontierTransition `json:"transitions"`
+	RunID             string               `json:"run_id,omitempty"`
+	OperatorSelection string               `json:"operator_selection,omitempty"`
 }
 
 type FrontierTransition struct {

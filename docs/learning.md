@@ -14,7 +14,12 @@ printf '%s\n' 'What sustained Fujiwara influence during the Heian period?' |
 
 `configure` takes one JSON object and fills omitted fields from the defaults.
 Its output contains the effective policy. Learning and scheduling default to
-off. The time window uses IANA timezone names and accepts windows that cross
+off. The policy is reloaded before the next scheduled run, local selection,
+or opted-in chat recall. Set `"enabled": false` and leave scheduling
+disabled to turn learning off. Existing research attempts keep their current
+policy snapshot for that attempt. Configure records a metadata-only audit
+event for policy changes.
+The time window uses IANA timezone names and accepts windows that cross
 midnight. Daily, run, and question budgets constrain requests, documents,
 tokens, USD millionths, milliseconds, depth, and stored bytes.
 
@@ -60,7 +65,8 @@ printf '%s\n' "$run_id" | q-agent learning work --config ./config.toml
 Copy the enqueue response's `run_id` into `run_id` for the work command.
 Enqueue persists an explicitly public operator-supplied question without
 contacting a provider. Work acquires that candidate's lease and rechecks
-policy before sending its question. The worker searches once and attempts
+policy before sending its question. Work requires an explicit allowlist that
+includes the search host. The worker searches once and attempts
 to retrieve the first eligible result. Source retrieval requires an
 explicit allowlist, HTTPS on the standard port, and public IPv4. It
 rejects redirects, query parameters, and documents over 128 KiB. Sites
@@ -306,7 +312,9 @@ be authorized and groups also need `permissions.include_group_chats`.
 The active chat provider receives up to two matching notes as untrusted
 prior research, with instructions to cite the supplied URLs and dates
 and distinguish prior research from dialogue memory and live checks.
-Unreviewed or unresolved claims retain their status. Sources outside a
+A response that uses those notes runs without executable tools. The model
+receives the references as data and can flag facts that need a separate
+check. Unreviewed or unresolved claims retain their status. Sources outside a
 configured publication-age rule carry an age warning.
 
 Both options default to off. Optional `RecallUsed` events record the
@@ -381,6 +389,54 @@ seven days, a slot gives it preference after manual choices. The
 `banned_topic_ids`, and `priority_overrides`. Pins and positive priority
 take precedence over quota ranking after policy and cooldown checks.
 The result explains each selection and does not change queue status.
+
+## Local user controls and data lifecycle
+
+The local CLI uses the q-agent state owner and the configured Telegram
+allowlists for scoped operations. Set `permissions.excluded_topics` to
+objects such as `{"chat_id":-1001234567890,"topic_id":7}` to block a
+specific topic. Topic `0` is the main conversation. For private
+frontiers, `permissions.private_frontier_days` expires entries by their last
+update when the frontier is refreshed. Zero keeps entries until explicitly
+removed. Export applies the same retention cutoff.
+
+```sh
+q-agent learning frontier --chat-id -1001234567890 --topic-id 7 --pin "$candidate_id" --config ./config.toml
+q-agent learning export --chat-id -1001234567890 --topic-id 7 --config ./config.toml
+q-agent learning export --public --config ./config.toml
+q-agent learning delete --chat-id -1001234567890 --topic-id 7 --candidate "$candidate_id" --config ./config.toml
+```
+
+Use `--mute` to skip selection or `--dismiss` to remove a candidate
+from the active list. The frontier records the decision and its time.
+Public export includes archived notes, authorized sources and evidence,
+and visible revisions. Use `learning archive` with the note ID on stdin
+to remove a public note from recall, or `learning archive --restore` to
+make it eligible again.
+
+`learning delete` erases a private frontier candidate or, with
+`--candidate` omitted, the entire selected topic's learning partition.
+It is available after opting out of learning. The authoritative partition
+and deletion receipt are replaced together. Recall and selection rebuild
+from current state. The scoped backup suffixes `.json.bak` and
+`.json.bak.*` and abandoned knowledge-store atomic temp files are removed
+before the receipt is returned. An erased candidate is suppressed
+through the 48-hour conversation lookback, and a topic-wide deletion sets
+a cutoff for old conversations. Reuse the receipt ID with
+`--request-id` to retry the same operation. Exports and external backups
+belong to the operator. This scope covers derived private learning data.
+Chat history and independently approved public research have their own
+storage and controls.
+
+```sh
+printf '%s\n' "$run_id" | q-agent learning cancel --config ./config.toml
+```
+
+Cancel a queued or paused run directly, or request cancellation from
+the active worker. Use `learning status` to read the final state.
+Cancellation keeps the existing reservation and commit fencing rules.
+An overnight approval whose question or search destination is excluded
+by a policy change is withdrawn before dispatch.
 
 ## Run approved research overnight
 
@@ -504,8 +560,8 @@ The snapshot and idempotency receipt are installed with a single synced
 rename. A repeated operation with the same payload and run returns its
 original commit version. Reusing an operation ID for different content or
 committing from a stale version fails. Reaching the cap rejects the write
-and preserves the last committed version. Retention policy and full Claim
-history belong to their respective follow-up issues.
+and preserves the last committed version. Private learning erasure uses
+the scoped operator command above and records its receipt in the partition.
 
 ## Durable run coordination
 

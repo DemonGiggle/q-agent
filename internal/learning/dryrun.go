@@ -15,6 +15,7 @@ const (
 	ResearchTransition EventType = "ResearchTransition"
 	ModelCallReserved  EventType = "ModelCallReserved"
 	RecallUsed         EventType = "RecallUsed"
+	PolicyConfigured   EventType = "PolicyConfigured"
 )
 
 type Event struct {

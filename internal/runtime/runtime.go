@@ -457,14 +457,18 @@ func (r *Runtime) run(ctx context.Context, m platform.Message, runID string) boo
 						r.mu.Unlock()
 					}()
 					history, recall := r.taskHistory(ctx, m, conversation, runID == "")
-					result, err := agent.Run(ctx, provider, tools, history, m.Text, options)
+					var answerTools agent.Tools = tools
+					if recall.content != "" {
+						answerTools = researchAnswerTools{}
+					}
+					result, err := agent.Run(ctx, provider, answerTools, history, m.Text, options)
 					if summarizer, ok := mcpTools.(interface{ Summary() string }); ok {
 						r.logf("[MCP] Task tools | update=%d %s", m.UpdateID, r.Options.Redaction.Text(redaction.Terminal, summarizer.Summary()))
 					}
 					answer = result.Answer
 					runErr = err
 					if err == nil {
-						r.auditResearchRecall(ctx, recall)
+						r.auditResearchRecall(ctx, m, recall)
 						r.logf("[RUN] Agent result received | update=%d elapsed=%s steps=%d tool_calls=%d", m.UpdateID, time.Since(runStart).Truncate(time.Millisecond), result.ModelSteps, result.ToolCalls)
 						conversation.Pairs = append(conversation.Pairs, state.Pair{User: m.Text, Answer: answer, Steers: result.Steers})
 						sourceID := fmt.Sprintf("update:%s:%d", m.Platform, m.UpdateID)

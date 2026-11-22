@@ -46,15 +46,11 @@ func frontierScore(q learning.Question) float64 {
 // ConversationFrontier updates a chat topic with authorized conversation leads.
 // The caller holds the learning-directory lock.
 func (r *LearningRepository) ConversationFrontier(ctx context.Context, reader learning.ConversationReader,
-	query learning.ConversationQuery, now time.Time, allow func(string) bool) ([]learning.FrontierEntry, error) {
-	if reader == nil || allow == nil || query.Scope.TopicID == nil {
+	query learning.ConversationQuery, now, retainSince time.Time, allow func(string) bool) ([]learning.FrontierEntry, error) {
+	if reader == nil || allow == nil || query.Scope.TopicID == nil || query.From.IsZero() || !query.From.Before(query.Until) {
 		return nil, learning.ErrDenied
 	}
 	key, err := learningPartitionKey(learning.Partition{Scope: &query.Scope})
-	if err != nil {
-		return nil, err
-	}
-	turns, err := reader.Recent(ctx, query)
 	if err != nil {
 		return nil, err
 	}
@@ -64,8 +60,35 @@ func (r *LearningRepository) ConversationFrontier(ctx context.Context, reader le
 	if err != nil {
 		return nil, err
 	}
-	entries, changed := learning.ConversationCandidates(data.Snapshot.Frontier, turns, now.UTC(), allow)
-	if changed {
+	prior := data.Snapshot.Frontier
+	cutoff := maxTime(query.From, retainSince)
+	if !retainSince.IsZero() {
+		prior = slices.DeleteFunc(slices.Clone(prior), func(entry learning.FrontierEntry) bool {
+			return entry.Question.UpdatedAt.Before(retainSince)
+		})
+	}
+	cutoff = privateLearningAfter(data, cutoff)
+	if cutoff.Before(query.Until) {
+		query.From = cutoff
+	}
+	turns, err := reader.Recent(ctx, query)
+	if err != nil {
+		return nil, err
+	}
+	turns = slices.DeleteFunc(turns, func(turn learning.ConversationTurn) bool {
+		return turn.At.Before(cutoff) || !turn.At.Before(query.Until)
+	})
+	turns, blocked := filterDeletedLearning(data, turns, now)
+	entries, changed := learning.ConversationCandidates(prior, turns, now.UTC(), allow)
+	entries = slices.DeleteFunc(entries, func(entry learning.FrontierEntry) bool { return blocked[entry.Question.ID] })
+	if (changed || len(prior) != len(data.Snapshot.Frontier)) && !slices.EqualFunc(entries, data.Snapshot.Frontier, func(a, b learning.FrontierEntry) bool {
+		return a.Question.ID == b.Question.ID && slices.Equal(a.Question.OriginRefs, b.Question.OriginRefs)
+	}) {
+		if len(prior) != len(data.Snapshot.Frontier) {
+			if err := r.removeLearningCopies(key); err != nil {
+				return nil, err
+			}
+		}
 		if err := r.saveFrontier(ctx, key, data, entries); err != nil {
 			return nil, err
 		}
@@ -86,7 +109,7 @@ func (r *LearningRepository) PublicFrontier(ctx context.Context, cfg learning.Co
 	if err != nil {
 		return nil, err
 	}
-	view := publicRecallView(data.Snapshot, cfg, allow, learning.RecallQuery{}, "", true)
+	view := publicRecallView(data.Snapshot, cfg, allow, learning.RecallQuery{}, "", true, false)
 	generated := learning.KnowledgeCandidates(view.current, now.UTC(), allow)
 	entries := data.Snapshot.Frontier
 	known := make(map[string]bool, len(entries))
@@ -167,6 +190,13 @@ func applyRecallFeedback(path string, now time.Time, relations []learning.Relati
 func (r *LearningRepository) saveFrontier(ctx context.Context, key string, data learningPartition, entries []learning.FrontierEntry) error {
 	data.Snapshot.Version++
 	data.Snapshot.Frontier = entries
+	return r.saveLearningPartition(ctx, key, data)
+}
+
+func (r *LearningRepository) saveLearningPartition(ctx context.Context, key string, data learningPartition) error {
+	if data.Snapshot.Version == 0 {
+		return learning.ErrVersionConflict
+	}
 	if err := data.Snapshot.ValidateReferences(); err != nil {
 		return err
 	}

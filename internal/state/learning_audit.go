@@ -21,6 +21,21 @@ func (a LearningAudit) Append(ctx context.Context, event learning.Event) error {
 	return a.appendEvents(ctx, []learning.Event{event})
 }
 
+// AppendRecall optionally keeps one validated, metadata-only event for local
+// selection. Frontier reads never scan the audit directory.
+func (a LearningAudit) AppendRecall(ctx context.Context, event learning.Event, feedback bool) error {
+	if event.Type != learning.RecallUsed {
+		return learning.ErrDenied
+	}
+	if err := a.Append(ctx, event); err != nil {
+		return err
+	}
+	if feedback && ctx.Err() == nil && len(event.ClaimRefs) > 0 {
+		return Atomic(filepath.Join(a.Dir, "latest-recall.json"), event)
+	}
+	return nil
+}
+
 func (a LearningAudit) appendEvents(ctx context.Context, events []learning.Event) error {
 	if err := ctx.Err(); err != nil {
 		return err

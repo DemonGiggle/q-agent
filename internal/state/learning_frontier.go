@@ -8,6 +8,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"io"
 	"os"
 	"path/filepath"
 	"slices"
@@ -85,7 +86,7 @@ func (r *LearningRepository) PublicFrontier(ctx context.Context, cfg learning.Co
 	if err != nil {
 		return nil, err
 	}
-	view := publicRecallView(data.Snapshot, cfg, allow, learning.RecallQuery{}, "")
+	view := publicRecallView(data.Snapshot, cfg, allow, learning.RecallQuery{}, "", true)
 	generated := learning.KnowledgeCandidates(view.current, now.UTC(), allow)
 	entries := data.Snapshot.Frontier
 	known := make(map[string]bool, len(entries))
@@ -123,7 +124,44 @@ func (r *LearningRepository) PublicFrontier(ctx context.Context, cfg learning.Co
 			visible = append(visible, entry)
 		}
 	}
+	if cfg.Recall.AuditEnabled && cfg.Recall.FrontierFeedback {
+		applyRecallFeedback(filepath.Join(filepath.Dir(r.dir), "audit", "latest-recall.json"), now, view.current.Relations, visible)
+	}
 	return visible, nil
+}
+
+// Recall provides a small, temporary score bonus without changing candidate
+// identity, origin quotas or the persisted base scores.
+func applyRecallFeedback(path string, now time.Time, relations []learning.Relation, entries []learning.FrontierEntry) {
+	file, err := os.Open(path)
+	if err != nil {
+		return
+	}
+	defer file.Close()
+	raw, err := io.ReadAll(io.LimitReader(file, 2049))
+	var event learning.Event
+	if err != nil || len(raw) > 2048 || json.Unmarshal(raw, &event) != nil || event.Type != learning.RecallUsed ||
+		!validAuditMetadata(event) || event.At.After(now) || event.At.Before(now.AddDate(0, 0, -7)) {
+		return
+	}
+	relevant := make(map[string]bool, len(event.ClaimRefs))
+	for _, id := range event.ClaimRefs {
+		relevant[id] = true
+	}
+	for _, edge := range relations {
+		if relevant[edge.ClaimID] {
+			relevant[edge.ID] = true
+		}
+	}
+	for i := range entries {
+		q := &entries[i].Question
+		if q.Score != nil && slices.ContainsFunc(q.OriginRefs, func(id string) bool { return relevant[id] }) {
+			score := *q.Score
+			score.Utility += 0.15
+			ranked := learning.RankQuestion(score)
+			q.Score = &ranked
+		}
+	}
 }
 
 func (r *LearningRepository) saveFrontier(ctx context.Context, key string, data learningPartition, entries []learning.FrontierEntry) error {

@@ -12,6 +12,12 @@ var ErrVersionConflict = errors.New("learning version conflict")
 // bounded retry of a read-only discovery or fetch.
 var ErrRetryableHTTP = errors.New("temporary research HTTP response")
 
+// These errors describe definitive responses for the document itself.
+var (
+	ErrSourceGone      = errors.New("research source is gone")
+	ErrSourceWithdrawn = errors.New("research source has opted out")
+)
+
 // Partition is resolved by the trusted host. The zero value is invalid;
 // public storage and each authorized private scope have separate partitions.
 type Partition struct {

@@ -195,30 +195,37 @@ func (r *LearningRepository) EditPublicClaim(ctx context.Context, cfg learning.C
 	if claim.Validate() != nil || !claimTextsAllowed(cfg, allow, claim) {
 		return empty, learning.ErrDenied
 	}
-	if reflect.DeepEqual(prior, claim) {
+	changed := !reflect.DeepEqual(prior, claim)
+	if changed {
+		appendClaimRevision(&next, index, claim, decision, edit.Reason, now)
+	}
+	if !syncClaimRelation(&next, next.Claims[index], refs) && !changed {
 		return prior, nil
 	}
-	appendClaimRevision(&next, index, claim, decision, edit.Reason, now)
 	next.Version++
-	if err := next.ValidateReferences(); err != nil {
+	if err := r.savePublicKnowledge(ctx, data, next); err != nil {
 		return empty, err
 	}
+	return next.Claims[index], nil
+}
+
+func (r *LearningRepository) savePublicKnowledge(ctx context.Context, data learningPartition, next learning.KnowledgeSnapshot) error {
+	if err := next.ValidateReferences(); err != nil {
+		return err
+	}
 	if err := next.ValidateClaimHistory(data.Snapshot); err != nil {
-		return empty, err
+		return err
 	}
 	data.Snapshot = next
 	body, err := json.Marshal(data)
 	if err != nil {
-		return empty, err
+		return err
 	}
 	if len(body) > maxLearningPartitionBytes {
-		return empty, ErrLearningPartitionFull
+		return ErrLearningPartitionFull
 	}
 	if err := ctx.Err(); err != nil {
-		return empty, err
+		return err
 	}
-	if err := atomicBytes(filepath.Join(r.dir, "public.json"), body); err != nil {
-		return empty, err
-	}
-	return next.Claims[index], nil
+	return atomicBytes(filepath.Join(r.dir, "public.json"), body)
 }

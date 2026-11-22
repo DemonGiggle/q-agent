@@ -2,6 +2,7 @@ package localtools
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"io"
 	"net/http"
@@ -60,20 +61,24 @@ func TestLearningFetchDeclaredPublication(t *testing.T) {
 
 func TestLearningFetchPolicy(t *testing.T) {
 	for _, tc := range []struct {
-		name   string
-		robots string
-		body   string
-		status int
-		calls  int64
-		ok     bool
+		name    string
+		robots  string
+		body    string
+		status  int
+		calls   int64
+		ok      bool
+		outcome error
 	}{
-		{"allowed", "User-agent: *\nDisallow:", "<title>Public document</title><link rel='canonical' href='https://news.original.example.net/path'>", 200, 2, true},
-		{"robots exclusion", "User-agent: *\nDisallow: /doc", "", 200, 1, false},
-		{"crawl delay", "User-agent: *\nCrawl-delay: 5", "", 200, 1, false},
-		{"page opt out", "", "<meta name='robots' content='noindex'>", 200, 2, false},
-		{"restricted excerpt", "", "<meta name='robots' content='max-snippet:40'>", 200, 2, false},
-		{"redirect", "", "", 302, 2, false},
-		{"too large", "", strings.Repeat("x", 1025), 200, 2, false},
+		{"allowed", "User-agent: *\nDisallow:", "<title>Public document</title><link rel='canonical' href='https://news.original.example.net/path'>", 200, 2, true, nil},
+		{"robots exclusion", "User-agent: *\nDisallow: /doc", "", 200, 1, false, nil},
+		{"crawl delay", "User-agent: *\nCrawl-delay: 5", "", 200, 1, false, nil},
+		{"page opt out", "", "<meta name='robots' content='noindex'>", 200, 2, false, learning.ErrSourceWithdrawn},
+		{"restricted excerpt", "", "<meta name='robots' content='max-snippet:40'>", 200, 2, false, learning.ErrSourceWithdrawn},
+		{"redirect", "", "", 302, 2, false, nil},
+		{"too large", "", strings.Repeat("x", 1025), 200, 2, false, nil},
+		{"missing document", "", "", 404, 2, false, learning.ErrSourceGone},
+		{"gone", "", "", 410, 2, false, learning.ErrSourceGone},
+		{"rate limited", "", "", 429, 2, false, nil},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			client := &http.Client{
@@ -100,6 +105,11 @@ func TestLearningFetchPolicy(t *testing.T) {
 			doc, usage, err := f.fetch(context.Background(), client, "https://example.org/doc", 1024)
 			if (err == nil) != tc.ok || usage.Requests != tc.calls {
 				t.Fatalf("fetch: %+v, %+v, err=%v", doc, usage, err)
+			}
+			for _, outcome := range []error{learning.ErrSourceGone, learning.ErrSourceWithdrawn} {
+				if errors.Is(err, outcome) != (tc.outcome == outcome) {
+					t.Fatalf("fetch classified %v as %v, expected %v", err, outcome, tc.outcome)
+				}
 			}
 			if tc.ok && (doc.Source.Title != "Public document" || doc.Source.SyndicationOrigin != "example.net" || len(doc.Source.ContentHash) != 64 || string(doc.Body) != tc.body) {
 				t.Fatalf("unexpected source: %+v", doc)

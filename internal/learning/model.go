@@ -159,16 +159,35 @@ type Run struct {
 
 type Source struct {
 	Record
-	ID                string     `json:"source_id"`
-	CanonicalURI      string     `json:"canonical_uri"`
-	SyndicationOrigin string     `json:"syndication_origin,omitempty"`
-	Title             string     `json:"title"`
-	Publisher         string     `json:"publisher,omitempty"`
-	PublishedAt       *time.Time `json:"published_at,omitempty"`
-	FetchedAt         time.Time  `json:"fetched_at"`
-	ContentHash       string     `json:"content_hash"`
-	License           string     `json:"license,omitempty"`
-	TrustClass        string     `json:"trust_class"`
+	ID                string       `json:"source_id"`
+	CanonicalURI      string       `json:"canonical_uri"`
+	SyndicationOrigin string       `json:"syndication_origin,omitempty"`
+	Title             string       `json:"title"`
+	Publisher         string       `json:"publisher,omitempty"`
+	PublishedAt       *time.Time   `json:"published_at,omitempty"`
+	FetchedAt         time.Time    `json:"fetched_at"`
+	ContentHash       string       `json:"content_hash"`
+	License           string       `json:"license,omitempty"`
+	TrustClass        string       `json:"trust_class"`
+	Check             *SourceCheck `json:"revalidation,omitempty"`
+}
+
+type SourceCheck struct {
+	At         time.Time  `json:"checked_at"`
+	VerifiedAt *time.Time `json:"verified_at,omitempty"`
+	Result     string     `json:"result"`
+}
+
+// Available reports whether the stored version can still support a current claim.
+func (s Source) Available() bool {
+	return s.Check == nil || oneOf(s.Check.Result, "unchanged", "inconclusive")
+}
+
+func (s Source) LastVerifiedAt() time.Time {
+	if s.Check != nil && s.Check.VerifiedAt != nil {
+		return *s.Check.VerifiedAt
+	}
+	return s.FetchedAt
 }
 
 func (s Source) Validate() error {
@@ -176,6 +195,12 @@ func (s Source) Validate() error {
 	if !s.Record.valid() || s.ID == "" || s.FetchedAt.IsZero() || s.ContentHash == "" ||
 		err != nil || !oneOf(uri.Scheme, "http", "https") || uri.Hostname() == "" || uri.User != nil {
 		return fmt.Errorf("invalid learning source")
+	}
+	if c := s.Check; c != nil && (c.At.Before(s.FetchedAt) ||
+		!oneOf(c.Result, "unchanged", "inconclusive", "changed", "gone", "withdrawn", "aged") ||
+		(c.Result == "unchanged" && (c.VerifiedAt == nil || !c.VerifiedAt.Equal(c.At))) ||
+		(c.VerifiedAt != nil && (c.VerifiedAt.After(c.At) || c.VerifiedAt.Before(s.FetchedAt)))) {
+		return fmt.Errorf("invalid source revalidation")
 	}
 	return nil
 }
@@ -260,12 +285,16 @@ type Note struct {
 
 type Relation struct {
 	Record
-	ID          string            `json:"edge_id"`
-	FromID      string            `json:"from_id"`
-	Predicate   string            `json:"predicate"`
-	ToID        string            `json:"to_id"`
-	Qualifiers  map[string]string `json:"qualifiers"`
-	EvidenceIDs []string          `json:"evidence_ids"`
+	ID            string            `json:"edge_id"`
+	ClaimID       string            `json:"claim_id,omitempty"`
+	ClaimRevision uint64            `json:"claim_revision,omitempty"`
+	ValidFrom     *time.Time        `json:"valid_from,omitempty"`
+	ValidTo       *time.Time        `json:"valid_to,omitempty"`
+	FromID        string            `json:"from_id"`
+	Predicate     string            `json:"predicate"`
+	ToID          string            `json:"to_id"`
+	Qualifiers    map[string]string `json:"qualifiers"`
+	EvidenceIDs   []string          `json:"evidence_ids"`
 }
 
 type RevisionEvent struct {

@@ -352,8 +352,12 @@ q-agent learning frontier --public --enqueue next --config ./config.toml
 The public frontier derives gaps from cited hypotheses, unresolved,
 disputed, or stale claims. It derives associations from topic relationships
 with verified citations. Each candidate records the claim or relationship
-ID and its evidence IDs. Only existing, policy-allowed public knowledge
-feeds this path. Use `--origin gap` or `--origin association` on a list,
+ID and its evidence IDs. Reviewing a supported claim creates an edge from
+its subject to its object with the claim's predicate, qualifiers and
+supporting excerpts. A two-edge association records the shared topic,
+both edge IDs and evidence from each edge. Revising or downgrading a
+claim updates which edges can produce candidates. Only policy-allowed
+public knowledge feeds this path. Use `--origin gap` or `--origin association` on a list,
 and `--status all` to include history for currently visible candidates.
 
 `--enqueue next` queues one selected public lead. For either frontier,
@@ -406,10 +410,47 @@ a cited note for recall. The scheduler does not send a Telegram message.
 
 The service checks the current policy before dispatch, so disabling the
 schedule also blocks dispatch. Restart the service to enable scheduling or
-move the window outside the startup policy's hours. An interrupted run
-keeps its normal checkpoint and lease semantics. To withdraw approval,
+move the window outside the startup policy's hours. An interrupted run keeps its checkpoint and releases its lease. When
+the scheduled time limit expires, the active approval carries to a
+later window. The worker checks current budget and source policy before
+continuing, and a provider request with an uncertain outcome is not
+automatically repeated. The checkpoint and commit receipt prevent
+duplicate notes and Claim versions. To withdraw approval,
 pass the same ID to `learning schedule --remove` when the learning
 directory lock is available.
+
+### Recheck sources overnight
+
+Set `source_policy.revalidate_days` to a positive number of days in the
+learning policy to check the public sources behind supported Claims.
+This applies to the oldest due source, at most one per idle window with
+no active or pending approved research. The check uses the existing
+allowlist, robots rules and daily request and document quota. It never
+uses search or a model. Zero or omission keeps revalidation off.
+
+A matching document extends the verification timestamp. Changed bytes,
+HTTP 404 or 410, a document-level opt-out, or a failed publication-date
+rule mark that version unavailable and record a stale revision for each
+supported Claim citing it as support. Transient or inconclusive results
+leave Claim status intact. Original citations remain available as
+historical evidence, and stale Claims can appear as gap candidates in
+`learning frontier --public`. The check compares full document hashes,
+so a formatting-only change can also trigger review. A new research run
+can supply a fresh cited version for the next operator review.
+
+For an optional feedback signal, enable `recall.frontier_feedback` with
+chat recall and recall audit. The most recent audit event with Claim IDs
+adds a small local utility bonus to related candidates for up to seven
+days. This uses one bounded metadata record and never changes origin
+quotas or sends recall data to a search provider.
+
+For M3 drift monitoring, aggregate the existing revalidation outcomes
+and stale-to-reviewed revisions by source domain. Compare consecutive
+weekly rates for changed bytes, unavailable sources and unresolved gaps
+before adding any automatic intervention. The scheduled worker already
+preserves open questions, fingerprints and budget for a later window;
+a multi-night program can build on the same checkpoint and approval
+boundary.
 
 ## Resource constraints
 

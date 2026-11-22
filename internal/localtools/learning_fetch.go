@@ -73,8 +73,15 @@ func (f LearningFetch) fetch(ctx context.Context, client *http.Client, uri strin
 		return doc, usage, err
 	}
 	defer resp.Body.Close()
-	if resp.StatusCode != http.StatusOK || learningRobotsOptOut(strings.Join(resp.Header.Values("X-Robots-Tag"), ",")) {
+	switch resp.StatusCode {
+	case http.StatusNotFound, http.StatusGone:
+		return doc, usage, fmt.Errorf("%w: %w", learning.ErrDenied, learning.ErrSourceGone)
+	case http.StatusOK:
+	default:
 		return doc, usage, learning.ErrDenied
+	}
+	if learningRobotsOptOut(strings.Join(resp.Header.Values("X-Robots-Tag"), ",")) {
+		return doc, usage, fmt.Errorf("%w: %w", learning.ErrDenied, learning.ErrSourceWithdrawn)
 	}
 	media, _, err := mime.ParseMediaType(resp.Header.Get("Content-Type"))
 	if err != nil || (media != "text/html" && media != "text/plain") {
@@ -110,7 +117,7 @@ func (f LearningFetch) fetch(ctx context.Context, client *http.Client, uri strin
 					content := attr(tag, "content")
 					name := attr(tag, "name")
 					if (strings.EqualFold(name, "robots") || strings.EqualFold(name, "q-agent")) && learningRobotsOptOut(content) {
-						return doc, usage, learning.ErrDenied
+						return doc, usage, fmt.Errorf("%w: %w", learning.ErrDenied, learning.ErrSourceWithdrawn)
 					}
 					if inHead && (strings.EqualFold(attr(tag, "property"), "article:published_time") ||
 						strings.EqualFold(attr(tag, "itemprop"), "datePublished")) {

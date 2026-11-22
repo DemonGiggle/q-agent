@@ -110,6 +110,7 @@ func evolveResearchClaim(snapshot *learning.KnowledgeSnapshot, cfg learning.Conf
 				decision = "CONTRADICT"
 			}
 			appendClaimRevision(snapshot, index, next, decision, "Research added independent cited evidence", now)
+			syncClaimRelation(snapshot, snapshot.Claims[index], refs)
 			return prior.ID
 		}
 	}
@@ -121,12 +122,16 @@ func evolveResearchClaim(snapshot *learning.KnowledgeSnapshot, cfg learning.Conf
 func mergeClaimEvidence(refs map[string]learning.ResearchReference, prior, added []learning.EvidenceLink) []learning.EvidenceLink {
 	var known []learning.ResearchReference
 	for _, link := range prior {
-		known = append(known, refs[link.EvidenceID])
+		if ref := refs[link.EvidenceID]; ref.Source.Available() {
+			known = append(known, ref)
+		}
 	}
 	result := slices.Clone(prior)
 	for _, link := range added {
 		ref := refs[link.EvidenceID]
-		if len(result) < maxClaimLinks && independentResearchReference(ref, known) {
+		if len(result) < maxClaimLinks && ref.Source.Available() &&
+			!slices.ContainsFunc(result, func(old learning.EvidenceLink) bool { return old.EvidenceID == link.EvidenceID }) &&
+			independentResearchReference(ref, known) {
 			result = append(result, link)
 			known = append(known, ref)
 		}
@@ -139,13 +144,13 @@ func applyClaimAssessment(claim *learning.Claim, refs map[string]learning.Resear
 	var fresh, trusted int
 	for _, link := range claim.Evidence {
 		ref, ok := refs[link.EvidenceID]
-		if !ok {
+		if !ok || !ref.Source.Available() {
 			continue
 		}
 		switch {
 		case link.Relation == "supports" && independentResearchReference(ref, support):
 			support = append(support, ref)
-			if cfg.SourcePolicy.Accepts(ref.Source, now) && !ref.Source.FetchedAt.Before(now.AddDate(0, 0, -365)) {
+			if cfg.SourcePolicy.Accepts(ref.Source, now) && !ref.Source.LastVerifiedAt().Before(now.AddDate(0, 0, -365)) {
 				fresh++
 			}
 			if ref.Source.TrustClass == "public_reference" {
@@ -176,7 +181,9 @@ func applyClaimAssessment(claim *learning.Claim, refs map[string]learning.Resear
 			claim.Status = "supported"
 		case reviewed && claim.Status == "supported":
 			claim.Status, claim.Confidence = "stale", 0
-		case claim.Status == "stale" || claim.Status == "supported":
+		case claim.Status == "stale":
+			claim.Confidence = 0
+		case claim.Status == "supported":
 			// Approved status only changes through conflict or review.
 		default:
 			claim.Status = "hypothesis"

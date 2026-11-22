@@ -103,8 +103,9 @@ type Config struct {
 }
 
 type RecallConfig struct {
-	ChatEnabled  bool `json:"chat_enabled,omitempty"`
-	AuditEnabled bool `json:"audit_enabled,omitempty"`
+	ChatEnabled      bool `json:"chat_enabled,omitempty"`
+	AuditEnabled     bool `json:"audit_enabled,omitempty"`
+	FrontierFeedback bool `json:"frontier_feedback,omitempty"`
 }
 
 // Defaults keep both learning and scheduling opt-in. Budget figures are

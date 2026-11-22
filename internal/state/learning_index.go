@@ -118,10 +118,10 @@ func (r *LearningRepository) publicRecallView(ctx context.Context, cfg learning.
 	if err != nil {
 		return learningRecallView{}, err
 	}
-	return publicRecallView(snapshot, cfg, allow, intent, onlyID), nil
+	return publicRecallView(snapshot, cfg, allow, intent, onlyID, false), nil
 }
 
-func publicRecallView(snapshot learning.KnowledgeSnapshot, cfg learning.Config, allow func(string) bool, intent learning.RecallQuery, onlyID string) learningRecallView {
+func publicRecallView(snapshot learning.KnowledgeSnapshot, cfg learning.Config, allow func(string) bool, intent learning.RecallQuery, onlyID string, frontier bool) learningRecallView {
 	allowed := func(s string) bool {
 		return allow(s) && !cfg.Permissions.Excludes(learning.ConversationTurn{Transcript: s})
 	}
@@ -154,8 +154,13 @@ func publicRecallView(snapshot learning.KnowledgeSnapshot, cfg learning.Config, 
 		claims[claim.ID] = claim
 		current.Claims = append(current.Claims, claim)
 	}
-	notes := make(map[string]learning.Note, len(snapshot.Notes))
-	for _, note := range snapshot.Notes {
+	noteSet := snapshot.Notes
+	if frontier {
+		noteSet = nil
+	}
+	notes := make(map[string]learning.Note, len(noteSet))
+	hasNoteTopics := false
+	for _, note := range noteSet {
 		if (onlyID != "" && note.ID != onlyID) || len(note.SourceIDs) == 0 || !allowed(note.Title) || !allowed(note.Summary) {
 			continue
 		}
@@ -188,10 +193,11 @@ func publicRecallView(snapshot learning.KnowledgeSnapshot, cfg learning.Config, 
 		if note.BodyRef == "" && auditID.MatchString(note.ID) {
 			note.BodyRef = "note:" + note.ID
 		}
+		hasNoteTopics = hasNoteTopics || len(note.TopicIDs) > 0
 		current.Notes = append(current.Notes, note)
 		notes[note.ID] = note
 	}
-	if onlyID == "" && !intent.Recent {
+	if frontier || (hasNoteTopics && onlyID == "" && !intent.Recent) {
 		topics := make(map[string]bool, len(snapshot.Topics))
 		safe := func(value string) bool { return !allowed(value) }
 		for _, topic := range snapshot.Topics {
@@ -201,11 +207,24 @@ func publicRecallView(snapshot learning.KnowledgeSnapshot, cfg learning.Config, 
 			}
 		}
 		for _, edge := range snapshot.Relations {
-			if topics[edge.FromID] && topics[edge.ToID] && len(edge.EvidenceIDs) > 0 &&
-				!slices.ContainsFunc(edge.EvidenceIDs, func(id string) bool {
-					_, ok := evidence[id]
-					return !ok
-				}) {
+			if !topics[edge.FromID] || !topics[edge.ToID] || len(edge.EvidenceIDs) == 0 ||
+				!allowed(edge.Predicate) || slices.ContainsFunc(edge.EvidenceIDs, func(id string) bool {
+				item, ok := evidence[id]
+				return !ok || !sources[item.SourceID].Available()
+			}) {
+				continue
+			}
+			if edge.ClaimID != "" {
+				claim := claims[edge.ClaimID]
+				if claim.Status != "supported" || claim.Revision != edge.ClaimRevision {
+					continue
+				}
+			}
+			valid := true
+			for name, value := range edge.Qualifiers {
+				valid = valid && allowed(name+" "+value)
+			}
+			if valid {
 				current.Relations = append(current.Relations, edge)
 			}
 		}

@@ -22,6 +22,9 @@ func (hit LearningRecall) Markdown(policy *learning.ResearchSourcePolicy, now ti
 		if source.PublishedAt != nil {
 			fmt.Fprintf(&text, ", published %s", source.PublishedAt.UTC().Format(time.DateOnly))
 		}
+		if !source.Available() {
+			text.WriteString(", historical excerpt; source no longer verified")
+		}
 		if !policy.Accepts(source, now) {
 			text.WriteString(", outside current date policy")
 		}

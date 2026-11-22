@@ -14,9 +14,11 @@ import (
 )
 
 type learningNight struct {
-	Window  string `json:"window,omitempty"`
-	Pending string `json:"pending_run_id,omitempty"`
-	Active  string `json:"active_run_id,omitempty"`
+	Window          string `json:"window,omitempty"`
+	FreshnessWindow string `json:"freshness_window,omitempty"`
+	DeferredWindow  string `json:"deferred_window,omitempty"`
+	Pending         string `json:"pending_run_id,omitempty"`
+	Active          string `json:"active_run_id,omitempty"`
 }
 
 func loadLearningNight(path string) (learningNight, error) {
@@ -39,8 +41,8 @@ func loadLearningNight(path string) (learningNight, error) {
 		(night.Active != "" && !auditID.MatchString(night.Active)) {
 		return learningNight{}, fmt.Errorf("invalid overnight learning queue")
 	}
-	if night.Window != "" {
-		if _, err := time.Parse(time.DateOnly, night.Window); err != nil {
+	for _, date := range []string{night.Window, night.FreshnessWindow, night.DeferredWindow} {
+		if _, err := time.Parse(time.DateOnly, date); date != "" && err != nil {
 			return learningNight{}, fmt.Errorf("invalid overnight learning date")
 		}
 	}
@@ -116,7 +118,7 @@ func (c *LearningCoordinator) RunScheduledResearch(ctx context.Context, cfg lear
 	if err != nil {
 		return err
 	}
-	if night.Window > window || (night.Active == "" && night.Window == window) {
+	if night.Window > window || night.DeferredWindow >= window || (night.Active == "" && night.Window == window) {
 		return nil
 	}
 	id := night.Active
@@ -124,6 +126,19 @@ func (c *LearningCoordinator) RunScheduledResearch(ctx context.Context, cfg lear
 		id = night.Pending
 	}
 	if id == "" {
+		if cfg.SourcePolicy == nil || cfg.SourcePolicy.RevalidateDays == 0 || fetch == nil || allow == nil || window <= night.FreshnessWindow {
+			return nil
+		}
+		if err := ctx.Err(); err != nil {
+			return err
+		}
+		night.FreshnessWindow = window
+		if err := Atomic(path, night); err != nil {
+			return err
+		}
+		return c.revalidateLearningSource(ctx, cfg, allow, fetch)
+	}
+	if search == nil {
 		return nil
 	}
 	run, err := c.readAuthorizedResearch(ctx, cfg, id, allow)
@@ -158,7 +173,7 @@ func (c *LearningCoordinator) RunScheduledResearch(ctx context.Context, cfg lear
 			return err
 		}
 	}
-	result, workErr := c.WorkResearch(ctx, cfg, id, allow, search, fetch, reader, nil)
+	result, workErr := c.workResearch(ctx, cfg, id, allow, search, fetch, reader, nil, false, true)
 	if errors.Is(workErr, ErrLearningLeaseHeld) {
 		return nil
 	}
@@ -166,6 +181,10 @@ func (c *LearningCoordinator) RunScheduledResearch(ctx context.Context, cfg lear
 	_, auditErr := c.ExportResearchAudit(cleanup, cfg, id, allow)
 	if terminalLearningRun(result.State) {
 		night.Active = ""
+		return errors.Join(workErr, auditErr, Atomic(path, night))
+	}
+	if ctx.Err() != nil {
+		night.DeferredWindow = window
 		return errors.Join(workErr, auditErr, Atomic(path, night))
 	}
 	return errors.Join(workErr, auditErr)

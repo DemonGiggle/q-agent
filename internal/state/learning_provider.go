@@ -135,8 +135,7 @@ func (c *LearningCoordinator) admitProvider(ctx context.Context, lease learning.
 	nextRun, runFits := record.Run.Spent.Reserve(cost, cfg.PerRun)
 	_, questionRunFits := record.Run.Spent.Reserve(cost, cfg.PerQuestion)
 	_, planFits := record.Run.Spent.Reserve(cost, plan.Budget)
-	nextQuestion, questionFits := quota.Questions[question].Reserve(cost, cfg.PerQuestion)
-	nextDay, dayFits := quota.Spent.Reserve(cost, cfg.GlobalDaily)
+	quotaFits := quota.reserve(question, cost, cfg)
 	cp := learning.Checkpoint{}
 	if record.Run.Checkpoint != nil {
 		cp = *record.Run.Checkpoint
@@ -147,7 +146,7 @@ func (c *LearningCoordinator) admitProvider(ctx context.Context, lease learning.
 	if now.After(record.Run.UpdatedAt) {
 		record.Run.UpdatedAt = now
 	}
-	if !runFits || !planFits || !questionRunFits || !questionFits || !dayFits {
+	if !runFits || !planFits || !questionRunFits || !quotaFits {
 		record.Run.State = learning.RunBudgetExhausted
 		record.Run.StopReason = "provider_budget"
 		record.Run.EndedAt = &record.Run.UpdatedAt
@@ -155,17 +154,9 @@ func (c *LearningCoordinator) admitProvider(ctx context.Context, lease learning.
 		return nil, errors.Join(ErrLearningBudget, c.save(record))
 	}
 
-	quota.Spent, quota.Questions[question] = nextDay, nextQuestion
-	body, err := json.Marshal(quota)
-	if err != nil {
-		return nil, err
-	}
-	if len(body) > maxLearningLedgerBytes {
-		return nil, fmt.Errorf("learning quota ledger exceeds storage limit")
-	}
 	// Debit the shared budget first. An interruption between writes may
 	// overcharge the shared budget, but no provider will have been called.
-	if err := atomicBytes(path, body); err != nil {
+	if err := quota.save(path); err != nil {
 		return nil, err
 	}
 	record.QuestionKey, record.PlanBudget = question, &plan.Budget
@@ -179,6 +170,27 @@ func (c *LearningCoordinator) admitProvider(ctx context.Context, lease learning.
 	}
 	c.activeCalls[lease.RunID] = cancel
 	return callCtx, nil
+}
+
+func (q *learningQuota) reserve(question string, cost learning.Budget, cfg learning.Config) bool {
+	nextQuestion, questionFits := q.Questions[question].Reserve(cost, cfg.PerQuestion)
+	nextDay, dayFits := q.Spent.Reserve(cost, cfg.GlobalDaily)
+	if !questionFits || !dayFits {
+		return false
+	}
+	q.Spent, q.Questions[question] = nextDay, nextQuestion
+	return true
+}
+
+func (q learningQuota) save(path string) error {
+	body, err := json.Marshal(q)
+	if err != nil {
+		return err
+	}
+	if len(body) > maxLearningLedgerBytes {
+		return fmt.Errorf("learning quota ledger exceeds storage limit")
+	}
+	return atomicBytes(path, body)
 }
 
 func loadLearningQuota(path, today string) (learningQuota, error) {

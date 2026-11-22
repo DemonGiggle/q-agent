@@ -134,7 +134,7 @@ func (c *LearningCoordinator) EnqueueResearch(ctx context.Context, cfg learning.
 // current policy. Search results never become evidence or claims.
 func (c *LearningCoordinator) WorkResearch(ctx context.Context, cfg learning.Config, id string, allow func(string) bool,
 	search learning.SearchProvider, fetch learning.DocumentFetcher, reader learning.DocumentReader, model learning.ModelProvider) (LearningWorkerResult, error) {
-	return c.workResearch(ctx, cfg, id, allow, search, fetch, reader, model, false)
+	return c.workResearch(ctx, cfg, id, allow, search, fetch, reader, model, false, false)
 }
 
 func (c *LearningCoordinator) WorkResearchWithClaims(ctx context.Context, cfg learning.Config, id string, allow func(string) bool,
@@ -142,12 +142,12 @@ func (c *LearningCoordinator) WorkResearchWithClaims(ctx context.Context, cfg le
 	if model == nil {
 		return LearningWorkerResult{}, fmt.Errorf("learning claims require a model")
 	}
-	return c.workResearch(ctx, cfg, id, allow, search, fetch, reader, model, true)
+	return c.workResearch(ctx, cfg, id, allow, search, fetch, reader, model, true, false)
 }
 
 func (c *LearningCoordinator) workResearch(ctx context.Context, cfg learning.Config, id string, allow func(string) bool,
 	search learning.SearchProvider, fetch learning.DocumentFetcher, reader learning.DocumentReader, model learning.ModelProvider,
-	draftClaims bool) (result LearningWorkerResult, retErr error) {
+	draftClaims, scheduled bool) (result LearningWorkerResult, retErr error) {
 	if err := cfg.Validate(); err != nil {
 		return result, err
 	}
@@ -173,7 +173,7 @@ func (c *LearningCoordinator) workResearch(ctx context.Context, cfg learning.Con
 	}
 	defer func() {
 		releaseCtx := context.WithoutCancel(ctx)
-		if ctx.Err() != nil {
+		if ctx.Err() != nil && !scheduled {
 			latest, err := c.load(id)
 			retErr = errors.Join(retErr, ctx.Err(), err)
 			if err == nil && !terminalLearningRun(latest.Run.State) {
@@ -535,10 +535,16 @@ func (c *LearningCoordinator) commitResearch(ctx context.Context, cfg learning.C
 			next.Sources = append(next.Sources, source)
 		} else if prior := next.Sources[index]; prior.ContentHash != source.ContentHash || prior.CanonicalURI != source.CanonicalURI {
 			return c.failResearchCommit(ctx, lease, "source_identity_conflict")
-		} else if prior.PublishedAt == nil && source.PublishedAt != nil {
-			// Re-observing the same body can fill publication metadata
-			// for sources stored before the fetcher extracted it.
-			next.Sources[index].PublishedAt = source.PublishedAt
+		} else {
+			if prior.Check != nil && !prior.Available() {
+				if !source.FetchedAt.After(prior.Check.At) {
+					return c.failResearchCommit(ctx, lease, "policy_changed")
+				}
+				next.Sources[index].Check = &learning.SourceCheck{At: source.FetchedAt, VerifiedAt: &source.FetchedAt, Result: "unchanged"}
+			}
+			if prior.PublishedAt == nil && source.PublishedAt != nil {
+				next.Sources[index].PublishedAt = source.PublishedAt
+			}
 		}
 		note.SourceIDs = append(note.SourceIDs, source.ID)
 		if evidence := ref.Evidence; evidence != nil {

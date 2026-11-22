@@ -11,8 +11,9 @@ import (
 // ResearchSourcePolicy admits sources based on their declared publication date.
 // An exact host rule can override the default age or authorize a single source.
 type ResearchSourcePolicy struct {
-	MaxAgeDays int                         `json:"max_age_days,omitempty"`
-	Domains    map[string]DomainSourceRule `json:"domains,omitempty"`
+	MaxAgeDays     int                         `json:"max_age_days,omitempty"`
+	RevalidateDays int                         `json:"revalidate_days,omitempty"`
+	Domains        map[string]DomainSourceRule `json:"domains,omitempty"`
 }
 
 type DomainSourceRule struct {
@@ -27,6 +28,9 @@ func (p *ResearchSourcePolicy) validate() error {
 	const maxAgeDays = 36500
 	if p.MaxAgeDays < 0 || p.MaxAgeDays > maxAgeDays {
 		return fmt.Errorf("source max_age_days must be between 0 and %d", maxAgeDays)
+	}
+	if p.RevalidateDays < 0 || p.RevalidateDays > maxAgeDays {
+		return fmt.Errorf("source revalidate_days must be between 0 and %d", maxAgeDays)
 	}
 	for host, rule := range p.Domains {
 		if !validSourcePolicyHost(host) {

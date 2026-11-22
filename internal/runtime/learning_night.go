@@ -56,7 +56,7 @@ func (r *Runtime) runNightResearch(ctx context.Context, now time.Time, search le
 	}
 	window := cfg.Schedule.Window(now)
 	if !cfg.Enabled || window == "" || cfg.Schedule.Window(now.Add(time.Minute)) != window ||
-		len(cfg.Permissions.AllowDomains) == 0 || !cfg.Permissions.AllowsDomain(localtools.LearningSearchDomain) {
+		len(cfg.Permissions.AllowDomains) == 0 {
 		return nil
 	}
 	if cfg.Schedule.IdleMinutes > 0 {
@@ -85,7 +85,12 @@ func (r *Runtime) runNightResearch(ctx context.Context, now time.Time, search le
 	if busy {
 		return nil
 	}
-	if search == nil {
+	if !cfg.Permissions.AllowsDomain(localtools.LearningSearchDomain) {
+		search = nil
+		if cfg.SourcePolicy == nil || cfg.SourcePolicy.RevalidateDays == 0 {
+			return nil
+		}
+	} else if search == nil {
 		search = localtools.LearningSearch{Permissions: cfg.Permissions}
 	}
 	if fetch == nil {

@@ -103,7 +103,8 @@ func (s KnowledgeSnapshot) ValidateReferences() error {
 	}
 	for _, v := range s.Relations {
 		if !v.Record.valid() || v.FromID == "" || v.ToID == "" || v.Predicate == "" ||
-			!hasKnowledgeIDs(evidence, v.EvidenceIDs) {
+			!hasKnowledgeIDs(evidence, v.EvidenceIDs) ||
+			(v.ClaimID != "" && (!claims[v.ClaimID] || v.ClaimRevision == 0 || !topics[v.FromID] || !topics[v.ToID])) {
 			return fmt.Errorf("invalid relation or relation references")
 		}
 	}

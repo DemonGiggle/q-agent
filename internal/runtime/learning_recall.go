@@ -91,11 +91,11 @@ func (r *Runtime) auditResearchRecall(ctx context.Context, recall researchRecall
 	}
 	id := rand.Text()
 	log := state.LearningAudit{Dir: filepath.Join(r.Config.StateDir, "learning", "audit")}
-	if err := log.Append(ctx, learning.Event{
+	if err := log.AppendRecall(ctx, learning.Event{
 		SchemaVersion: learning.SchemaVersion, Type: learning.RecallUsed,
 		ID: id, RunID: id, At: time.Now().UTC(), Outcome: "included",
 		ObjectRefs: recall.noteIDs, ClaimRefs: recall.claimIDs,
-	}); err != nil && ctx.Err() == nil {
+	}, r.Learning.Recall.FrontierFeedback); err != nil && ctx.Err() == nil {
 		r.report(fmt.Errorf("audit prior research: %w", err))
 	}
 }

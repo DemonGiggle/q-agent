@@ -19,7 +19,10 @@ import (
 
 const maxLearningPartitionBytes = 4 << 20
 
-var ErrLearningPartitionFull = errors.New("learning partition exceeds storage limit")
+var (
+	ErrLearningPartitionFull    = errors.New("learning partition exceeds storage limit")
+	errLearningPartitionCorrupt = errors.New("invalid learning partition")
+)
 
 // LearningLeaseGuard keeps the current lease valid through the commit. It
 // calls write once while holding the coordinator's lock, or returns an error
@@ -92,10 +95,10 @@ func (r *LearningRepository) load(key string) (learningPartition, error) {
 	}
 	var data learningPartition
 	if err := json.Unmarshal(body, &data); err != nil {
-		return learningPartition{}, fmt.Errorf("decode learning partition: %w", err)
+		return learningPartition{}, fmt.Errorf("%w: %w", errLearningPartitionCorrupt, err)
 	}
 	if data.Schema != learning.SchemaVersion || data.Snapshot.Version == 0 {
-		return learningPartition{}, fmt.Errorf("invalid learning partition version")
+		return learningPartition{}, errLearningPartitionCorrupt
 	}
 	return data, nil
 }

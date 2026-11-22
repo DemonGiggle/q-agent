@@ -13,8 +13,8 @@ test:
 race:
 	go test -race ./...
 learning-acceptance:
-	go test -count=1 -timeout 5m -v -run '^Test(Learning|RankQuestionAndConversationDedup|RankNoteKeywords)' \
-		./internal/learning ./internal/state ./internal/runtime ./internal/llm ./internal/localtools ./cmd/q-agent
+	go test -count=1 -timeout 5m -v -run '^Test(Learning|BlindReview|RankQuestionAndConversationDedup|RankNoteKeywords)' \
+		./internal/learning ./internal/state ./internal/runtime ./internal/llm ./internal/localtools ./cmd/q-agent ./cmd/learning-review
 integration-host:
 	go test -v ./internal/host ./cmd/q-agent -run Host -timeout 2m
 integration: build

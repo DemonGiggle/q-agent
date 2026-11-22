@@ -422,8 +422,11 @@ from current state. The scoped backup suffixes `.json.bak` and
 `.json.bak.*` and abandoned knowledge-store atomic temp files are removed
 before the receipt is returned. An erased candidate is suppressed
 through the 48-hour conversation lookback, and a topic-wide deletion sets
-a cutoff for old conversations. Reuse the receipt ID with
-`--request-id` to retry the same operation. Exports and external backups
+a cutoff for old conversations. Whole-topic erasure can also replace an
+unreadable or oversized private partition and its controlled copies. The
+receipt includes `unreadable_partition: true` when the prior entries
+could not be counted. Reuse the receipt ID with `--request-id` to retry
+the same operation. Exports and external backups
 belong to the operator. This scope covers derived private learning data.
 Chat history and independently approved public research have their own
 storage and controls.
@@ -507,6 +510,20 @@ before adding any automatic intervention. The scheduled worker already
 preserves open questions, fingerprints and budget for a later window;
 a multi-night program can build on the same checkpoint and approval
 boundary.
+
+## Read the morning research digest
+
+```sh
+q-agent learning digest --config ./config.toml
+```
+
+The digest is an on-demand Markdown summary of authorized public notes
+first saved in the last 24 hours. It shows current claims and citation
+status and applies the same source, archive, and exclusion rules as
+recall. Set `--days` (1–30) or `--limit` (1–10, default 5) to change the
+selection, ordered by first save time. Output is capped at 32 KiB.
+The digest reads local state on invocation. It uses zero provider requests
+and zero model tokens.
 
 ## Resource constraints
 
@@ -623,9 +640,11 @@ multi-source synthesis are follow-up work.
   applies a shared context budget and can emit metadata-only recall events.
 - #74 provides atomic claim revisions, evidence-based conflict handling,
   explicit review, and replacement history.
-- #76 owns further provider egress controls, ACL for remote controls, and
-  deletion across durable knowledge, indexes and backups. Nightly execution
-  accepts explicitly approved public run IDs.
+- #76 provides provider egress controls, local scope ACLs, and erasure
+  across private learning partitions and their controlled backups.
+- #77 provides metadata-only telemetry and a CI-backed acceptance matrix.
+  The [evaluation report](learning-evaluation.md) records fixture baselines
+  and gives the workflow for a human review with live answers.
 
 ## Inspect learning telemetry
 

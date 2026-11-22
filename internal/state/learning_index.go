@@ -5,6 +5,7 @@ import (
 	"context"
 	"slices"
 	"strings"
+	"time"
 
 	"q-agent/internal/learning"
 )
@@ -93,6 +94,33 @@ func (r *LearningRepository) RecallPublic(ctx context.Context, cfg learning.Conf
 		results = append(results, view.note(id))
 	}
 	return results, nil
+}
+
+// RecentPublicLearning returns notes first saved in the requested interval.
+// It shares the current policy checks and archive behavior of public recall.
+func (r *LearningRepository) RecentPublicLearning(ctx context.Context, cfg learning.Config, from, until time.Time,
+	allow func(string) bool, limit int) ([]LearningRecall, error) {
+	if !cfg.Enabled || allow == nil {
+		return nil, learning.ErrDenied
+	}
+	if from.IsZero() || !from.Before(until) || limit < 1 || limit > 10 {
+		return nil, learning.ErrRecallQuery
+	}
+	view, err := r.publicRecallView(ctx, cfg, allow, learning.RecallQuery{Recent: true}, "")
+	if err != nil {
+		return nil, err
+	}
+	notes := slices.DeleteFunc(view.current.Notes, func(note learning.Note) bool {
+		return note.CreatedAt.Before(from) || !note.CreatedAt.Before(until)
+	})
+	slices.SortFunc(notes, func(a, b learning.Note) int {
+		return cmp.Or(b.CreatedAt.Compare(a.CreatedAt), cmp.Compare(a.ID, b.ID))
+	})
+	result := make([]LearningRecall, 0, min(len(notes), limit))
+	for _, note := range notes[:min(len(notes), limit)] {
+		result = append(result, view.note(note.ID))
+	}
+	return result, nil
 }
 
 // ReadPublicNote resolves a note ID or body reference with the same policy

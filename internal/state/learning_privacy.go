@@ -15,9 +15,10 @@ import (
 const ConversationFrontierLookback = 48 * time.Hour
 
 type LearningDeletionReceipt struct {
-	ID      string    `json:"receipt_id"`
-	At      time.Time `json:"deleted_at"`
-	Removed int       `json:"removed"`
+	ID                  string    `json:"receipt_id"`
+	At                  time.Time `json:"deleted_at"`
+	Removed             int       `json:"removed"`
+	UnreadablePartition bool      `json:"unreadable_partition,omitempty"`
 }
 
 type privateLearningDeletion struct {
@@ -39,8 +40,14 @@ func (r *LearningRepository) DeletePrivateLearning(ctx context.Context, scope le
 		return empty, err
 	}
 	data, err := r.load(key)
+	unreadable := errors.Is(err, errLearningPartitionCorrupt) || errors.Is(err, ErrLearningPartitionFull)
 	if err != nil {
-		return empty, err
+		if candidate != "" || !unreadable {
+			return empty, err
+		}
+		// Whole-topic erasure replaces unreadable bytes as well as known
+		// records. A single-candidate request cannot discard its neighbors.
+		data = learningPartition{Schema: learning.SchemaVersion}
 	}
 	for _, prior := range data.Deletions {
 		if prior.ID == requestID {
@@ -54,7 +61,7 @@ func (r *LearningRepository) DeletePrivateLearning(ctx context.Context, scope le
 		}
 	}
 	receipt := privateLearningDeletion{
-		LearningDeletionReceipt: LearningDeletionReceipt{ID: requestID, At: now.UTC()},
+		LearningDeletionReceipt: LearningDeletionReceipt{ID: requestID, At: now.UTC(), UnreadablePartition: unreadable},
 		Candidate:               candidate,
 	}
 	data.Snapshot.Frontier = slices.DeleteFunc(data.Snapshot.Frontier, func(entry learning.FrontierEntry) bool {

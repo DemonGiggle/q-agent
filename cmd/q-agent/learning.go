@@ -26,12 +26,17 @@ import (
 )
 
 func runLearning(ctx context.Context, args []string, input io.Reader, output io.Writer) error {
-	if len(args) == 0 || !slices.Contains([]string{"configure", "trigger", "search", "enqueue", "schedule", "work", "recall", "note", "claim-history", "claim-edit", "frontier", "status", "pause", "resume", "cancel", "audit", "export", "delete", "archive", "metrics"}, args[0]) {
-		return fmt.Errorf("usage: q-agent learning configure|trigger|search|enqueue|schedule|work|recall|note|claim-history|claim-edit|frontier|status|pause|resume|cancel|audit|export|delete|archive|metrics [--config FILE]; pass input on stdin")
+	if len(args) == 0 || !slices.Contains([]string{"configure", "trigger", "search", "enqueue", "schedule", "work", "recall", "note", "claim-history", "claim-edit", "frontier", "status", "pause", "resume", "cancel", "audit", "export", "delete", "archive", "metrics", "digest"}, args[0]) {
+		return fmt.Errorf("usage: q-agent learning configure|trigger|search|enqueue|schedule|work|recall|note|claim-history|claim-edit|frontier|status|pause|resume|cancel|audit|export|delete|archive|metrics|digest [--config FILE]; pass input on stdin")
 	}
 
 	flags := flag.NewFlagSet("learning "+args[0], flag.ContinueOnError)
 	path := flags.String("config", config.DefaultPath, "q-agent TOML configuration")
+	var digestDays, digestLimit int
+	if args[0] == "digest" {
+		flags.IntVar(&digestDays, "days", 1, "number of 24-hour periods to summarize")
+		flags.IntVar(&digestLimit, "limit", 5, "maximum notes")
+	}
 	var metricDays int
 	if args[0] == "metrics" {
 		flags.IntVar(&metricDays, "days", 7, "include this many days of audit events")
@@ -157,6 +162,9 @@ func runLearning(ctx context.Context, args []string, input io.Reader, output io.
 		return enc.Encode(result)
 	}
 
+	if args[0] == "digest" {
+		return writeLearningDigest(ctx, app, cfg, output, time.Now().UTC(), digestDays, digestLimit)
+	}
 	if args[0] == "export" {
 		partition, err := authorizedLearningPartition(app, cfg, frontier, false)
 		if err != nil {

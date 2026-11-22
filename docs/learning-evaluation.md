@@ -14,7 +14,7 @@ the Linux race detector. The fixtures use local state and stub providers.
 | AC-06 | `state/TestLearningClaimDraftAndRecovery`, `state/TestLearningTelemetryResumesAndCountsClaimOutcomes` | Restart after a durable commit finishes the same run and emits stable event IDs without another Claim revision. |
 | AC-07 | `runtime/TestLearningRecallInInteractiveChat`, `runtime/TestLearningNightResearchReachesChatRecall` | Relevant notes arrive with their URLs, dates and locators. Unrelated prompts receive no research context. |
 | AC-08 | `llm/TestLearningOllamaDraftUsesOnlyOrderedExcerpts`, `llm/TestLearningOllamaRejectsUnsolicitedToolCall`, `runtime/TestLearningRecallInInteractiveChat` | References reach the model as data. Tool-call output is refused in research and cited Telegram replies have no executable tools. |
-| AC-09 | `q-agent/TestLearningPrivateFrontierLifecycle` | Authorized deletion clears the scoped record and controlled copies and returns a replayable receipt. Recent history stays clear after reopening. |
+| AC-09 | `q-agent/TestLearningPrivateFrontierLifecycle`, `state/TestLearningEraseUnreadablePrivatePartition` | Authorized erasure clears a candidate or a whole topic and its controlled copies. Whole-topic erasure also works when the partition is unreadable. Both paths record a replayable receipt. |
 | AC-10 | `state/TestLearningFreshnessAndAssociation` | Changed, gone or withdrawn sources identify and downgrade affected Claims while preserving historical evidence. |
 | AC-11 | `learning/TestRankNoteKeywords`, `runtime/TestLearningNightResearchReachesChatRecall` | An ordinary keyword lookup retrieves a cited note with the built-in JSON store. |
 | AC-12 | `state/TestLearningCancelActiveWorker` | Cancelling an active scheduled run interrupts its provider, clears its approval and lease, and publishes no knowledge. |
@@ -82,3 +82,45 @@ A, B or tie for preference. Record the number of valid pairs, per-arm
 scores, wins/ties/losses and reserved requests/tokens. Divide total
 reservations by human-accepted Claims or usable answers for the relevant
 efficiency metric. Treat zero accepted results as an undefined ratio.
+
+
+### Prepare and score locally
+
+Record the paired answers in a single JSON input. Use neutral case IDs, an
+independent reference for each question and the reserved research totals
+for that question. The documented limits apply per question. For example:
+
+```json
+{
+  "model": "fixture-model",
+  "answer_token_limit": 300,
+  "research_limit": {"requests": 6, "tokens": 2500},
+  "pairs": [
+    {
+      "id": "q1",
+      "question": "When was the fictional archive founded?",
+      "reference": "The independent record gives 1950.",
+      "recall_off": "The date is uncertain.",
+      "recall_on": "The archive entry gives 1950.",
+      "research": {"requests": 5, "tokens": 0}
+    }
+  ]
+}
+```
+
+```sh
+go run ./cmd/learning-review prepare --input paired-answers.json --output-dir review
+go run ./cmd/learning-review score --key review/key.json --ratings completed-ratings.json
+```
+
+Prepare creates a fresh directory. Give the rater only `packet.json` and
+`ratings-template.json`. Keep `key.json` with the coordinator. The template
+requires ratings and a preference for each case. Mark whether each answer
+is usable and how many of its Claims passed review so the report can
+calculate research costs per accepted result. Score ties explicitly.
+Incomplete, duplicate, and mismatched ratings are rejected. The output
+reports totals for each arm, so divide the metric totals by the pair count
+for a mean on the 0–2 scale. A zero denominator is reported as `null`.
+
+`TestBlindReviewRoundTrip` exercises the tool with synthetic answers and
+ratings. The live human review remains a separate acceptance activity.

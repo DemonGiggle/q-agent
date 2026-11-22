@@ -158,6 +158,9 @@ func (r *LearningRepository) Commit(ctx context.Context, partition learning.Part
 		if data.Snapshot.Version != expectedVersion {
 			return learning.ErrVersionConflict
 		}
+		if err := next.ValidateClaimHistory(data.Snapshot); err != nil {
+			return err
+		}
 		// Embed the already encoded payload to avoid marshaling the full
 		// knowledge snapshot a second time while holding the commit lock.
 		if data.Receipts == nil {

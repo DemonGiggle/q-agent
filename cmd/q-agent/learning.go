@@ -24,8 +24,8 @@ import (
 )
 
 func runLearning(ctx context.Context, args []string, input io.Reader, output io.Writer) error {
-	if len(args) == 0 || !slices.Contains([]string{"configure", "trigger", "search", "enqueue", "schedule", "work", "recall", "note", "frontier", "status", "pause", "resume", "audit"}, args[0]) {
-		return fmt.Errorf("usage: q-agent learning configure|trigger|search|enqueue|schedule|work|recall|note|frontier|status|pause|resume|audit [--config FILE]; pass input on stdin")
+	if len(args) == 0 || !slices.Contains([]string{"configure", "trigger", "search", "enqueue", "schedule", "work", "recall", "note", "claim-history", "claim-edit", "frontier", "status", "pause", "resume", "audit"}, args[0]) {
+		return fmt.Errorf("usage: q-agent learning configure|trigger|search|enqueue|schedule|work|recall|note|claim-history|claim-edit|frontier|status|pause|resume|audit [--config FILE]; pass input on stdin")
 	}
 
 	flags := flag.NewFlagSet("learning "+args[0], flag.ContinueOnError)
@@ -100,7 +100,7 @@ func runLearning(ctx context.Context, args []string, input io.Reader, output io.
 	}
 	// Check against the caller's raw text before redaction and apply the
 	// same exclusion policy again to the sanitized planning input.
-	runIDInput := slices.Contains([]string{"work", "status", "pause", "resume", "audit", "note", "schedule"}, args[0])
+	runIDInput := slices.Contains([]string{"work", "status", "pause", "resume", "audit", "note", "schedule", "claim-history", "claim-edit"}, args[0])
 	if !runIDInput && cfg.Permissions.Excludes(learning.ConversationTurn{Transcript: string(data)}) {
 		return learning.ErrDenied
 	}
@@ -110,6 +110,35 @@ func runLearning(ctx context.Context, args []string, input io.Reader, output io.
 	}
 	coordinator := state.NewLearningCoordinator(app.StateDir)
 	allow := func(s string) bool { return !policy.ContainsSecret(s) }
+	if args[0] == "claim-history" || args[0] == "claim-edit" {
+		repo := state.NewLearningRepository(app.StateDir, nil)
+		if args[0] == "claim-history" {
+			history, err := repo.ClaimHistory(ctx, cfg, strings.TrimSpace(string(data)), allow)
+			if err != nil {
+				return err
+			}
+			return enc.Encode(history)
+		}
+		var edit state.ClaimEdit
+		decoder := json.NewDecoder(strings.NewReader(string(data)))
+		decoder.DisallowUnknownFields()
+		if err := decoder.Decode(&edit); err != nil {
+			return err
+		}
+		if err := decoder.Decode(new(any)); !errors.Is(err, io.EOF) {
+			return fmt.Errorf("claim edit requires exactly one JSON object")
+		}
+		unlock, err := state.Lock(filepath.Join(app.StateDir, "learning"))
+		if err != nil {
+			return err
+		}
+		defer unlock()
+		claim, err := repo.EditPublicClaim(ctx, cfg, edit, allow, time.Now())
+		if err != nil {
+			return err
+		}
+		return enc.Encode(claim)
+	}
 	if args[0] == "schedule" {
 		unlock, err := state.Lock(filepath.Join(app.StateDir, "learning"))
 		if err != nil {

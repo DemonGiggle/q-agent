@@ -135,6 +135,7 @@ type Checkpoint struct {
 	ResearchSummary       string              `json:"research_summary,omitempty"`
 	ResearchSummaryStatus string              `json:"research_summary_status,omitempty"`
 	ResearchClaim         *Claim              `json:"research_claim,omitempty"`
+	PublishedClaimID      string              `json:"published_claim_id,omitempty"`
 	Version               uint64              `json:"version"`
 	OpenQuestions         []string            `json:"open_questions"`
 	Fingerprints          []string            `json:"fingerprints"`
@@ -203,18 +204,21 @@ type EvidenceLink struct {
 
 type Claim struct {
 	Record
-	ID         string            `json:"claim_id"`
-	Subject    string            `json:"subject"`
-	Predicate  string            `json:"predicate"`
-	Object     string            `json:"object"`
-	Qualifiers map[string]string `json:"qualifiers"`
-	Status     string            `json:"status"`
-	Confidence float64           `json:"confidence"`
-	Evidence   []EvidenceLink    `json:"evidence"`
-	ValidFrom  *time.Time        `json:"valid_from,omitempty"`
-	ValidTo    *time.Time        `json:"valid_to,omitempty"`
-	RevisedAt  time.Time         `json:"revised_at"`
-	Revision   uint64            `json:"revision"`
+	ID               string            `json:"claim_id"`
+	Subject          string            `json:"subject"`
+	Predicate        string            `json:"predicate"`
+	Object           string            `json:"object"`
+	Qualifiers       map[string]string `json:"qualifiers"`
+	Status           string            `json:"status"`
+	Confidence       float64           `json:"confidence"`
+	ConfidenceReason string            `json:"confidence_reason,omitempty"`
+	Aliases          []string          `json:"aliases,omitempty"`
+	SupersededBy     string            `json:"superseded_by,omitempty"`
+	Evidence         []EvidenceLink    `json:"evidence"`
+	ValidFrom        *time.Time        `json:"valid_from,omitempty"`
+	ValidTo          *time.Time        `json:"valid_to,omitempty"`
+	RevisedAt        time.Time         `json:"revised_at"`
+	Revision         uint64            `json:"revision"`
 }
 
 func (c Claim) Validate() error {
@@ -274,6 +278,8 @@ type RevisionEvent struct {
 	Reason      string    `json:"reason"`
 	EvidenceIDs []string  `json:"evidence_ids"`
 	OccurredAt  time.Time `json:"occurred_at"`
+	Decision    string    `json:"decision,omitempty"`
+	Before      *Claim    `json:"before,omitempty"`
 }
 
 type RecallEvent struct {

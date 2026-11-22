@@ -397,15 +397,18 @@ func (c *LearningCoordinator) workResearch(ctx context.Context, cfg learning.Con
 				return result, nil
 			}
 			if cp.ResearchClaim != nil {
-				snapshot, err := c.repo.Snapshot(workCtx, learning.Partition{Public: true})
+				knowledge, err := c.repo.load("public")
 				if err != nil {
 					return result, err
 				}
-				at := slices.IndexFunc(snapshot.Notes, func(note learning.Note) bool { return note.ID == run.ID })
-				if at < 0 || len(snapshot.Notes[at].ClaimIDs) != 1 {
+				notes := knowledge.Snapshot.Notes
+				at := slices.IndexFunc(notes, func(note learning.Note) bool { return note.ID == run.ID })
+				if at < 0 || len(notes[at].ClaimIDs) != 1 {
 					return result, fmt.Errorf("committed claim is missing from its research note")
 				}
-				cp.PublishedClaimID = snapshot.Notes[at].ClaimIDs[0]
+				cp.PublishedClaimID = notes[at].ClaimIDs[0]
+				receipt := knowledge.Receipts[cp.OperationID]
+				cp.PublishedClaimChange, cp.PublishedConflict = receipt.ClaimChange, receipt.Conflict
 			}
 			run.State, run.StopReason = learning.RunCompleted, "source_recorded"
 			if sourceTarget == 2 {
@@ -585,15 +588,33 @@ func (c *LearningCoordinator) commitResearch(ctx context.Context, cfg learning.C
 	if cp.ResearchSummary != "" {
 		note.Summary = "Unreviewed model summary of the cited excerpt: " + cp.ResearchSummary
 	}
+	var change string
+	var conflict bool
 	if cp.ResearchClaim != nil {
+		revisions := len(next.Revisions)
 		id := evolveResearchClaim(&next, cfg, allow, *cp.ResearchClaim, c.now())
 		if id == "" {
 			return c.failResearchCommit(ctx, lease, "policy_changed")
 		}
 		note.ClaimIDs = []string{id}
+		if cfg.TelemetryEnabled {
+			switch {
+			case len(next.Revisions) == revisions:
+				change = "reused_claim"
+			case next.Revisions[revisions].OldRevision == 0:
+				change = "new_claim"
+			default:
+				change = "revised_claim"
+			}
+			if change != "reused_claim" {
+				conflict = slices.ContainsFunc(next.Claims, func(claim learning.Claim) bool {
+					return claim.ID == id && claim.Status == "disputed"
+				})
+			}
+		}
 	}
 	next.Notes = append(next.Notes, note)
-	_, err = c.repo.Commit(ctx, partition, next.Version, lease, cp.OperationID, next)
+	_, err = c.repo.commit(ctx, partition, next.Version, lease, cp.OperationID, next, change, conflict)
 	if errors.Is(err, ErrLearningPartitionFull) {
 		return errors.Join(err, c.failResearchCommit(ctx, lease, "storage_limit"))
 	}

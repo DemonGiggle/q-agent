@@ -136,6 +136,8 @@ type Checkpoint struct {
 	ResearchSummaryStatus string              `json:"research_summary_status,omitempty"`
 	ResearchClaim         *Claim              `json:"research_claim,omitempty"`
 	PublishedClaimID      string              `json:"published_claim_id,omitempty"`
+	PublishedClaimChange  string              `json:"published_claim_change,omitempty"`
+	PublishedConflict     bool                `json:"published_conflict,omitempty"`
 	Version               uint64              `json:"version"`
 	OpenQuestions         []string            `json:"open_questions"`
 	Fingerprints          []string            `json:"fingerprints"`
@@ -329,6 +331,7 @@ type FrontierEntry struct {
 	Transitions       []FrontierTransition `json:"transitions"`
 	RunID             string               `json:"run_id,omitempty"`
 	OperatorSelection string               `json:"operator_selection,omitempty"`
+	AuditRef          string               `json:"audit_ref,omitempty"`
 }
 
 type FrontierTransition struct {

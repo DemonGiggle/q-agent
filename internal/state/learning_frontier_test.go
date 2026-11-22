@@ -104,6 +104,18 @@ func TestLearningPublicFrontierHandoff(t *testing.T) {
 	if err != nil || len(data.Snapshot.Claims) != 1 || data.Snapshot.Claims[0].Status != "unresolved" {
 		t.Fatalf("worker promoted a claim without sources: %+v, %v", data.Snapshot.Claims, err)
 	}
+	// A new revision can generate a new candidate ID, but the same
+	// proposition stays suppressed while the previous question cools down.
+	data.Snapshot.Claims[0].Revision++
+	if err := Atomic(filepath.Join(c.repo.dir, "public.json"), data); err != nil {
+		t.Fatal(err)
+	}
+	refreshed, err := c.repo.PublicFrontier(ctx, cfg, now.Add(time.Minute), allow)
+	if err != nil || slices.ContainsFunc(refreshed, func(entry learning.FrontierEntry) bool {
+		return entry.Question.OriginType == "gap"
+	}) {
+		t.Fatalf("equivalent question escaped cooldown: %+v, %v", refreshed, err)
+	}
 	cfg.Permissions.BlockDomains = []string{"example.org"}
 	entries, err = c.repo.PublicFrontier(ctx, cfg, now, allow)
 	if err != nil || len(entries) != 0 {

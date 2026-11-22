@@ -42,9 +42,11 @@ func NewLearningRepository(stateDir string, guard LearningLeaseGuard) *LearningR
 var _ learning.KnowledgeRepository = (*LearningRepository)(nil)
 
 type learningReceipt struct {
-	Version uint64   `json:"version"`
-	Digest  [32]byte `json:"digest"`
-	RunID   string   `json:"run_id"`
+	Version     uint64   `json:"version"`
+	Digest      [32]byte `json:"digest"`
+	RunID       string   `json:"run_id"`
+	ClaimChange string   `json:"claim_change,omitempty"`
+	Conflict    bool     `json:"conflict,omitempty"`
 }
 
 type learningPartition struct {
@@ -113,6 +115,11 @@ func (r *LearningRepository) Snapshot(ctx context.Context, partition learning.Pa
 }
 
 func (r *LearningRepository) Commit(ctx context.Context, partition learning.Partition, expectedVersion uint64, lease learning.Lease, operationID string, next learning.KnowledgeSnapshot) (uint64, error) {
+	return r.commit(ctx, partition, expectedVersion, lease, operationID, next, "", false)
+}
+
+func (r *LearningRepository) commit(ctx context.Context, partition learning.Partition, expectedVersion uint64, lease learning.Lease,
+	operationID string, next learning.KnowledgeSnapshot, claimChange string, conflict bool) (uint64, error) {
 	if err := ctx.Err(); err != nil {
 		return 0, err
 	}
@@ -150,7 +157,7 @@ func (r *LearningRepository) Commit(ctx context.Context, partition learning.Part
 			return err
 		}
 		if saved, ok := data.Receipts[operationID]; ok {
-			if saved != receipt {
+			if saved.Version != receipt.Version || saved.Digest != receipt.Digest || saved.RunID != receipt.RunID {
 				return learning.ErrVersionConflict
 			}
 			version = saved.Version
@@ -167,6 +174,7 @@ func (r *LearningRepository) Commit(ctx context.Context, partition learning.Part
 		if data.Receipts == nil {
 			data.Receipts = make(map[string]learningReceipt)
 		}
+		receipt.ClaimChange, receipt.Conflict = claimChange, conflict
 		data.Receipts[operationID] = receipt
 		persisted, err := json.Marshal(struct {
 			Schema    string                     `json:"schema_version"`

@@ -6,6 +6,8 @@ import (
 	"time"
 )
 
+var ErrResearchToolRequest = errors.New("research model attempted to request a tool")
+
 var ErrVersionConflict = errors.New("learning version conflict")
 
 // ErrRetryableHTTP identifies a completed HTTP response that permits one

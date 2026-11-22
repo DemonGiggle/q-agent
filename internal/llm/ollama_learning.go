@@ -118,7 +118,7 @@ func (p *learningOllama) Generate(ctx context.Context, input learning.Structured
 		OutputTokens *int          `json:"eval_count"`
 	}
 	if json.Unmarshal(raw, &result) != nil || !result.Done || result.InputTokens == nil || result.OutputTokens == nil ||
-		*result.InputTokens < 0 || *result.OutputTokens < 0 || len(result.Message.ToolCalls) != 0 {
+		*result.InputTokens < 0 || *result.OutputTokens < 0 {
 		return nil, usage, errors.New("invalid learning Ollama response envelope")
 	}
 	if *result.InputTokens > input.TokenLimit-outputTokens || *result.OutputTokens > outputTokens {
@@ -126,5 +126,8 @@ func (p *learningOllama) Generate(ctx context.Context, input learning.Structured
 		return nil, usage, errors.New("learning Ollama token limit exceeded")
 	}
 	usage.Tokens = int64(*result.InputTokens + *result.OutputTokens)
+	if len(result.Message.ToolCalls) != 0 {
+		return nil, usage, learning.ErrResearchToolRequest
+	}
 	return []byte(result.Message.Content), usage, nil
 }

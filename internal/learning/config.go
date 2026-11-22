@@ -106,16 +106,17 @@ type ScheduleConfig struct {
 }
 
 type Config struct {
-	SchemaVersion string                `json:"schema_version"`
-	Enabled       bool                  `json:"enabled"`
-	Schedule      ScheduleConfig        `json:"schedule"`
-	Permissions   PermissionConfig      `json:"permissions"`
-	SourcePolicy  *ResearchSourcePolicy `json:"source_policy,omitempty"`
-	Selection     SelectionConfig       `json:"selection"`
-	Recall        RecallConfig          `json:"recall,omitzero"`
-	GlobalDaily   Budget                `json:"global_daily"`
-	PerRun        Budget                `json:"per_run"`
-	PerQuestion   Budget                `json:"per_question"`
+	SchemaVersion    string                `json:"schema_version"`
+	Enabled          bool                  `json:"enabled"`
+	TelemetryEnabled bool                  `json:"telemetry_enabled,omitempty"`
+	Schedule         ScheduleConfig        `json:"schedule"`
+	Permissions      PermissionConfig      `json:"permissions"`
+	SourcePolicy     *ResearchSourcePolicy `json:"source_policy,omitempty"`
+	Selection        SelectionConfig       `json:"selection"`
+	Recall           RecallConfig          `json:"recall,omitzero"`
+	GlobalDaily      Budget                `json:"global_daily"`
+	PerRun           Budget                `json:"per_run"`
+	PerQuestion      Budget                `json:"per_question"`
 }
 
 type RecallConfig struct {

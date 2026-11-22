@@ -139,6 +139,7 @@ func (c *LearningCoordinator) RunScheduledResearch(ctx context.Context, cfg lear
 		return c.revalidateLearningSource(ctx, cfg, allow, fetch)
 	}
 	run, err := c.readAuthorizedResearch(ctx, cfg, id, allow)
+	var policyAuditErr error
 	if errors.Is(err, learning.ErrDenied) || (err == nil && search == nil) {
 		record, loadErr := c.load(id)
 		if loadErr != nil && !errors.Is(loadErr, os.ErrNotExist) {
@@ -147,6 +148,13 @@ func (c *LearningCoordinator) RunScheduledResearch(ctx context.Context, cfg lear
 		if loadErr == nil && record.PartitionKey == "public" && !terminalLearningRun(record.Run.State) {
 			if err := c.cancelResearch(ctx, id, "policy_changed"); err != nil && !errors.Is(err, ErrLearningCommitted) {
 				return err
+			}
+			if cfg.TelemetryEnabled {
+				current, err := c.load(id)
+				if err == nil {
+					_, err = c.exportRunEvents(ctx, current, true)
+				}
+				policyAuditErr = err
 			}
 		}
 		err = learning.ErrDenied
@@ -157,7 +165,7 @@ func (c *LearningCoordinator) RunScheduledResearch(ctx context.Context, cfg lear
 		} else {
 			night.Pending = ""
 		}
-		return Atomic(path, night)
+		return errors.Join(policyAuditErr, Atomic(path, night))
 	}
 	if err != nil {
 		return err

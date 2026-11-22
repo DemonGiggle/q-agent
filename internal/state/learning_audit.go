@@ -4,7 +4,6 @@ import (
 	"bytes"
 	"context"
 	"encoding/json"
-	"fmt"
 	"io"
 	"os"
 	"path/filepath"
@@ -58,21 +57,8 @@ func (a LearningAudit) writeEvent(ctx context.Context, event learning.Event) err
 	if err := ctx.Err(); err != nil {
 		return err
 	}
-	if err := event.Validate(); err != nil {
+	if err := validateAuditEvent(event); err != nil {
 		return err
-	}
-	if !auditID.MatchString(event.ID) || !auditID.MatchString(event.RunID) || !validAuditMetadata(event) {
-		return fmt.Errorf("invalid learning audit event metadata")
-	}
-	for _, ref := range event.ObjectRefs {
-		if !auditID.MatchString(ref) {
-			return fmt.Errorf("invalid learning audit object reference")
-		}
-	}
-	for _, ref := range event.ClaimRefs {
-		if !auditID.MatchString(ref) {
-			return fmt.Errorf("invalid learning audit claim reference")
-		}
 	}
 	data, err := json.Marshal(event)
 	if err != nil {
@@ -135,12 +121,18 @@ func validAuditMetadata(event learning.Event) bool {
 		return false
 	}
 	if event.Type == learning.ResearchTransition {
-		return knownResearchState(learning.RunState(event.Outcome)) && safeResearchReason(event.Reason) == event.Reason
+		if event.Spent != nil {
+			if _, ok := (learning.Budget{}).Reserve(*event.Spent, *event.Spent); !ok {
+				return false
+			}
+		}
+		return len(event.ObjectRefs) == 1 && knownResearchState(learning.RunState(event.Outcome)) &&
+			safeResearchReason(event.Reason) == event.Reason
 	}
-	return event.Reason == "" && event.Spent == nil &&
+	return validMilestone(event) || (event.Reason == "" && event.Spent == nil &&
 		((event.Type == learning.PolicyConfigured && event.Outcome == "applied" && len(event.ObjectRefs) == 1) ||
 			(event.Type == learning.ResearchPlanned && event.Outcome == "dry_run") ||
-			(event.Type == learning.ModelCallReserved && event.Outcome == "reserved"))
+			(event.Type == learning.ModelCallReserved && event.Outcome == "reserved")))
 }
 
 func knownResearchState(state learning.RunState) bool {
@@ -170,6 +162,11 @@ func (c *LearningCoordinator) ExportResearchAudit(ctx context.Context, cfg learn
 	if err != nil {
 		return nil, err
 	}
+	return c.exportRunEvents(ctx, record, cfg.TelemetryEnabled)
+}
+
+func (c *LearningCoordinator) exportRunEvents(ctx context.Context, record storedLearningRun, observe bool) ([]learning.Event, error) {
+	id := record.Run.ID
 	events := make([]learning.Event, 0, len(record.Transitions))
 	for i, transition := range record.Transitions {
 		eventID := transition.EventID
@@ -181,6 +178,9 @@ func (c *LearningCoordinator) ExportResearchAudit(ctx context.Context, cfg learn
 			At: transition.At, RunID: id, ObjectRefs: []string{record.Run.PlanID}, Outcome: string(transition.State),
 			Reason: safeResearchReason(transition.Reason), Spent: transition.Usage,
 		})
+	}
+	if observe {
+		events = append(events, researchMilestones(record)...)
 	}
 	audit := LearningAudit{Dir: filepath.Join(filepath.Dir(c.dir), "audit")}
 	if err := audit.appendEvents(ctx, events); err != nil {

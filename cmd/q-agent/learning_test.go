@@ -82,6 +82,15 @@ func TestLearningConfigureAndDryRun(t *testing.T) {
 			t.Fatalf("invalid audit event: %+v, %v", event, err)
 		}
 	}
+	out.Reset()
+	if err := runLearning(ctx, []string{"metrics", "--days", "1", "--config", app}, strings.NewReader(""), out); err != nil {
+		t.Fatal(err)
+	}
+	var report state.LearningMetrics
+	if err := json.Unmarshal(out.Bytes(), &report); err != nil || report.Events[learning.ResearchPlanned] != 1 ||
+		report.Events[learning.PolicyConfigured] != 1 || report.InvalidFiles != 0 || strings.Contains(out.String(), question) {
+		t.Fatalf("metrics = %s, %v", out, err)
+	}
 }
 
 func TestLearningCapturePolicy(t *testing.T) {

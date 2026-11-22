@@ -26,12 +26,16 @@ import (
 )
 
 func runLearning(ctx context.Context, args []string, input io.Reader, output io.Writer) error {
-	if len(args) == 0 || !slices.Contains([]string{"configure", "trigger", "search", "enqueue", "schedule", "work", "recall", "note", "claim-history", "claim-edit", "frontier", "status", "pause", "resume", "cancel", "audit", "export", "delete", "archive"}, args[0]) {
-		return fmt.Errorf("usage: q-agent learning configure|trigger|search|enqueue|schedule|work|recall|note|claim-history|claim-edit|frontier|status|pause|resume|cancel|audit|export|delete|archive [--config FILE]; pass input on stdin")
+	if len(args) == 0 || !slices.Contains([]string{"configure", "trigger", "search", "enqueue", "schedule", "work", "recall", "note", "claim-history", "claim-edit", "frontier", "status", "pause", "resume", "cancel", "audit", "export", "delete", "archive", "metrics"}, args[0]) {
+		return fmt.Errorf("usage: q-agent learning configure|trigger|search|enqueue|schedule|work|recall|note|claim-history|claim-edit|frontier|status|pause|resume|cancel|audit|export|delete|archive|metrics [--config FILE]; pass input on stdin")
 	}
 
 	flags := flag.NewFlagSet("learning "+args[0], flag.ContinueOnError)
 	path := flags.String("config", config.DefaultPath, "q-agent TOML configuration")
+	var metricDays int
+	if args[0] == "metrics" {
+		flags.IntVar(&metricDays, "days", 7, "include this many days of audit events")
+	}
 	var summarize, claims, removeSchedule, restoreNote bool
 	if args[0] == "archive" {
 		flags.BoolVar(&restoreNote, "restore", false, "restore an archived note to recall")
@@ -111,6 +115,18 @@ func runLearning(ctx context.Context, args []string, input io.Reader, output io.
 			log.Print("learning policy applied; failed to write audit metadata")
 		}
 		return enc.Encode(cfg)
+	}
+	if args[0] == "metrics" {
+		if metricDays < 1 || metricDays > 365 {
+			return fmt.Errorf("learning metrics days must be between 1 and 365")
+		}
+		now := time.Now().UTC()
+		audit := state.LearningAudit{Dir: filepath.Join(app.StateDir, "learning", "audit")}
+		metrics, err := audit.Metrics(ctx, now.AddDate(0, 0, -metricDays), now)
+		if err != nil {
+			return err
+		}
+		return enc.Encode(metrics)
 	}
 	cfg, err := state.LoadLearningPolicy(app.StateDir)
 	if args[0] == "delete" {
@@ -429,7 +445,7 @@ func collectLearningFrontier(ctx context.Context, app config.Config, cfg learnin
 			return !allow(turn.Transcript)
 		})
 		query := learning.ConversationQuery{Scope: scope, From: now.Add(-state.ConversationFrontierLookback), Until: now}
-		entries, err = repo.ConversationFrontier(ctx, reader, query, now, privateLearningCutoff(cfg, now), allow)
+		entries, err = repo.ConversationFrontier(ctx, reader, query, now, privateLearningCutoff(cfg, now), cfg.TelemetryEnabled, allow)
 	}
 	if err != nil {
 		return nil, err
@@ -440,7 +456,18 @@ func collectLearningFrontier(ctx context.Context, app config.Config, cfg learnin
 		return nil, err
 	}
 	if action != "" {
-		return repo.EditLearningFrontier(ctx, partition, entries, target, action, now)
+		result, err := repo.EditLearningFrontier(ctx, partition, entries, target, action, now)
+		if err == nil && cfg.TelemetryEnabled {
+			if err := repo.ExportFrontierAudit(ctx, []learning.FrontierEntry{result}); err != nil {
+				log.Print("learning frontier audit pending")
+			}
+		}
+		return result, err
+	}
+	if cfg.TelemetryEnabled && options.enqueue == "" {
+		if err := repo.ExportFrontierAudit(ctx, entries); err != nil {
+			log.Print("learning frontier audit pending")
+		}
 	}
 	if options.enqueue != "" {
 		var approved string

@@ -626,3 +626,42 @@ multi-source synthesis are follow-up work.
 - #76 owns further provider egress controls, ACL for remote controls, and
   deletion across durable knowledge, indexes and backups. Nightly execution
   accepts explicitly approved public run IDs.
+
+## Inspect learning telemetry
+
+Set `"telemetry_enabled": true` in the learning policy to record named
+milestones in the existing audit directory. These milestones are recorded
+during frontier operations and research. Recall inclusion uses the independent
+`recall.audit_enabled` option. Dashboard values are local, on-demand JSON.
+
+```sh
+q-agent learning metrics --days 7 --config ./config.toml
+printf '%s\n' "$run_id" | q-agent learning audit --config ./config.toml
+```
+
+Each audit file carries an immutable event ID, UTC timestamp, correlation
+ID, opaque object references and a bounded outcome. Research milestones
+come from saved transitions, citations and commit receipts. Rerunning
+`audit` replays the same event IDs. Frontier generation and approved
+enqueue each record their own events. The displayed candidate ID,
+Telegram scope, query, excerpts, source URL and body hash stay in
+authorized state rather than telemetry. Treat audit files as local
+metadata and use the metrics summary when sharing aggregate results.
+
+| Metric | How to read it |
+| --- | --- |
+| Completion | Divide each of `research_outcomes` by the sum of terminal outcomes. `stop_reasons` shows bounded reasons for interruptions and failures. |
+| Traceability | Compare `EvidenceValidated` with `SourceFetched`. This counts recorded references with a valid saved byte anchor. A live locator or URL hit rate needs a fresh sample against the source. |
+| Conflict handling | `ConflictDetected` counts committed drafts that created or revised a dispute. Sample the Claim histories to check that both sides and qualifiers were preserved correctly. |
+| Novelty and deduplication | Compare `new_claim`, `revised_claim`, and `reused_claim` in `commit_outcomes`. Legacy claims without a recorded classification use `claim_unclassified`. |
+| Recall relevance | `RecallUsed` and the reference counters measure inclusion. Score helpful and unrelated context using the paired answer review. |
+| Budget efficiency | `terminal_reservations` sums reserved research resources once per terminal run. Depth is the maximum. Use human-accepted results or another explicit quality denominator to interpret cost. |
+| Safety | `SafetyBlocked` counts rejected structured-model tool requests. The `policy_changed` stop reason counts recorded research stopped by policy. Use the acceptance fixtures to validate isolation and erasure. |
+
+Use [the acceptance matrix and baseline report](learning-evaluation.md) for
+exact fixture names and the human review protocol. Time filtering uses a
+half-open UTC interval. `invalid_files` counts unreadable or malformed audit
+entries encountered during the scan. Markdown notes and backup files are
+outside the metrics input. Named milestones represent saved checkpoints,
+rather than every transient call, so existing event files and audit
+enablement determine the available sample.

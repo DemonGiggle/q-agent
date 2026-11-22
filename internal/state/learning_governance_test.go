@@ -17,10 +17,13 @@ func TestLearningCancelActiveWorker(t *testing.T) {
 	dir := t.TempDir()
 	c := NewLearningCoordinator(dir)
 	cfg := learning.DefaultConfig()
-	cfg.Enabled = true
+	cfg.Enabled, cfg.Schedule.Enabled = true, true
 	allow := func(string) bool { return true }
 	id, err := c.EnqueueResearch(ctx, cfg, "A public research question", 1)
 	if err != nil {
+		t.Fatal(err)
+	}
+	if err := c.ScheduleResearch(ctx, cfg, id, allow); err != nil {
 		t.Fatal(err)
 	}
 	unlock, err := Lock(filepath.Join(dir, "learning"))
@@ -40,8 +43,7 @@ func TestLearningCancelActiveWorker(t *testing.T) {
 		return learning.FetchedDocument{}, learning.Budget{}, nil
 	})
 	go func() {
-		_, err := c.WorkResearch(ctx, cfg, id, allow, search, fetch, localtools.LearningDocumentReader{}, nil)
-		finished <- err
+		finished <- c.RunScheduledResearch(ctx, cfg, "2026-11-22", allow, search, fetch, localtools.LearningDocumentReader{})
 	}()
 	select {
 	case <-started:
@@ -65,6 +67,10 @@ func TestLearningCancelActiveWorker(t *testing.T) {
 	if err != nil || record.Run.State != learning.RunCancelled || record.ExpiresAt != nil || record.Run.Spent.Requests != 1 ||
 		operator.cancelRequested(id) {
 		t.Fatalf("cancelled run: %+v, %v", record, err)
+	}
+	night, err := loadLearningNight(filepath.Join(dir, "learning", "night.json"))
+	if err != nil || night.Active != "" || night.Pending != "" {
+		t.Fatalf("cancelled run still scheduled: %+v, %v", night, err)
 	}
 	again, err := operator.RequestResearchCancel(ctx, cfg, id, allow)
 	if err != nil || again.Requested || again.State != learning.RunCancelled {

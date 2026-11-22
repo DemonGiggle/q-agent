@@ -3,12 +3,14 @@ package state
 import (
 	"cmp"
 	"context"
+	"crypto/rand"
 	"crypto/sha256"
 	"encoding/base32"
 	"encoding/json"
 	"errors"
 	"fmt"
 	"io"
+	"log"
 	"os"
 	"path/filepath"
 	"slices"
@@ -46,7 +48,7 @@ func frontierScore(q learning.Question) float64 {
 // ConversationFrontier updates a chat topic with authorized conversation leads.
 // The caller holds the learning-directory lock.
 func (r *LearningRepository) ConversationFrontier(ctx context.Context, reader learning.ConversationReader,
-	query learning.ConversationQuery, now, retainSince time.Time, allow func(string) bool) ([]learning.FrontierEntry, error) {
+	query learning.ConversationQuery, now, retainSince time.Time, observe bool, allow func(string) bool) ([]learning.FrontierEntry, error) {
 	if reader == nil || allow == nil || query.Scope.TopicID == nil || query.From.IsZero() || !query.From.Before(query.Until) {
 		return nil, learning.ErrDenied
 	}
@@ -81,6 +83,17 @@ func (r *LearningRepository) ConversationFrontier(ctx context.Context, reader le
 	turns, blocked := filterDeletedLearning(data, turns, now)
 	entries, changed := learning.ConversationCandidates(prior, turns, now.UTC(), allow)
 	entries = slices.DeleteFunc(entries, func(entry learning.FrontierEntry) bool { return blocked[entry.Question.ID] })
+	if observe {
+		known := make(map[string]bool, len(prior))
+		for _, entry := range prior {
+			known[entry.Question.ID] = true
+		}
+		for i := range entries {
+			if !known[entries[i].Question.ID] {
+				entries[i].AuditRef = rand.Text()
+			}
+		}
+	}
 	if (changed || len(prior) != len(data.Snapshot.Frontier)) && !slices.EqualFunc(entries, data.Snapshot.Frontier, func(a, b learning.FrontierEntry) bool {
 		return a.Question.ID == b.Question.ID && slices.Equal(a.Question.OriginRefs, b.Question.OriginRefs)
 	}) {
@@ -132,6 +145,9 @@ func (r *LearningRepository) PublicFrontier(ctx context.Context, cfg learning.Co
 					(old.CooldownUntil != nil && now.Before(*old.CooldownUntil)))
 		}) {
 			continue
+		}
+		if cfg.TelemetryEnabled {
+			entry.AuditRef = rand.Text()
 		}
 		entries = append(entries, entry)
 		known[q.ID] = true
@@ -282,6 +298,7 @@ func (c *LearningCoordinator) QueueFrontier(ctx context.Context, cfg learning.Co
 		if run.Question != publicQuery {
 			return FrontierHandoff{}, learning.ErrVersionConflict
 		}
+		observeFrontierHandoff(ctx, cfg, r, *saved)
 		return result, nil
 	}
 	if reason == "" || saved.Question.Status != "candidate" || saved.RunID != "" {
@@ -292,12 +309,24 @@ func (c *LearningCoordinator) QueueFrontier(ctx context.Context, cfg learning.Co
 		return FrontierHandoff{}, err
 	}
 	saved.RunID = runID
+	if cfg.TelemetryEnabled && saved.AuditRef == "" {
+		saved.AuditRef = rand.Text()
+	}
 	saved.Question.Status, saved.Question.UpdatedAt = "queued", now.UTC()
 	saved.Transitions = append(saved.Transitions, learning.FrontierTransition{At: now.UTC(), Status: "queued", Reason: reason})
 	if err := r.saveFrontier(ctx, key, data, data.Snapshot.Frontier); err != nil {
 		return FrontierHandoff{}, err
 	}
+	observeFrontierHandoff(ctx, cfg, r, *saved)
 	return result, nil
+}
+
+func observeFrontierHandoff(ctx context.Context, cfg learning.Config, repo *LearningRepository, saved learning.FrontierEntry) {
+	if cfg.TelemetryEnabled {
+		if err := repo.ExportFrontierAudit(ctx, []learning.FrontierEntry{saved}); err != nil {
+			log.Print("learning frontier audit pending")
+		}
+	}
 }
 
 func frontierResearchID(kind, scope, candidate string) string {

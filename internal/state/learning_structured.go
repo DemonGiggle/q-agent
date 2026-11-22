@@ -35,9 +35,10 @@ func (c *LearningCoordinator) GenerateStructured(ctx context.Context, lease lear
 	audit := LearningAudit{Dir: filepath.Join(filepath.Dir(c.dir), "audit")}
 	for range 2 {
 		var raw []byte
+		reservationID := rand.Text()
 		err := c.CallProvider(ctx, lease, cfg, plan, charge, timeout, func(ctx context.Context) (learning.Budget, error) {
 			if err := audit.Append(ctx, learning.Event{
-				SchemaVersion: learning.SchemaVersion, ID: rand.Text(), Type: learning.ModelCallReserved,
+				SchemaVersion: learning.SchemaVersion, ID: reservationID, Type: learning.ModelCallReserved,
 				At: c.now().UTC(), RunID: lease.RunID, ObjectRefs: []string{plan.ID}, Outcome: "reserved",
 			}); err != nil {
 				return learning.Budget{}, err
@@ -48,6 +49,15 @@ func (c *LearningCoordinator) GenerateStructured(ctx context.Context, lease lear
 			return usage, err
 		})
 		if err != nil {
+			if cfg.TelemetryEnabled && errors.Is(err, learning.ErrResearchToolRequest) {
+				// The refused request is metadata only. Keep the original
+				// provider error even if audit storage is unavailable.
+				_ = audit.Append(ctx, learning.Event{
+					SchemaVersion: learning.SchemaVersion, Type: learning.SafetyBlocked,
+					ID: researchTransitionID(reservationID+":"+string(learning.SafetyBlocked), 0), RunID: lease.RunID,
+					At: c.now().UTC(), ObjectRefs: []string{plan.ID}, Outcome: "model_tool_request",
+				})
+			}
 			return nil, err
 		}
 		var document any

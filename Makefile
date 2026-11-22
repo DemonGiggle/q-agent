@@ -1,6 +1,6 @@
 VERSION ?= $(shell sh ./scripts/version.sh)
 
-.PHONY: build static-build release test race integration integration-host
+.PHONY: build static-build release test race integration integration-host learning-acceptance
 build:
 	CGO_ENABLED=0 go build -trimpath -ldflags='-s -w -X main.version=$(VERSION)' -o bin/q-agent ./cmd/q-agent
 # Explicit alias for the static binary (CGO_ENABLED=0 above), so release
@@ -12,6 +12,9 @@ test:
 	go test ./...
 race:
 	go test -race ./...
+learning-acceptance:
+	go test -count=1 -timeout 5m -v -run '^Test(Learning|RankQuestionAndConversationDedup|RankNoteKeywords)' \
+		./internal/learning ./internal/state ./internal/runtime ./internal/llm ./internal/localtools ./cmd/q-agent
 integration-host:
 	go test -v ./internal/host ./cmd/q-agent -run Host -timeout 2m
 integration: build

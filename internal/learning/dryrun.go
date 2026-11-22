@@ -16,6 +16,20 @@ const (
 	ModelCallReserved  EventType = "ModelCallReserved"
 	RecallUsed         EventType = "RecallUsed"
 	PolicyConfigured   EventType = "PolicyConfigured"
+	CandidateGenerated EventType = "CandidateGenerated"
+	QuestionSelected   EventType = "QuestionSelected"
+	ResearchStarted    EventType = "ResearchStarted"
+	SourceFetched      EventType = "SourceFetched"
+	EvidenceValidated  EventType = "EvidenceValidated"
+	ClaimProposed      EventType = "ClaimProposed"
+	KnowledgeCommitted EventType = "KnowledgeCommitted"
+	ConflictDetected   EventType = "ConflictDetected"
+	FrontierUpdated    EventType = "FrontierUpdated"
+	ResearchPaused     EventType = "ResearchPaused"
+	ResearchFailed     EventType = "ResearchFailed"
+	ResearchCompleted  EventType = "ResearchCompleted"
+	BudgetExceeded     EventType = "BudgetExceeded"
+	SafetyBlocked      EventType = "SafetyBlocked"
 )
 
 type Event struct {

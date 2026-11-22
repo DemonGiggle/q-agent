@@ -33,7 +33,8 @@ func TestLearningNightResearchReachesChatRecall(t *testing.T) {
 	ctx := context.Background()
 	cfg := learning.DefaultConfig()
 	cfg.Enabled = true
-	cfg.Recall.ChatEnabled = true
+	cfg.Recall.ChatEnabled, cfg.Recall.AuditEnabled = true, true
+	cfg.TelemetryEnabled = true
 	cfg.Schedule.Enabled = true
 	cfg.Schedule.TimeZone = "Asia/Taipei"
 	cfg.Schedule.WindowStart, cfg.Schedule.WindowEnd = "23:00", "03:00"
@@ -59,8 +60,9 @@ func TestLearningNightResearchReachesChatRecall(t *testing.T) {
 	scope := learning.Scope{Platform: "telegram", ChatID: 1, TopicID: &topic, Visibility: learning.PrivateChat}
 	repo := state.NewLearningRepository(r.Config.StateDir, nil)
 	entries, err := repo.ConversationFrontier(ctx, r.learningConversationReader(route, cfg.Permissions, nil),
-		learning.ConversationQuery{Scope: scope, From: before.Add(-time.Hour), Until: before}, before, time.Time{}, allow)
-	if err != nil || len(entries) != 1 {
+		learning.ConversationQuery{Scope: scope, From: before.Add(-time.Hour), Until: before}, before, time.Time{}, cfg.TelemetryEnabled, allow)
+	if err != nil || len(entries) != 1 || entries[0].AuditRef == "" ||
+		len(entries[0].Question.OriginRefs) != 1 || entries[0].Question.Text == "Can you explain the regency appointments from our earlier conversation?" {
 		t.Fatalf("conversation frontier = %+v, %v", entries, err)
 	}
 	handoff, err := c.QueueFrontier(ctx, cfg, learning.Partition{Scope: &scope}, entries,
@@ -141,7 +143,24 @@ func TestLearningNightResearchReachesChatRecall(t *testing.T) {
 	if searches != 1 || fetches != 2 || provider.requests != nil {
 		t.Fatal("a second run or an unsolicited inference was triggered in the same window")
 	}
-	if err := r.Handle(ctx, input(2, 1, 0, 1, "Tell me about historical regency appointments")); err != nil {
+	message := input(2, 1, 0, 1, "Tell me about historical regency appointments")
+	control := cfg
+	control.Recall.ChatEnabled = false
+	if err := state.Atomic(path, control); err != nil {
+		t.Fatal(err)
+	}
+	_, without := r.taskHistory(ctx, message, state.Conversation{}, true)
+	if len(without.noteIDs) != 0 || without.content != "" {
+		t.Fatal("disabled control received reference material")
+	}
+	if err := state.Atomic(path, cfg); err != nil {
+		t.Fatal(err)
+	}
+	_, with := r.taskHistory(ctx, message, state.Conversation{}, true)
+	if len(with.noteIDs) != 1 || !strings.Contains(with.content, first) || !strings.Contains(with.content, second) {
+		t.Fatal("enabled arm did not receive both references under the same context limit")
+	}
+	if err := r.Handle(ctx, message); err != nil {
 		t.Fatal(err)
 	}
 	r.Wait()
@@ -151,4 +170,17 @@ func TestLearningNightResearchReachesChatRecall(t *testing.T) {
 	}) {
 		t.Fatalf("scheduled note was not recalled with both citations: %+v", provider.requests)
 	}
+	audit := state.LearningAudit{Dir: filepath.Join(r.Config.StateDir, "learning", "audit")}
+	until := time.Now().Add(time.Hour)
+	if before.AddDate(0, 0, 1).After(until) {
+		until = before.AddDate(0, 0, 1)
+	}
+	report, err := audit.Metrics(ctx, time.Unix(0, 0), until)
+	if err != nil || report.Events[learning.CandidateGenerated] != 1 || report.Events[learning.QuestionSelected] != 1 ||
+		report.Events[learning.FrontierUpdated] != 2 || report.Events[learning.RecallUsed] != 1 ||
+		report.RecallNoteRefs != 1 || report.Events[learning.EvidenceValidated] != 2 || report.CommitOutcomes["note"] != 1 {
+		t.Fatalf("overnight acceptance metrics: %+v, %v", report, err)
+	}
+	t.Logf("M1 fixture: control notes=%d, learning notes=%d, verified sources=%d, reserved requests=%d",
+		len(without.noteIDs), len(with.noteIDs), report.Events[learning.EvidenceValidated], report.TerminalReservations.Requests)
 }

@@ -19,26 +19,31 @@ import (
 	"q-agent/internal/state"
 )
 
+func writeLearningTestConfig(t *testing.T, path, body string) {
+	t.Helper()
+	if err := os.WriteFile(path, []byte(body), 0600); err != nil {
+		t.Fatal(err)
+	}
+}
+
 func TestLearningConfigureAndDryRun(t *testing.T) {
 	dir := t.TempDir()
 	app := filepath.Join(dir, "config.toml")
-	if err := os.WriteFile(app, []byte("state_dir = 'data'\n"), 0600); err != nil {
-		t.Fatal(err)
-	}
 	ctx := context.Background()
 	out := new(bytes.Buffer)
-	configure := []string{"configure", "--config", app}
 	trigger := []string{"trigger", "--config", app}
-	if err := runLearning(ctx, configure, strings.NewReader(`{"schedule":{"enabled":true}}`), out); err == nil {
-		t.Fatal("configure accepted a schedule when learning is disabled")
+
+	writeLearningTestConfig(t, app, "state_dir = 'data'\n[learning]\nschedule = '02:00-05:00'\n")
+	if err := runLearning(ctx, trigger, strings.NewReader("question"), out); err == nil {
+		t.Fatal("config accepted a schedule when learning is disabled")
 	}
-	if err := runLearning(ctx, configure, strings.NewReader(`{"enabled":true,"source_policy":{"domains":{"*.example.org":{"single_authority":true}}}}`), out); err == nil {
-		t.Fatal("configure accepted wildcard authority")
-	}
-	policy := `{"enabled":true,"permissions":{"excluded_terms":["blocked"],"allow_domains":["example.org"]},"source_policy":{"max_age_days":30,"domains":{"records.example.org":{"single_authority":true,"max_age_days":90}}}}`
-	if err := runLearning(ctx, configure, strings.NewReader(policy), out); err != nil {
-		t.Fatal(err)
-	}
+
+	writeLearningTestConfig(t, app, `state_dir = "data"
+[learning]
+enabled = true
+excluded_terms = ["blocked"]
+allow_domains = ["example.org"]
+`)
 	out.Reset()
 	if err := runLearning(ctx, trigger, strings.NewReader("blocked question"), out); err == nil {
 		t.Fatal("dry run accepted excluded question")
@@ -54,19 +59,17 @@ func TestLearningConfigureAndDryRun(t *testing.T) {
 	if preview.Plan.QuestionID != preview.Question.ID || preview.Run.PlanID != preview.Plan.ID {
 		t.Fatalf("broken preview references: %+v", preview)
 	}
-	requirements := preview.Plan.EvidenceRequirements
-	if !requirements.AllowSingleAuthority || requirements.MinIndependentSources != 2 ||
-		requirements.SourcePolicy == nil || requirements.SourcePolicy.MaxAgeDays != 30 {
-		t.Fatalf("unexpected preview source policy: %+v", requirements)
+	if preview.Plan.EvidenceRequirements.MinIndependentSources != 2 {
+		t.Fatalf("unexpected preview requirements: %+v", preview.Plan.EvidenceRequirements)
 	}
-	dir = filepath.Join(dir, "data")
-	entries, err := os.ReadDir(dir)
+	dataDir := filepath.Join(dir, "data")
+	entries, err := os.ReadDir(dataDir)
 	if err != nil || len(entries) != 1 || entries[0].Name() != "learning" {
 		t.Fatalf("dry-run touched q-agent state: %v, %v", entries, err)
 	}
-	audit := filepath.Join(dir, "learning", "audit")
+	audit := filepath.Join(dataDir, "learning", "audit")
 	events, err := os.ReadDir(audit)
-	if err != nil || len(events) != 2 {
+	if err != nil || len(events) != 1 {
 		t.Fatalf("audit files: %v, %v", events, err)
 	}
 	for _, item := range events {
@@ -88,7 +91,7 @@ func TestLearningConfigureAndDryRun(t *testing.T) {
 	}
 	var report state.LearningMetrics
 	if err := json.Unmarshal(out.Bytes(), &report); err != nil || report.Events[learning.ResearchPlanned] != 1 ||
-		report.Events[learning.PolicyConfigured] != 1 || report.InvalidFiles != 0 || strings.Contains(out.String(), question) {
+		report.InvalidFiles != 0 || strings.Contains(out.String(), question) {
 		t.Fatalf("metrics = %s, %v", out, err)
 	}
 }
@@ -104,13 +107,8 @@ func TestLearningCapturePolicy(t *testing.T) {
 		}
 	}
 	check(false)
-	path := learningPolicyPath(app.StateDir)
-	if err := os.MkdirAll(filepath.Dir(path), 0700); err != nil {
-		t.Fatal(err)
-	}
-	if err := os.WriteFile(path, []byte(`{"enabled":true,"permissions":{"include_private_chats":true}}`), 0600); err != nil {
-		t.Fatal(err)
-	}
+	app.Learning.Enabled = true
+	app.Learning.IncludePrivateChats = true
 	check(true)
 	app.Memory.Enabled = false
 	check(false)
@@ -119,21 +117,15 @@ func TestLearningCapturePolicy(t *testing.T) {
 func TestLearningSearchDeniesEgressBeforeCreatingRun(t *testing.T) {
 	dir := t.TempDir()
 	app := filepath.Join(dir, "config.toml")
-	if err := os.WriteFile(app, []byte("state_dir = 'data'\n"), 0600); err != nil {
-		t.Fatal(err)
-	}
 	ctx := context.Background()
-	configure := []string{"configure", "--config", app}
 	search := []string{"search", "--config", app}
 	out := new(bytes.Buffer)
-	for _, tc := range []struct{ policy, query string }{
-		{`{"enabled":false}`, "some question"},
-		{`{"enabled":true,"permissions":{"block_domains":["duckduckgo.com"]}}`, "some question"},
-		{`{"enabled":true}`, "api_key=sk-abcdefghijklmnopqrstuvwxyz"},
+	for _, tc := range []struct{ toml, query string }{
+		{"state_dir = 'data'\n[learning]\nenabled = false\n", "some question"},
+		{"state_dir = 'data'\n[learning]\nenabled = true\nblock_domains = ['duckduckgo.com']\n", "some question"},
+		{"state_dir = 'data'\n[learning]\nenabled = true\n", "api_key=sk-abcdefghijklmnopqrstuvwxyz"},
 	} {
-		if err := runLearning(ctx, configure, strings.NewReader(tc.policy), out); err != nil {
-			t.Fatal(err)
-		}
+		writeLearningTestConfig(t, app, tc.toml)
 		out.Reset()
 		if err := runLearning(ctx, search, strings.NewReader(tc.query), out); err != learning.ErrDenied || out.Len() != 0 {
 			t.Fatalf("search returned %v with %d output bytes", err, out.Len())
@@ -147,9 +139,6 @@ func TestLearningSearchDeniesEgressBeforeCreatingRun(t *testing.T) {
 func TestLearningFrontierUsesOnlyAuthorizedTopic(t *testing.T) {
 	dir := t.TempDir()
 	app := filepath.Join(dir, "config.toml")
-	if err := os.WriteFile(app, []byte("state_dir = 'data'\n[telegram]\nallowed_groups = [-100]\n"), 0600); err != nil {
-		t.Fatal(err)
-	}
 	store, err := state.Open(filepath.Join(dir, "data"), nil)
 	if err != nil {
 		t.Fatal(err)
@@ -164,19 +153,17 @@ func TestLearningFrontierUsesOnlyAuthorizedTopic(t *testing.T) {
 	}
 	ctx := context.Background()
 	out := new(bytes.Buffer)
-	configure := func(policy string) {
+	configure := func(learningTOML string) {
 		t.Helper()
-		if err := runLearning(ctx, []string{"configure", "--config", app}, strings.NewReader(policy), out); err != nil {
-			t.Fatal(err)
-		}
+		writeLearningTestConfig(t, app, "state_dir = 'data'\n[telegram]\nallowed_groups = [-100]\n[learning]\n"+learningTOML)
 		out.Reset()
 	}
 	args := []string{"frontier", "--chat-id", "-100", "--topic-id", "7", "--config", app}
-	configure(`{"enabled":true}`)
+	configure("enabled = true\n")
 	if err := runLearning(ctx, args, strings.NewReader(""), out); !errors.Is(err, learning.ErrDenied) {
 		t.Fatalf("missing group opt-in: %v", err)
 	}
-	configure(`{"enabled":true,"permissions":{"include_group_chats":true}}`)
+	configure("enabled = true\ninclude_group_chats = true\n")
 	for range 2 {
 		if err := runLearning(ctx, args, strings.NewReader(""), out); err != nil {
 			t.Fatal(err)
@@ -197,17 +184,12 @@ func TestLearningFrontierUsesOnlyAuthorizedTopic(t *testing.T) {
 		t.Fatalf("shortlist = %s, %v", out.String(), err)
 	}
 	out.Reset()
-	configure(`{"enabled":true,"permissions":{"include_group_chats":true},"selection":{"conversation_percent":0,"gap_percent":100,"association_percent":0}}`)
-	if err := runLearning(ctx, selectArgs, strings.NewReader(""), out); err != nil || strings.TrimSpace(out.String()) != "[]" {
-		t.Fatalf("updated selection = %s, %v", out.String(), err)
-	}
-	out.Reset()
 
-	configure(`{"enabled":true,"permissions":{"include_group_chats":true,"excluded_terms":["藤原氏"]}}`)
+	configure("enabled = true\ninclude_group_chats = true\nexcluded_terms = ['藤原氏']\n")
 	if err := runLearning(ctx, args, strings.NewReader(""), out); err != nil || strings.TrimSpace(out.String()) != "[]" {
 		t.Fatalf("filtered frontier = %s, %v", out.String(), err)
 	}
-	configure(`{"enabled":true,"permissions":{"include_group_chats":true}}`)
+	configure("enabled = true\ninclude_group_chats = true\n")
 	queue := append(append([]string(nil), args...), "--enqueue", selected[0].Question.ID)
 	if err := runLearning(ctx, queue, strings.NewReader(""), out); !errors.Is(err, learning.ErrDenied) {
 		t.Fatalf("chat candidate was queued without a public question: %v", err)
@@ -239,17 +221,12 @@ func TestLearningFrontierUsesOnlyAuthorizedTopic(t *testing.T) {
 func TestLearningStatusReadsMetadataWithoutLease(t *testing.T) {
 	dir := t.TempDir()
 	app := filepath.Join(dir, "config.toml")
-	if err := os.WriteFile(app, []byte("state_dir = 'data'\n"), 0600); err != nil {
-		t.Fatal(err)
-	}
+	writeLearningTestConfig(t, app, "state_dir = 'data'\n[learning]\nenabled = true\n")
 	ctx := context.Background()
 	out := new(bytes.Buffer)
 	run := func(command, data string) error {
 		out.Reset()
 		return runLearning(ctx, []string{command, "--config", app}, strings.NewReader(data), out)
-	}
-	if err := run("configure", `{"enabled":true}`); err != nil {
-		t.Fatal(err)
 	}
 	const question = "A distinct phrase to avoid leaking in status"
 	if err := run("enqueue", question); err != nil {
@@ -277,17 +254,12 @@ func TestLearningStatusReadsMetadataWithoutLease(t *testing.T) {
 func TestLearningPauseAndResumeQueuedRun(t *testing.T) {
 	dir := t.TempDir()
 	app := filepath.Join(dir, "config.toml")
-	if err := os.WriteFile(app, []byte("state_dir = 'data'\n"), 0600); err != nil {
-		t.Fatal(err)
-	}
+	writeLearningTestConfig(t, app, "state_dir = 'data'\n[learning]\nenabled = true\n")
 	ctx := context.Background()
 	out := new(bytes.Buffer)
 	command := func(action, input string) error {
 		out.Reset()
 		return runLearning(ctx, []string{action, "--config", app}, strings.NewReader(input), out)
-	}
-	if err := command("configure", `{"enabled":true}`); err != nil {
-		t.Fatal(err)
 	}
 	if err := command("enqueue", "A public research question"); err != nil {
 		t.Fatal(err)
@@ -318,20 +290,15 @@ func TestLearningPauseAndResumeQueuedRun(t *testing.T) {
 func TestLearningAuditReplaysAfterStorageFailure(t *testing.T) {
 	dir := t.TempDir()
 	app := filepath.Join(dir, "config.toml")
-	if err := os.WriteFile(app, []byte("state_dir = 'data'\n"), 0600); err != nil {
-		t.Fatal(err)
-	}
+	writeLearningTestConfig(t, app, "state_dir = 'data'\n[learning]\nenabled = true\n")
 	ctx := context.Background()
 	var out bytes.Buffer
 	command := func(action, input string) error {
 		out.Reset()
 		return runLearning(ctx, []string{action, "--config", app}, strings.NewReader(input), &out)
 	}
-	if err := command("configure", `{"enabled":true}`); err != nil {
-		t.Fatal(err)
-	}
 	auditDir := filepath.Join(dir, "data", "learning", "audit")
-	if err := os.Rename(auditDir, auditDir+".before"); err != nil {
+	if err := os.MkdirAll(filepath.Dir(auditDir), 0700); err != nil {
 		t.Fatal(err)
 	}
 	if err := os.WriteFile(auditDir, nil, 0600); err != nil {
@@ -355,9 +322,6 @@ func TestLearningAuditReplaysAfterStorageFailure(t *testing.T) {
 	if err := os.Remove(auditDir); err != nil {
 		t.Fatal(err)
 	}
-	if err := os.Rename(auditDir+".before", auditDir); err != nil {
-		t.Fatal(err)
-	}
 	if err := command("resume", id); err != nil {
 		t.Fatal(err)
 	}
@@ -365,7 +329,7 @@ func TestLearningAuditReplaysAfterStorageFailure(t *testing.T) {
 		t.Fatalf("resume = %s, %v", &out, err)
 	}
 	entries, err := os.ReadDir(auditDir)
-	if err != nil || len(entries) != 4 {
+	if err != nil || len(entries) != 3 {
 		t.Fatalf("automatic replay saved %d files, %v", len(entries), err)
 	}
 	if err := command("audit", id); err != nil {
@@ -406,12 +370,10 @@ func TestLearningAuditReplaysAfterStorageFailure(t *testing.T) {
 		}
 	}
 	entries, err = os.ReadDir(auditDir)
-	if err != nil || len(entries) != 4 {
+	if err != nil || len(entries) != 3 {
 		t.Fatalf("explicit replay saved %d files, %v", len(entries), err)
 	}
-	if err := command("configure", `{"enabled":true,"permissions":{"excluded_terms":["Distinct text"]}}`); err != nil {
-		t.Fatal(err)
-	}
+	writeLearningTestConfig(t, app, "state_dir = 'data'\n[learning]\nenabled = true\nexcluded_terms = ['Distinct text']\n")
 	if err := command("audit", id); !errors.Is(err, learning.ErrDenied) || out.Len() != 0 {
 		t.Fatalf("audit of excluded question = %s, %v", &out, err)
 	}
@@ -421,9 +383,6 @@ func TestLearningPrivateFrontierLifecycle(t *testing.T) {
 	ctx := context.Background()
 	dir := t.TempDir()
 	app := filepath.Join(dir, "config.toml")
-	if err := os.WriteFile(app, []byte("state_dir = 'data'\n[telegram]\nallowed_groups = [-100]\n"), 0600); err != nil {
-		t.Fatal(err)
-	}
 	store, err := state.Open(filepath.Join(dir, "data"), nil)
 	if err != nil {
 		t.Fatal(err)
@@ -454,8 +413,8 @@ func TestLearningPrivateFrontierLifecycle(t *testing.T) {
 		}
 		return out
 	}
-	const enabled = `{"enabled":true,"permissions":{"include_group_chats":true,"allow_domains":["example.org"]}}`
-	run(enabled, "configure")
+	const enabledTOML = "state_dir = 'data'\n[telegram]\nallowed_groups = [-100]\n[learning]\nenabled = true\ninclude_group_chats = true\nallow_domains = ['example.org']\n"
+	writeLearningTestConfig(t, app, enabledTOML)
 	var entries []learning.FrontierEntry
 	if err := json.Unmarshal([]byte(run("", "frontier", "--chat-id", "-100", "--topic-id", "7")), &entries); err != nil || len(entries) != 2 {
 		t.Fatalf("frontier = %+v, %v", entries, err)
@@ -479,8 +438,8 @@ func TestLearningPrivateFrontierLifecycle(t *testing.T) {
 	if out := run("", "frontier", "--chat-id", "-100", "--topic-id", "7", "--select"); !strings.Contains(out, "manual_priority") {
 		t.Fatalf("pinned candidate omitted: %s", out)
 	}
-	dir = filepath.Join(dir, "data", "learning", "knowledge")
-	files, err := filepath.Glob(filepath.Join(dir, "*.json"))
+	knowledgeDir := filepath.Join(dir, "data", "learning", "knowledge")
+	files, err := filepath.Glob(filepath.Join(knowledgeDir, "*.json"))
 	if err != nil || len(files) != 1 {
 		t.Fatalf("partition files = %v, %v", files, err)
 	}
@@ -488,16 +447,12 @@ func TestLearningPrivateFrontierLifecycle(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	for _, copy := range []string{files[0] + ".bak.1", filepath.Join(dir, ".atomic-123")} {
+	for _, copy := range []string{files[0] + ".bak.1", filepath.Join(knowledgeDir, ".atomic-123")} {
 		if err := os.WriteFile(copy, raw, 0600); err != nil {
 			t.Fatal(err)
 		}
 	}
-	run(`{"enabled":true,"permissions":{"include_group_chats":true,"excluded_topics":[{"chat_id":-100,"topic_id":7}]}}`, "configure")
-	if _, err := invoke("", "export", "--chat-id", "-100", "--topic-id", "7"); !errors.Is(err, learning.ErrDenied) {
-		t.Fatalf("blacklisted topic exported: %v", err)
-	}
-	run(`{"enabled":false}`, "configure")
+	writeLearningTestConfig(t, app, "state_dir = 'data'\n[telegram]\nallowed_groups = [-100]\n[learning]\nenabled = false\n")
 	id := rand.Text()
 	args := []string{"delete", "--chat-id", "-100", "--topic-id", "7", "--candidate", eraseID, "--request-id", id}
 	first := run("", args...)
@@ -511,12 +466,12 @@ func TestLearningPrivateFrontierLifecycle(t *testing.T) {
 	if err != nil || bytes.Contains(raw, []byte("astronomical")) || !bytes.Contains(raw, []byte("paper workshop")) {
 		t.Fatalf("wrong data after erasure: %s, %v", raw, err)
 	}
-	for _, copy := range []string{files[0] + ".bak.1", filepath.Join(dir, ".atomic-123")} {
+	for _, copy := range []string{files[0] + ".bak.1", filepath.Join(knowledgeDir, ".atomic-123")} {
 		if _, err := os.Stat(copy); !errors.Is(err, os.ErrNotExist) {
 			t.Fatalf("erased copy %s is still present: %v", copy, err)
 		}
 	}
-	run(enabled, "configure")
+	writeLearningTestConfig(t, app, enabledTOML)
 	if out := run("", "frontier", "--chat-id", "-100", "--topic-id", "7"); strings.Contains(out, "astronomical") || !strings.Contains(out, "paper workshop") {
 		t.Fatalf("frontier after reopening: %s", out)
 	}

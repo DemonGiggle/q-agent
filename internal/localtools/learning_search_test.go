@@ -23,13 +23,22 @@ func TestLearningSearchProvider(t *testing.T) {
 			<a class="result-link" href="https://example.org.evil.org/skip">Lookalike</a>`)
 	}))
 	defer server.Close()
+	// Non-empty AllowDomains restricts results without requiring the search host to be listed.
 	s := LearningSearch{Permissions: learning.PermissionConfig{
-		AllowDomains: []string{"example.org", "127.0.0.1"},
+		AllowDomains: []string{"example.org"},
 		BlockDomains: []string{"blocked.example.org"},
 	}}
 	hits, usage, err := s.search(context.Background(), server.Client(), server.URL, "source example", 5)
 	if err != nil || usage.Requests != 1 || len(hits) != 1 || hits[0].URI != "https://example.org/evidence" {
 		t.Fatalf("search: %+v, %+v, %v", hits, usage, err)
+	}
+	// Empty AllowDomains allows all non-blocked results.
+	open := LearningSearch{Permissions: learning.PermissionConfig{
+		BlockDomains: []string{"blocked.example.org"},
+	}}
+	hits, usage, err = open.search(context.Background(), server.Client(), server.URL, "source example", 5)
+	if err != nil || usage.Requests != 1 || len(hits) != 2 {
+		t.Fatalf("open search: %+v, %+v, %v", hits, usage, err)
 	}
 	s.Permissions.BlockDomains = append(s.Permissions.BlockDomains, "127.0.0.1")
 	if _, usage, err := s.search(context.Background(), server.Client(), server.URL, "blocked query", 5); !errors.Is(err, learning.ErrDenied) || usage.Requests != 0 {

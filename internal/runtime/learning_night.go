@@ -3,7 +3,6 @@ package runtime
 import (
 	"context"
 	"errors"
-	"os"
 	"path/filepath"
 	"strings"
 	"syscall"
@@ -55,13 +54,7 @@ func (r *Runtime) runNightResearch(ctx context.Context, now time.Time, search le
 		return err
 	}
 	defer unlock()
-	cfg, err := state.LoadLearningPolicy(r.Config.StateDir)
-	if errors.Is(err, os.ErrNotExist) {
-		return nil
-	}
-	if err != nil {
-		return err
-	}
+	cfg := r.Learning
 	window := cfg.Schedule.Window(now)
 	if !cfg.Enabled || window == "" || cfg.Schedule.Window(now.Add(time.Minute)) != window {
 		return nil
@@ -84,7 +77,7 @@ func (r *Runtime) runNightResearch(ctx context.Context, now time.Time, search le
 	if busy {
 		return nil
 	}
-	if len(cfg.Permissions.AllowDomains) == 0 || !cfg.Permissions.AllowsDomain(localtools.LearningSearchDomain) {
+	if cfg.Permissions.BlocksDomain(localtools.LearningSearchDomain) {
 		search = nil
 	} else if search == nil {
 		search = localtools.LearningSearch{Permissions: cfg.Permissions}

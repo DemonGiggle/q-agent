@@ -43,13 +43,11 @@ type researchRecall struct {
 func (r *Runtime) taskHistory(ctx context.Context, m platform.Message, conv state.Conversation, interactive bool) ([]llm.Message, researchRecall) {
 	limit := r.memoryContextBytes()
 	var recall researchRecall
-	if interactive && r.Learning.Enabled && r.Learning.Recall.ChatEnabled && r.Config.Memory.Enabled &&
-		r.allowed(m) {
-		cfg, err := state.LoadLearningPolicy(r.Config.StateDir)
-		if err == nil && cfg.Enabled && cfg.Recall.ChatEnabled &&
-			(m.ChatID > 0 || cfg.Permissions.IncludeGroupChats) && !cfg.Permissions.ExcludesTopic(m.ChatID, m.TopicID) {
-			recall = r.researchRecall(ctx, cfg, m.Text, min(limit/3, 2000))
-		}
+	cfg := r.Learning
+	if interactive && cfg.Enabled && cfg.Recall.ChatEnabled && r.Config.Memory.Enabled &&
+		r.allowed(m) && (m.ChatID > 0 || cfg.Permissions.IncludeGroupChats) &&
+		!cfg.Permissions.ExcludesTopic(m.ChatID, m.TopicID) {
+		recall = r.researchRecall(ctx, cfg, m.Text, min(limit/3, 2000))
 	}
 	if recall.content == "" {
 		return r.memoryHistoryWithin(m, conv, m.Text, limit), recall
@@ -107,8 +105,8 @@ func (r *Runtime) auditResearchRecall(ctx context.Context, m platform.Message, r
 	if len(recall.noteIDs) == 0 {
 		return
 	}
-	cfg, err := state.LoadLearningPolicy(r.Config.StateDir)
-	if err != nil || !cfg.Enabled || !cfg.Recall.ChatEnabled || !cfg.Recall.AuditEnabled ||
+	cfg := r.Learning
+	if !cfg.Enabled || !cfg.Recall.ChatEnabled || !cfg.Recall.AuditEnabled ||
 		(m.ChatID < 0 && !cfg.Permissions.IncludeGroupChats) || cfg.Permissions.ExcludesTopic(m.ChatID, m.TopicID) {
 		return
 	}

@@ -19,18 +19,18 @@ func TestLearningDigestUsesAuthorizedRecentNotes(t *testing.T) {
 	ctx := context.Background()
 	dir := t.TempDir()
 	app := filepath.Join(dir, "config.toml")
-	if err := os.WriteFile(app, []byte("state_dir = 'data'\n"), 0600); err != nil {
-		t.Fatal(err)
+	writeCfg := func(enabled bool) {
+		t.Helper()
+		body := "state_dir = 'data'\n[learning]\nenabled = false\n"
+		if enabled {
+			body = "state_dir = 'data'\n[learning]\nenabled = true\nallow_domains = ['example.org', 'example.net']\nblock_domains = ['blocked.example.net']\nexcluded_terms = ['restricted phrase']\n"
+		}
+		if err := os.WriteFile(app, []byte(body), 0600); err != nil {
+			t.Fatal(err)
+		}
 	}
+	writeCfg(true)
 	stateDir := filepath.Join(dir, "data")
-	policy := learning.DefaultConfig()
-	policy.Enabled = true
-	policy.Permissions.AllowDomains = []string{"example.org", "example.net"}
-	policy.Permissions.BlockDomains = []string{"blocked.example.net"}
-	policy.Permissions.ExcludedTerms = []string{"restricted phrase"}
-	if err := state.Atomic(learningPolicyPath(stateDir), policy); err != nil {
-		t.Fatal(err)
-	}
 	now := time.Now().UTC()
 	snapshot := learning.KnowledgeSnapshot{Version: 1}
 	for _, item := range []struct {
@@ -90,10 +90,7 @@ func TestLearningDigestUsesAuthorizedRecentNotes(t *testing.T) {
 	if _, err := os.Stat(filepath.Join(stateDir, "learning", "audit")); !errors.Is(err, os.ErrNotExist) {
 		t.Fatalf("digest unexpectedly recorded an audit event: %v", err)
 	}
-	policy.Enabled = false
-	if err := state.Atomic(learningPolicyPath(stateDir), policy); err != nil {
-		t.Fatal(err)
-	}
+	writeCfg(false)
 	if err := runLearning(ctx, []string{"digest", "--config", app}, nil, &out); !errors.Is(err, learning.ErrDenied) {
 		t.Fatalf("digest was available when learning was disabled: %v", err)
 	}

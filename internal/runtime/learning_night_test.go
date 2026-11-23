@@ -4,7 +4,6 @@ import (
 	"context"
 	"crypto/sha256"
 	"fmt"
-	"path/filepath"
 	"slices"
 	"strings"
 	"testing"
@@ -41,10 +40,6 @@ func TestLearningNightResearchReachesChatRecall(t *testing.T) {
 	cfg.Permissions.AllowDomains = []string{localtools.LearningSearchDomain, "example.org", "example.net"}
 	cfg.Permissions.IncludePrivateChats = true
 	r.Learning = cfg
-	path := filepath.Join(r.Config.StateDir, "learning", "policy.json")
-	if err := state.Atomic(path, cfg); err != nil {
-		t.Fatal(err)
-	}
 	c := state.NewLearningCoordinator(r.Config.StateDir)
 	const question = "Historical regency appointments"
 	allow := func(string) bool { return true }
@@ -112,18 +107,12 @@ func TestLearningNightResearchReachesChatRecall(t *testing.T) {
 		t.Fatal(err)
 	}
 	tick(inside)
-	disabled := cfg
-	disabled.Schedule.Enabled = false
-	if err := state.Atomic(path, disabled); err != nil {
-		t.Fatal(err)
-	}
+	r.Learning.Schedule.Enabled = false
 	tick(inside.Add(time.Hour))
 	if searches != 0 || fetches != 0 {
 		t.Fatalf("unexpected execution outside the active idle window: %d searches, %d fetches", searches, fetches)
 	}
-	if err := state.Atomic(path, cfg); err != nil {
-		t.Fatal(err)
-	}
+	r.Learning = cfg
 	tick(inside.Add(time.Hour))
 	if searches != 1 || fetches != 2 {
 		t.Fatalf("approved run executed %d searches and %d fetches", searches, fetches)
@@ -144,18 +133,12 @@ func TestLearningNightResearchReachesChatRecall(t *testing.T) {
 		t.Fatal("a second run or an unsolicited inference was triggered in the same window")
 	}
 	message := input(2, 1, 0, 1, "Tell me about historical regency appointments")
-	control := cfg
-	control.Recall.ChatEnabled = false
-	if err := state.Atomic(path, control); err != nil {
-		t.Fatal(err)
-	}
+	r.Learning.Recall.ChatEnabled = false
 	_, without := r.taskHistory(ctx, message, state.Conversation{}, true)
 	if len(without.noteIDs) != 0 || without.content != "" {
 		t.Fatal("disabled control received reference material")
 	}
-	if err := state.Atomic(path, cfg); err != nil {
-		t.Fatal(err)
-	}
+	r.Learning = cfg
 	_, with := r.taskHistory(ctx, message, state.Conversation{}, true)
 	if len(with.noteIDs) != 1 || !strings.Contains(with.content, first) || !strings.Contains(with.content, second) {
 		t.Fatal("enabled arm did not receive both references under the same context limit")
@@ -170,7 +153,7 @@ func TestLearningNightResearchReachesChatRecall(t *testing.T) {
 	}) {
 		t.Fatalf("scheduled note was not recalled with both citations: %+v", provider.requests)
 	}
-	audit := state.LearningAudit{Dir: filepath.Join(r.Config.StateDir, "learning", "audit")}
+	audit := state.LearningAudit{Dir: r.Config.StateDir + "/learning/audit"}
 	until := time.Now().Add(time.Hour)
 	if before.AddDate(0, 0, 1).After(until) {
 		until = before.AddDate(0, 0, 1)

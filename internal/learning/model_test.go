@@ -28,4 +28,12 @@ func TestLearningValidation(t *testing.T) {
 	if err := c.Validate(); err != nil {
 		t.Fatal(err)
 	}
+	open := PermissionConfig{BlockDomains: []string{"blocked.example.org"}}
+	if !open.ResearchURI("https://example.org/doc") || open.ResearchURI("https://blocked.example.org/doc") {
+		t.Fatal("open ResearchURI did not allow non-blocked HTTPS domain")
+	}
+	restricted := PermissionConfig{AllowDomains: []string{"example.org"}}
+	if !restricted.ResearchURI("https://docs.example.org/doc") || restricted.ResearchURI("https://other.org/doc") {
+		t.Fatal("restricted ResearchURI did not enforce AllowDomains")
+	}
 }

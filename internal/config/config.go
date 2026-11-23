@@ -15,6 +15,7 @@ import (
 	"time"
 
 	"github.com/pelletier/go-toml/v2"
+	"q-agent/internal/learning"
 )
 
 // DefaultPath is the configuration file used when --config is omitted.
@@ -29,6 +30,7 @@ type Config struct {
 	Limits    Limits              `toml:"limits"`
 	Memory    Memory              `toml:"memory"`
 	Proactive Proactive           `toml:"proactive"`
+	Learning  Learning            `toml:"learning"`
 	ChatGPT   ChatGPT             `toml:"chatgpt"`
 	MCP       MCP                 `toml:"mcp"`
 }
@@ -140,6 +142,70 @@ type Proactive struct {
 	RecentWindow      string        `toml:"recent_window"`
 	RecentMaxMessages int           `toml:"recent_max_messages"`
 	RecentMaxBytes    int           `toml:"recent_max_bytes"`
+}
+
+// Learning configures the opt-in Autonomous Curious Agent (ACA) features.
+// Disabled by default (enabled = false). Internal budgets, selection quotas,
+// and source rules use conservative built-in defaults.
+type Learning struct {
+	Enabled             bool     `toml:"enabled"`
+	ChatRecall          bool     `toml:"chat_recall"`
+	IncludePrivateChats bool     `toml:"include_private_chats"`
+	IncludeGroupChats   bool     `toml:"include_group_chats"`
+	AllowDomains        []string `toml:"allow_domains"`
+	BlockDomains        []string `toml:"block_domains"`
+	ExcludedTerms       []string `toml:"excluded_terms"`
+	Schedule            string   `toml:"schedule"`
+	Timezone            string   `toml:"timezone"`
+	IdleWait            string   `toml:"idle_wait"`
+}
+
+// Policy builds the effective internal learning.Config from the simplified
+// [learning] TOML section, filling internal budgets and selection settings
+// from learning.DefaultConfig().
+func (l Learning) Policy() learning.Config {
+	cfg := learning.DefaultConfig()
+	cfg.Enabled = l.Enabled
+	cfg.Recall.ChatEnabled = l.ChatRecall
+	cfg.Permissions.IncludePrivateChats = l.IncludePrivateChats
+	cfg.Permissions.IncludeGroupChats = l.IncludeGroupChats
+	cfg.Permissions.AllowDomains = append([]string(nil), l.AllowDomains...)
+	cfg.Permissions.BlockDomains = append([]string(nil), l.BlockDomains...)
+	cfg.Permissions.ExcludedTerms = append([]string(nil), l.ExcludedTerms...)
+	if l.Timezone != "" {
+		cfg.Schedule.TimeZone = l.Timezone
+	} else {
+		cfg.Schedule.TimeZone = "Local"
+	}
+	if start, end, err := parseScheduleWindow(l.Schedule); err == nil {
+		cfg.Schedule.Enabled = l.Enabled
+		cfg.Schedule.WindowStart = start
+		cfg.Schedule.WindowEnd = end
+	}
+	if d, err := time.ParseDuration(l.IdleWait); err == nil && d >= 0 {
+		cfg.Schedule.IdleMinutes = int(d / time.Minute)
+	}
+	return cfg
+}
+
+func parseScheduleWindow(s string) (start, end string, err error) {
+	parts := strings.Split(s, "-")
+	if len(parts) != 2 {
+		return "", "", fmt.Errorf("invalid learning.schedule %q: want HH:MM-HH:MM", s)
+	}
+	start, end = strings.TrimSpace(parts[0]), strings.TrimSpace(parts[1])
+	sh, sm, err := parseDigestAt(start)
+	if err != nil {
+		return "", "", fmt.Errorf("invalid learning.schedule %q: want HH:MM-HH:MM", s)
+	}
+	eh, em, err := parseDigestAt(end)
+	if err != nil {
+		return "", "", fmt.Errorf("invalid learning.schedule %q: want HH:MM-HH:MM", s)
+	}
+	if sh*60+sm == eh*60+em {
+		return "", "", fmt.Errorf("invalid learning.schedule %q: empty window", s)
+	}
+	return start, end, nil
 }
 
 // ModelOverride is a provider-specific model selection for background tasks
@@ -439,7 +505,7 @@ func misplacedProviderHint(key string) (hint string, ok bool) {
 }
 
 func Defaults() Config {
-	return Config{StateDir: "~/.local/share/q-agent", Provider: Provider{Name: "ollama", Model: "qwen3"}, Telegram: Telegram{TokenEnv: "TELEGRAM_BOT_TOKEN"}, Sandbox: Sandbox{Bubblewrap: "bwrap", NewUIDMap: "newuidmap", NewGIDMap: "newgidmap", MMdebstrap: "mmdebstrap"}, Limits: Limits{MaxSteps: 8, MaxConcurrent: 2, TaskTimeout: "5m", InteractiveTaskTimeout: "15m", ShellTimeout: "2m", ShellPromptTimeout: "90s", ShellMaxExtends: 2}, Memory: Memory{Enabled: true, DigestAt: "00:00", MaxBytes: 32768, MaxContextBytes: 6000, MaxPendingBytes: 4 << 20}, Proactive: Proactive{Enabled: true, ActiveTime: "09:00-22:00", MaxPerDay: 1, Cooldown: "6h", SkipRecentActivity: "60m", Kinds: []string{"reminder", "warmth", "comfort", "suggestion"}, GroupPolicy: "conservative", RecentWindow: "12h", RecentMaxMessages: 200, RecentMaxBytes: 32768}}
+	return Config{StateDir: "~/.local/share/q-agent", Provider: Provider{Name: "ollama", Model: "qwen3"}, Telegram: Telegram{TokenEnv: "TELEGRAM_BOT_TOKEN"}, Sandbox: Sandbox{Bubblewrap: "bwrap", NewUIDMap: "newuidmap", NewGIDMap: "newgidmap", MMdebstrap: "mmdebstrap"}, Limits: Limits{MaxSteps: 8, MaxConcurrent: 2, TaskTimeout: "5m", InteractiveTaskTimeout: "15m", ShellTimeout: "2m", ShellPromptTimeout: "90s", ShellMaxExtends: 2}, Memory: Memory{Enabled: true, DigestAt: "00:00", MaxBytes: 32768, MaxContextBytes: 6000, MaxPendingBytes: 4 << 20}, Proactive: Proactive{Enabled: true, ActiveTime: "09:00-22:00", MaxPerDay: 1, Cooldown: "6h", SkipRecentActivity: "60m", Kinds: []string{"reminder", "warmth", "comfort", "suggestion"}, GroupPolicy: "conservative", RecentWindow: "12h", RecentMaxMessages: 200, RecentMaxBytes: 32768}, Learning: Learning{IdleWait: "30m"}}
 }
 func Load(path string) (Config, error) {
 	c := Defaults()
@@ -678,6 +744,25 @@ func Load(path string) (Config, error) {
 	}
 	if err := validateModelOverride("proactive.override", &c.Proactive.Override, c); err != nil {
 		return c, err
+	}
+	if c.Learning.IdleWait == "" {
+		c.Learning.IdleWait = Defaults().Learning.IdleWait
+	}
+	if d, e := time.ParseDuration(c.Learning.IdleWait); e != nil || d < 0 {
+		return c, fmt.Errorf("invalid learning.idle_wait %q: want non-negative duration", c.Learning.IdleWait)
+	}
+	if c.Learning.Timezone != "" {
+		if _, err := time.LoadLocation(c.Learning.Timezone); err != nil {
+			return c, fmt.Errorf("invalid learning timezone: %w", err)
+		}
+	}
+	if c.Learning.Schedule != "" {
+		if !c.Learning.Enabled {
+			return c, fmt.Errorf("learning.schedule requires learning.enabled = true")
+		}
+		if _, _, err := parseScheduleWindow(c.Learning.Schedule); err != nil {
+			return c, err
+		}
 	}
 	if err := normalizeMCP(&c); err != nil {
 		return c, err

@@ -10,9 +10,13 @@ func (s ScheduleConfig) Window(now time.Time) string {
 	if !s.Enabled {
 		return ""
 	}
-	zone, err := time.LoadLocation(s.TimeZone)
-	if err != nil {
-		return ""
+	zone := time.Local
+	if s.TimeZone != "" && s.TimeZone != "Local" {
+		var err error
+		zone, err = time.LoadLocation(s.TimeZone)
+		if err != nil {
+			return ""
+		}
 	}
 	local := now.In(zone)
 	clock := local.Format("15:04")

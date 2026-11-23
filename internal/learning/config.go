@@ -44,25 +44,38 @@ func (p PermissionConfig) Excludes(turn ConversationTurn) bool {
 	return false
 }
 
-// AllowsDomain applies a blocklist first, then an optional allowlist.
-func (p PermissionConfig) AllowsDomain(host string) bool {
-	host = strings.ToLower(strings.TrimSuffix(host, "."))
-	matches := func(domains []string) bool {
-		for _, domain := range domains {
-			domain = strings.TrimSuffix(strings.ToLower(strings.TrimSpace(domain)), ".")
-			if domain != "" && (host == domain || strings.HasSuffix(host, "."+domain)) {
-				return true
-			}
-		}
-		return false
-	}
-	return host != "" && !matches(p.BlockDomains) && (len(p.AllowDomains) == 0 || matches(p.AllowDomains))
+// BlocksDomain reports whether host matches the configured blocklist.
+func (p PermissionConfig) BlocksDomain(host string) bool {
+	return matchesDomainList(host, p.BlockDomains)
 }
 
-// ResearchURI accepts only explicitly approved HTTPS domains and URLs without
-// query parameters, fragments, or credentials.
+func matchesDomainList(host string, domains []string) bool {
+	host = strings.ToLower(strings.TrimSuffix(host, "."))
+	if host == "" {
+		return false
+	}
+	for _, domain := range domains {
+		domain = strings.TrimSuffix(strings.ToLower(strings.TrimSpace(domain)), ".")
+		if domain != "" && (host == domain || strings.HasSuffix(host, "."+domain)) {
+			return true
+		}
+	}
+	return false
+}
+
+// AllowsDomain applies a blocklist first, then an optional allowlist.
+// When AllowDomains is empty, any non-blocked domain is allowed.
+func (p PermissionConfig) AllowsDomain(host string) bool {
+	host = strings.ToLower(strings.TrimSuffix(host, "."))
+	return host != "" && !matchesDomainList(host, p.BlockDomains) &&
+		(len(p.AllowDomains) == 0 || matchesDomainList(host, p.AllowDomains))
+}
+
+// ResearchURI accepts HTTPS domains allowed by policy without query
+// parameters, fragments, or credentials. When AllowDomains is empty, any
+// non-blocked public domain is accepted.
 func (p PermissionConfig) ResearchURI(raw string) bool {
-	if len(raw) > 1024 || len(p.AllowDomains) == 0 || strings.ContainsAny(raw, "?#") {
+	if len(raw) > 1024 || strings.ContainsAny(raw, "?#") {
 		return false
 	}
 	u, err := url.Parse(raw)
@@ -142,11 +155,10 @@ func (c Config) Validate() error {
 	if c.SchemaVersion != SchemaVersion {
 		return fmt.Errorf("unsupported learning config schema version")
 	}
-	if c.Schedule.TimeZone == "" || c.Schedule.TimeZone == "Local" {
-		return fmt.Errorf("learning schedule requires an explicit IANA time zone")
-	}
-	if _, err := time.LoadLocation(c.Schedule.TimeZone); err != nil {
-		return fmt.Errorf("invalid learning time zone")
+	if c.Schedule.TimeZone != "" && c.Schedule.TimeZone != "Local" {
+		if _, err := time.LoadLocation(c.Schedule.TimeZone); err != nil {
+			return fmt.Errorf("invalid learning time zone")
+		}
 	}
 	start, startErr := time.Parse("15:04", c.Schedule.WindowStart)
 	end, endErr := time.Parse("15:04", c.Schedule.WindowEnd)

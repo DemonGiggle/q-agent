@@ -1,27 +1,38 @@
 # Autonomous Curious Agent integration
 
-ACA is opt-in. The M0 entry points run as a local operator and store their
-policy and audit metadata under `<state_dir>/learning/`. Normal chat startup
+ACA is opt-in and configured under `[learning]` in `config.toml`. Its state
+and audit metadata live under `<state_dir>/learning/`. Normal chat startup
 and delivery do not depend on ACA state.
+
+## Configuration
+
+Add a `[learning]` section to `config.toml` (or use `q-agent config set`):
+
+```toml
+[learning]
+enabled = true
+chat_recall = false
+include_private_chats = false
+include_group_chats = false
+allow_domains = []
+block_domains = []
+excluded_terms = []
+schedule = ""
+timezone = ""
+idle_wait = "30m"
+```
+
+Learning and overnight scheduling default to off. Keep `[memory] enabled = true`
+for chat capture, chat recall, and overnight runs, and restart the service
+after changing `[learning]` in `config.toml`. Internal budgets and selection
+quotas use conservative built-in defaults.
 
 ## Preview a plan
 
 ```sh
-printf '%s\n' '{"enabled":true}' | q-agent learning configure --config ./config.toml
 printf '%s\n' 'What sustained Fujiwara influence during the Heian period?' |
   q-agent learning trigger --config ./config.toml
 ```
-
-`configure` takes one JSON object and fills omitted fields from the defaults.
-Its output contains the effective policy. Learning and scheduling default to
-off. The policy is reloaded before the next scheduled run, local selection,
-or opted-in chat recall. Set `"enabled": false` and leave scheduling
-disabled to turn learning off. Existing research attempts keep their current
-policy snapshot for that attempt. Configure records a metadata-only audit
-event for policy changes.
-The time window uses IANA timezone names and accepts windows that cross
-midnight. Daily, run, and question budgets constrain requests, documents,
-tokens, USD millionths, milliseconds, depth, and stored bytes.
 
 `trigger` is the local `learning.trigger(dry_run)` entry point. It reads a
 manual question from standard input, applies the exclusion list and secret
@@ -54,9 +65,10 @@ challenge and the request reservation remains charged.
 
 ## Run one queued research candidate
 
+Set `enabled = true` under `[learning]` in `config.toml` (optionally set
+`allow_domains = ["example.org"]` to restrict fetched sources), then run:
+
 ```sh
-printf '%s\n' '{"enabled":true,"permissions":{"allow_domains":["lite.duckduckgo.com","example.org"]}}' |
-  q-agent learning configure --config ./config.toml
 printf '%s\n' 'Public example documents' |
   q-agent learning enqueue --config ./config.toml
 printf '%s\n' "$run_id" | q-agent learning work --config ./config.toml
@@ -65,14 +77,13 @@ printf '%s\n' "$run_id" | q-agent learning work --config ./config.toml
 Copy the enqueue response's `run_id` into `run_id` for the work command.
 Enqueue persists an explicitly public operator-supplied question without
 contacting a provider. Work acquires that candidate's lease and rechecks
-policy before sending its question. Work requires an explicit allowlist that
-includes the search host. The worker searches once and attempts
-to retrieve the first eligible result. Source retrieval requires an
-explicit allowlist, HTTPS on the standard port, and public IPv4. It
-rejects redirects, query parameters, and documents over 128 KiB. Sites
-with a recognized robots file containing exclusions, delays, or unknown
-directives are skipped conservatively. Document opt-outs also prevent
-recording.
+policy before sending its question. The worker searches once and attempts
+to retrieve the first eligible result. Source retrieval requires HTTPS on
+the standard port and public IPv4 (and obeys optional `allow_domains` and
+`block_domains`). It rejects redirects, query parameters, and documents over
+128 KiB. Sites with a recognized robots file containing exclusions, delays,
+or unknown directives are skipped conservatively. Document opt-outs also
+prevent recording.
 
 Work records the run state, transition timestamps and stop reason. A
 successful run stores fetched source metadata and a reference note in
@@ -299,12 +310,14 @@ authorized notes. The CLI and chat accept `site:example.org`,
 inclusive and the second exclusive. Filters use the published UTC date
 when available and fall back to the UTC fetch date.
 
-For automatic recall in interactive Telegram chat, add the following
-object to the learning policy, keep learning and memory enabled, and
-restart the service.
+For automatic recall in interactive Telegram chat, set `chat_recall = true`
+under `[learning]` in `config.toml`, keep learning and memory enabled, and
+restart the service:
 
-```json
-{"recall":{"chat_enabled":true,"audit_enabled":true}}
+```toml
+[learning]
+enabled = true
+chat_recall = true
 ```
 
 Recall uses only the public knowledge partition. Private chats must
@@ -443,11 +456,15 @@ by a policy change is withdrawn before dispatch.
 
 ## Run approved research overnight
 
-Enable the learning policy and set a schedule. For example, include this
-schedule in the JSON sent to `learning configure` and restart the service.
+Enable learning and set a schedule window under `[learning]` in `config.toml`,
+then restart the service:
 
-```json
-{"enabled":true,"schedule":{"enabled":true,"timezone":"Asia/Taipei","window_start":"02:00","window_end":"05:00","idle_minutes":30}}
+```toml
+[learning]
+enabled = true
+schedule = "02:00-05:00"
+timezone = "Asia/Taipei"
+idle_wait = "30m"
 ```
 
 Preserve other settings when configuring the policy. Keep memory enabled,

@@ -9,9 +9,7 @@ import (
 	"fmt"
 	"io"
 	"log"
-	"os"
 	"path/filepath"
-	"reflect"
 	"slices"
 	"strings"
 	"time"
@@ -26,8 +24,8 @@ import (
 )
 
 func runLearning(ctx context.Context, args []string, input io.Reader, output io.Writer) error {
-	if len(args) == 0 || !slices.Contains([]string{"configure", "trigger", "search", "enqueue", "schedule", "work", "recall", "note", "claim-history", "claim-edit", "frontier", "status", "pause", "resume", "cancel", "audit", "export", "delete", "archive", "metrics", "digest"}, args[0]) {
-		return fmt.Errorf("usage: q-agent learning configure|trigger|search|enqueue|schedule|work|recall|note|claim-history|claim-edit|frontier|status|pause|resume|cancel|audit|export|delete|archive|metrics|digest [--config FILE]; pass input on stdin")
+	if len(args) == 0 || !slices.Contains([]string{"trigger", "search", "enqueue", "schedule", "work", "recall", "note", "claim-history", "claim-edit", "frontier", "status", "pause", "resume", "cancel", "audit", "export", "delete", "archive", "metrics", "digest"}, args[0]) {
+		return fmt.Errorf("usage: q-agent learning trigger|search|enqueue|schedule|work|recall|note|claim-history|claim-edit|frontier|status|pause|resume|cancel|audit|export|delete|archive|metrics|digest [--config FILE]; pass input on stdin")
 	}
 
 	flags := flag.NewFlagSet("learning "+args[0], flag.ContinueOnError)
@@ -99,28 +97,6 @@ func runLearning(ctx context.Context, args []string, input io.Reader, output io.
 	}
 	enc := json.NewEncoder(output)
 	enc.SetIndent("", "  ")
-	if args[0] == "configure" {
-		cfg, err := state.ReadLearningPolicy(input)
-		if err != nil {
-			return err
-		}
-		if prior, err := state.LoadLearningPolicy(app.StateDir); err == nil && reflect.DeepEqual(prior, cfg) {
-			return enc.Encode(cfg)
-		}
-		if err := ctx.Err(); err != nil {
-			return err
-		}
-		if err := state.Atomic(learningPolicyPath(app.StateDir), cfg); err != nil {
-			return err
-		}
-		id := rand.Text()
-		audit := state.LearningAudit{Dir: filepath.Join(app.StateDir, "learning", "audit")}
-		if err := audit.Append(context.WithoutCancel(ctx), learning.Event{SchemaVersion: learning.SchemaVersion,
-			Type: learning.PolicyConfigured, ID: id, RunID: id, At: time.Now().UTC(), Outcome: "applied", ObjectRefs: []string{id}}); err != nil {
-			log.Print("learning policy applied; failed to write audit metadata")
-		}
-		return enc.Encode(cfg)
-	}
 	if args[0] == "metrics" {
 		if metricDays < 1 || metricDays > 365 {
 			return fmt.Errorf("learning metrics days must be between 1 and 365")
@@ -133,9 +109,9 @@ func runLearning(ctx context.Context, args []string, input io.Reader, output io.
 		}
 		return enc.Encode(metrics)
 	}
-	cfg, err := state.LoadLearningPolicy(app.StateDir)
+	cfg := app.Learning.Policy()
 	if args[0] == "delete" {
-		// Erasure remains available after opting out or removing the policy.
+		// Erasure remains available after opting out of learning.
 		partition, err := authorizedLearningPartition(app, cfg, frontier, true)
 		if err != nil || partition.Scope == nil {
 			return learning.ErrDenied
@@ -149,9 +125,6 @@ func runLearning(ctx context.Context, args []string, input io.Reader, output io.
 			return err
 		}
 		return enc.Encode(receipt)
-	}
-	if err != nil {
-		return err
 	}
 
 	if args[0] == "frontier" {
@@ -329,7 +302,7 @@ func runLearning(ctx context.Context, args []string, input io.Reader, output io.
 	}
 	if args[0] == "search" || args[0] == "enqueue" || args[0] == "work" {
 		if !cfg.Enabled || (args[0] != "work" && policy.ContainsSecret(string(data))) ||
-			(args[0] == "search" && !cfg.Permissions.AllowsDomain(localtools.LearningSearchDomain)) {
+			(args[0] == "search" && cfg.Permissions.BlocksDomain(localtools.LearningSearchDomain)) {
 			return learning.ErrDenied
 		}
 		search := localtools.LearningSearch{Permissions: cfg.Permissions}
@@ -344,7 +317,7 @@ func runLearning(ctx context.Context, args []string, input io.Reader, output io.
 			}{RunID: id})
 		case "work":
 			id := strings.TrimSpace(string(data))
-			if len(cfg.Permissions.AllowDomains) == 0 || !cfg.Permissions.AllowsDomain(localtools.LearningSearchDomain) {
+			if cfg.Permissions.BlocksDomain(localtools.LearningSearchDomain) {
 				result, err := coordinator.ResearchStatus(ctx, cfg, id, allow)
 				if err != nil {
 					return err
@@ -530,23 +503,12 @@ func privateLearningCutoff(cfg learning.Config, now time.Time) time.Time {
 	return now.AddDate(0, 0, -cfg.Permissions.PrivateFrontierDays)
 }
 
-func learningPolicyPath(stateDir string) string {
-	return filepath.Join(stateDir, "learning", "policy.json")
-}
-
 // Load initial opt-ins for learning features when the service starts.
 func startupLearningConfig(app config.Config) learning.Config {
 	if !app.Memory.Enabled {
 		return learning.Config{}
 	}
-	cfg, err := state.LoadLearningPolicy(app.StateDir)
-	if err != nil {
-		if !errors.Is(err, os.ErrNotExist) {
-			log.Print("[LEARNING] Invalid or unreadable policy; automatic learning disabled")
-		}
-		return learning.Config{}
-	}
-	return cfg
+	return app.Learning.Policy()
 }
 
 func learningMemoryLimits(app config.Config, cfg learning.Config) state.MemoryLimits {

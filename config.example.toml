@@ -159,6 +159,32 @@ recent_window = "12h"
 recent_max_messages = 200
 recent_max_bytes = 32768
 
+[learning]
+# Optional Autonomous Curious Agent (ACA). Opt-in; off by default.
+# Requires [memory] enabled = true for chat capture, chat recall, and
+# overnight scheduled research. Edits apply at the next service start.
+enabled = false
+# Inject matching prior research into interactive Telegram replies.
+chat_recall = false
+# Allow reading completed exchanges from authorized chats as research leads.
+include_private_chats = false
+include_group_chats = false
+# Optional domain filters for fetched sources.
+# Empty allow_domains allows any public HTTPS domain (except block_domains).
+# Non-empty allow_domains restricts fetched sources to those domains (and their
+# subdomains); you do not need to list the built-in search host.
+allow_domains = []
+block_domains = []
+# Terms excluded from learning, search, and recall.
+excluded_terms = []
+# Overnight research window (HH:MM-HH:MM, 24-hour). Empty disables overnight runs.
+# Requires enabled = true when set.
+schedule = ""
+# IANA timezone for the overnight schedule window; empty means server-local time.
+timezone = ""
+# Wait this long after the last chat activity before starting overnight work.
+idle_wait = "30m"
+
 [mcp]
 # Optional Model Context Protocol servers. q-agent acts as an MCP *client*:
 # it dials the servers below so every authorized chat can call their tools

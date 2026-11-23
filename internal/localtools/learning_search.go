@@ -29,7 +29,7 @@ func (s LearningSearch) search(ctx context.Context, client *http.Client, endpoin
 	if err != nil {
 		return nil, learning.Budget{}, err
 	}
-	if !s.Permissions.AllowsDomain(u.Hostname()) {
+	if s.Permissions.BlocksDomain(u.Hostname()) {
 		return nil, learning.Budget{}, learning.ErrDenied
 	}
 	results, err := findWebResults(ctx, client, endpoint, query, limit)

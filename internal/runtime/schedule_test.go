@@ -325,3 +325,34 @@ func TestScheduleToolsPreserveExecutionModePromptAndLocalTools(t *testing.T) {
 		t.Fatal("local call not delegated")
 	}
 }
+
+func TestNonForumGroupHandleCollapsesLegacyTopicSchedule(t *testing.T) {
+	r, _, _ := fixture(t)
+	stranded := input(0, -10, 42, 1, "")
+	v, err := r.Store.CreateSchedule(state.Schedule{
+		Route:    stranded,
+		Kind:     "reminder",
+		Text:     "daily stale alert",
+		At:       time.Now().Add(time.Hour),
+		Repeat:   "daily",
+		Timezone: "Asia/Taipei",
+	}, time.Now())
+	must(t, err)
+
+	// Incoming authorized message from the same group with NonForumGroup=true
+	// collapses the stranded topic-42 schedule to topic 0.
+	msg := input(1, -10, 0, 1, "/status")
+	msg.NonForumGroup = true
+	must(t, r.Handle(context.Background(), msg))
+
+	flat := input(0, -10, 0, 1, "")
+	tools := &scheduleTools{base: describedTools{}, runtime: r, owner: flat}
+	out, err := tools.Execute(context.Background(), llm.ToolCall{Name: "schedule_delete", Arguments: json.RawMessage(`{"text":"daily stale alert"}`)})
+	must(t, err)
+	if !strings.Contains(out, v.ID) {
+		t.Fatalf("expected deleted schedule ID %s in output, got %s", v.ID, out)
+	}
+	if live := r.Store.LiveSchedules(flat); len(live) != 0 {
+		t.Fatalf("expected 0 live schedules remaining, got %d", len(live))
+	}
+}

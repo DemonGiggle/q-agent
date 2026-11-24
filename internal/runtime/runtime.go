@@ -172,6 +172,13 @@ func (r *Runtime) Handle(ctx context.Context, m platform.Message) error {
 		return nil
 	}
 	r.logf("[TELEGRAM] Message received | update=%d chat=%d topic=%d user=%d", m.UpdateID, m.ChatID, m.TopicID, m.UserID)
+	if m.NonForumGroup {
+		if collapsed, err := r.Store.CollapseNonForumSchedules(m.Platform, m.ChatID); err != nil {
+			r.logf("[SCHEDULE] Non-forum schedule collapse failed | chat=%d error=%q", m.ChatID, r.Options.Redaction.Text(redaction.Terminal, err.Error()))
+		} else if collapsed > 0 {
+			r.logf("[SCHEDULE] Collapsed %d non-forum schedule(s) to topic 0 | chat=%d", collapsed, m.ChatID)
+		}
+	}
 	if err := r.Store.RecordChat(m, time.Now()); err != nil {
 		r.logf("[TELEGRAM] Chat recording failed | update=%d error=%q", m.UpdateID, r.Options.Redaction.Text(redaction.Terminal, err.Error()))
 	}

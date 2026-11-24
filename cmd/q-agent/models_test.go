@@ -59,7 +59,7 @@ func TestServeModelsPaginationAndRouting(t *testing.T) {
 	delivered := make(chan struct{}, 1)
 	sendUpdate := func(w http.ResponseWriter, id int64, text, data string) {
 		update := telegram.Update{ID: id}
-		msg := &telegram.Message{ID: 100, TopicID: 7, Chat: telegram.Chat{ID: -10, Type: "supergroup"}}
+		msg := &telegram.Message{ID: 100, TopicID: 7, IsTopicMessage: true, Chat: telegram.Chat{ID: -10, Type: "supergroup", IsForum: true}}
 		if data != "" {
 			msg.From = &telegram.User{ID: 99}
 			update.Callback = &telegram.CallbackQuery{ID: fmt.Sprint(id), From: &telegram.User{ID: 1}, Message: msg, Data: data}

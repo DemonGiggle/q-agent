@@ -16,8 +16,9 @@ import (
 func telegramReply(t *testing.T, updateID, chatID, topicID int64, kind, text, previous string) platform.Message {
 	t.Helper()
 	bot := telegram.User{ID: 99, IsBot: true, Username: "our_bot"}
+	isTopic := kind == "supergroup" && topicID != 0
 	m, ok := telegram.Normalize(telegram.Update{ID: updateID, Message: &telegram.Message{
-		ID: updateID + 100, Chat: telegram.Chat{ID: chatID, Type: kind}, TopicID: topicID,
+		ID: updateID + 100, Chat: telegram.Chat{ID: chatID, Type: kind, IsForum: isTopic}, TopicID: topicID, IsTopicMessage: isTopic,
 		From: &telegram.User{ID: 1}, Text: text,
 		Reply: &telegram.Message{ID: 50, From: &bot, Text: previous},
 	}}, bot)

@@ -12,8 +12,9 @@ type User struct {
 	Username string `json:"username"`
 }
 type Chat struct {
-	ID   int64  `json:"id"`
-	Type string `json:"type"`
+	ID      int64  `json:"id"`
+	Type    string `json:"type"`
+	IsForum bool   `json:"is_forum,omitempty"`
 }
 type Entity struct {
 	Type   string `json:"type"`
@@ -46,6 +47,7 @@ type Message struct {
 	CaptionEntities []Entity    `json:"caption_entities,omitempty"`
 	ID              int64       `json:"message_id"`
 	TopicID         int64       `json:"message_thread_id,omitempty"`
+	IsTopicMessage  bool        `json:"is_topic_message,omitempty"`
 	From            *User       `json:"from"`
 	Chat            Chat        `json:"chat"`
 	Text            string      `json:"text"`
@@ -73,6 +75,23 @@ func entityText(text string, e Entity) string {
 	return string(utf16.Decode(u[e.Offset : e.Offset+e.Length]))
 }
 
+// effectiveTopicID returns m.TopicID only when Telegram marks the message as a
+// real forum topic message inside a forum supergroup. In non-forum groups (or
+// groups where Topics were previously enabled and later disabled), Telegram can
+// still populate message_thread_id for reply or legacy threads with
+// is_topic_message omitted/false; treating those as topics splits conversations
+// and strands schedules in unreachable topic IDs.
+func effectiveTopicID(m *Message) int64 {
+	if m == nil || m.Chat.Type != "supergroup" || !m.Chat.IsForum || !m.IsTopicMessage {
+		return 0
+	}
+	return m.TopicID
+}
+
+func isNonForumGroup(c Chat) bool {
+	return c.Type == "group" || (c.Type == "supergroup" && !c.IsForum)
+}
+
 // Normalize filters group addressing after Telegram privacy mode is disabled.
 func Normalize(update Update, bot User) (platform.Message, bool) {
 	if q := update.Callback; q != nil {
@@ -83,7 +102,7 @@ func Normalize(update Update, bot User) (platform.Message, bool) {
 		if m.Chat.Type != "private" && m.Chat.Type != "group" && m.Chat.Type != "supergroup" {
 			return platform.Message{}, false
 		}
-		return platform.Message{Platform: "telegram", ChatID: m.Chat.ID, TopicID: m.TopicID, UserID: q.From.ID, MessageID: m.ID, UpdateID: update.ID, CallbackID: q.ID, CallbackData: q.Data}, true
+		return platform.Message{Platform: "telegram", ChatID: m.Chat.ID, TopicID: effectiveTopicID(m), NonForumGroup: isNonForumGroup(m.Chat), UserID: q.From.ID, MessageID: m.ID, UpdateID: update.ID, CallbackID: q.ID, CallbackData: q.Data}, true
 	}
 	m := update.Message
 	if m == nil || m.From == nil || m.From.IsBot {
@@ -188,7 +207,7 @@ func Normalize(update Update, bot User) (platform.Message, bool) {
 			text = parts[0]
 		}
 	}
-	out := platform.Message{Platform: "telegram", ChatID: m.Chat.ID, TopicID: m.TopicID, UserID: m.From.ID, MessageID: m.ID, UpdateID: update.ID, Text: text, PhotoIDs: photos, Files: files}
+	out := platform.Message{Platform: "telegram", ChatID: m.Chat.ID, TopicID: effectiveTopicID(m), NonForumGroup: isNonForumGroup(m.Chat), UserID: m.From.ID, MessageID: m.ID, UpdateID: update.ID, Text: text, PhotoIDs: photos, Files: files}
 	if reply := m.Reply; reply != nil {
 		replyText := reply.Text
 		if strings.TrimSpace(replyText) == "" {
@@ -261,13 +280,14 @@ func ExtractTap(update Update) (platform.Message, string, bool) {
 		}
 	}
 	out := platform.Message{
-		Platform:  "telegram",
-		ChatID:    m.Chat.ID,
-		TopicID:   m.TopicID,
-		UserID:    m.From.ID,
-		MessageID: m.ID,
-		UpdateID:  update.ID,
-		Text:      text,
+		Platform:      "telegram",
+		ChatID:        m.Chat.ID,
+		TopicID:       effectiveTopicID(m),
+		NonForumGroup: isNonForumGroup(m.Chat),
+		UserID:        m.From.ID,
+		MessageID:     m.ID,
+		UpdateID:      update.ID,
+		Text:          text,
 	}
 	return out, text, true
 }

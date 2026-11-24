@@ -148,7 +148,7 @@ func TestModelKeyboardAPIs(t *testing.T) {
 			if len(allowed) != 2 || allowed[1] != "callback_query" {
 				t.Errorf("updates: %+v", body)
 			}
-			w.Write([]byte(`{"ok":true,"result":[{"update_id":2,"callback_query":{"id":"q","from":{"id":1},"message":{"message_id":5,"message_thread_id":7,"from":{"id":99},"chat":{"id":10,"type":"supergroup"}},"data":"models:token:p:1"}}]}`))
+			w.Write([]byte(`{"ok":true,"result":[{"update_id":2,"callback_query":{"id":"q","from":{"id":1},"message":{"message_id":5,"message_thread_id":7,"is_topic_message":true,"from":{"id":99},"chat":{"id":10,"type":"supergroup","is_forum":true}},"data":"models:token:p:1"}}]}`))
 			return
 		case "sendMessage", "editMessageText":
 			if body["chat_id"] != float64(10) || body["parse_mode"] != "HTML" || body["reply_markup"] == nil {

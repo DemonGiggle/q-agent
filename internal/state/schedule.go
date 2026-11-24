@@ -426,6 +426,68 @@ func sameChatUser(a, b platform.Message) bool {
 	return a.Platform == b.Platform && a.ChatID == b.ChatID && a.UserID == b.UserID
 }
 
+// CollapseNonForumSchedules normalizes any legacy schedules, runs, and
+// tombstones stored with a non-zero TopicID for a group whose Forum Topics are
+// currently disabled (chat.is_forum == false) back to TopicID 0. This recovers
+// schedules stranded by non-forum message_thread_id values or by disabling
+// Topics after a schedule was created. It is a zero-I/O no-op when no entries
+// have TopicID != 0 for the chat.
+func (s *Store) CollapseNonForumSchedules(platformName string, chatID int64) (int, error) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	matches := func(r platform.Message) bool {
+		return r.Platform == platformName && r.ChatID == chatID && r.TopicID != 0
+	}
+	needsSave := false
+	for _, v := range s.schedules.Schedules {
+		if matches(v.Route) {
+			needsSave = true
+			break
+		}
+	}
+	if !needsSave {
+		for _, v := range s.schedules.Runs {
+			if matches(v.Route) {
+				needsSave = true
+				break
+			}
+		}
+	}
+	if !needsSave {
+		for _, v := range s.schedules.Deleted {
+			if matches(v.Route) {
+				needsSave = true
+				break
+			}
+		}
+	}
+	if !needsSave {
+		return 0, nil
+	}
+	next := s.cloneSchedules()
+	collapsed := 0
+	for i := range next.Schedules {
+		if matches(next.Schedules[i].Route) {
+			next.Schedules[i].Route.TopicID = 0
+			collapsed++
+		}
+	}
+	for i := range next.Runs {
+		if matches(next.Runs[i].Route) {
+			next.Runs[i].Route.TopicID = 0
+		}
+	}
+	for i := range next.Deleted {
+		if matches(next.Deleted[i].Route) {
+			next.Deleted[i].Route.TopicID = 0
+		}
+	}
+	if err := s.saveSchedules(next); err != nil {
+		return 0, err
+	}
+	return collapsed, nil
+}
+
 // The filter helpers below are lock-free over a snapshot slice so public
 // methods (which lock) and ledger rendering (which already holds the lock)
 // share one implementation instead of duplicating scope predicates.

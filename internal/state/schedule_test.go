@@ -320,3 +320,56 @@ func TestScheduleQueueBackpressureAndRetention(t *testing.T) {
 		t.Fatal("retention pruned active work or exceeded bound")
 	}
 }
+
+func TestCollapseNonForumSchedules(t *testing.T) {
+	s, _, at := scheduleFixture(t)
+	stranded := platform.Message{Platform: "telegram", ChatID: -100, TopicID: 42, UserID: 1}
+	flat := platform.Message{Platform: "telegram", ChatID: -100, TopicID: 0, UserID: 1}
+	otherForum := platform.Message{Platform: "telegram", ChatID: -200, TopicID: 7, UserID: 1}
+
+	v := addSchedule(t, s, stranded, at, "reminder", "daily")
+	other := addSchedule(t, s, otherForum, at, "reminder", "daily")
+	check(t, s.ScanDue(at))
+
+	// Before collapse, flat topic 0 cannot see or delete the stranded schedule.
+	if live := s.LiveSchedules(flat); len(live) != 0 {
+		t.Fatalf("expected 0 schedules before collapse, got %d", len(live))
+	}
+	if _, err := s.DeleteSchedules(flat, []string{v.ID}); err == nil {
+		t.Fatal("expected cross-topic error before collapse")
+	}
+
+	collapsed, err := s.CollapseNonForumSchedules("telegram", -100)
+	check(t, err)
+	if collapsed != 1 {
+		t.Fatalf("collapsed = %d, want 1", collapsed)
+	}
+	// Second call is an idempotent no-op.
+	collapsedAgain, err := s.CollapseNonForumSchedules("telegram", -100)
+	check(t, err)
+	if collapsedAgain != 0 {
+		t.Fatalf("second collapse = %d, want 0", collapsedAgain)
+	}
+
+	// Reopen from disk to verify persistence.
+	reopened, err := Open(s.dir, nil)
+	check(t, err)
+	live, runs := reopened.ListSchedules(flat)
+	if len(live) != 1 || live[0].ID != v.ID || live[0].Route.TopicID != 0 {
+		t.Fatalf("collapsed schedules = %+v", live)
+	}
+	if len(runs) != 1 || runs[0].Route.TopicID != 0 {
+		t.Fatalf("collapsed runs = %+v", runs)
+	}
+	// Other forum chat is untouched.
+	otherLive := reopened.LiveSchedules(otherForum)
+	if len(otherLive) != 1 || otherLive[0].ID != other.ID || otherLive[0].Route.TopicID != 7 {
+		t.Fatalf("other chat mutated: %+v", otherLive)
+	}
+	// Flat topic 0 can now delete the previously stranded schedule.
+	res, err := reopened.DeleteSchedules(flat, []string{v.ID})
+	check(t, err)
+	if len(res.Deleted) != 1 || res.Deleted[0].ID != v.ID {
+		t.Fatalf("delete after collapse = %+v", res)
+	}
+}

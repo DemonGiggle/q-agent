@@ -95,10 +95,10 @@ func TestServeTelegramFollowupSteersActiveTask(t *testing.T) {
 				<-r.Context().Done()
 				return
 			}
-			update := telegram.Update{ID: id, Message: &telegram.Message{ID: id, TopicID: 7, From: &telegram.User{ID: 1}, Chat: telegram.Chat{ID: -10, Type: "supergroup"}, Text: text}}
+			update := telegram.Update{ID: id, Message: &telegram.Message{ID: id, TopicID: 7, IsTopicMessage: true, From: &telegram.User{ID: 1}, Chat: telegram.Chat{ID: -10, Type: "supergroup", IsForum: true}, Text: text}}
 			updates := []telegram.Update{update}
 			if id == 2 {
-				updates = append(updates, telegram.Update{ID: 3, Message: &telegram.Message{ID: 3, TopicID: 7, From: &telegram.User{ID: 1}, Chat: telegram.Chat{ID: -10, Type: "supergroup"}, Text: "with extra detail @test_bot"}})
+				updates = append(updates, telegram.Update{ID: 3, Message: &telegram.Message{ID: 3, TopicID: 7, IsTopicMessage: true, From: &telegram.User{ID: 1}, Chat: telegram.Chat{ID: -10, Type: "supergroup", IsForum: true}, Text: "with extra detail @test_bot"}})
 			}
 			json.NewEncoder(w).Encode(map[string]any{"ok": true, "result": updates})
 		case "sendMessage", "editMessageText":

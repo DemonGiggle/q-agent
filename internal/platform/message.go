@@ -24,6 +24,10 @@ type Message struct {
 	// ReplyTo is input-only context. The runtime folds it into the user prompt
 	// before saving history; delivery and schedule routes must not persist it.
 	ReplyTo *ReplyContext `json:"-"`
+	// NonForumGroup is input-only (Telegram): true when the update came from a
+	// group or supergroup without Forum Topics enabled (chat.is_forum == false).
+	// Never persisted in routes.
+	NonForumGroup bool `json:"-"`
 }
 
 // File is an input-only generic attachment (document, video, audio, voice,

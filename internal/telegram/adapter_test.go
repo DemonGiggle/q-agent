@@ -223,12 +223,12 @@ func TestNormalizeIncomingPhotos(t *testing.T) {
 func TestNormalizeTopicIDRequiresForumTopicMessage(t *testing.T) {
 	bot := User{ID: 99, Username: "our_bot"}
 	for _, tc := range []struct {
-		name          string
-		chat          Chat
-		topicID       int64
-		isTopic       bool
-		wantTopicID   int64
-		wantNonForum  bool
+		name         string
+		chat         Chat
+		topicID      int64
+		isTopic      bool
+		wantTopicID  int64
+		wantNonForum bool
 	}{
 		{"forum topic message keeps topic", Chat{ID: -100, Type: "supergroup", IsForum: true}, 42, true, 42, false},
 		{"forum general message without is_topic_message drops thread id", Chat{ID: -100, Type: "supergroup", IsForum: true}, 42, false, 0, false},

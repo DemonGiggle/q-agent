@@ -304,11 +304,18 @@ topic links with verified Evidence also contribute to ranking. A snapshot
 with only notes and citations uses the same keyword lookup. Publication
 and fetch dates remain attached to the citations.
 
-Ask “what did you research?” or “你最近研究了什麼？” for the latest
-authorized notes. The CLI and chat accept `site:example.org`,
+The CLI and `learning_recall` tool accept `site:example.org`,
 `after:2026-01-01` and `before:2027-01-01` filters. The first date is
 inclusive and the second exclusive. Filters use the published UTC date
 when available and fall back to the UTC fetch date.
+
+When `chat_recall = true` is enabled, interactive chats and scheduled agent
+tasks also expose the host-managed `learning_recall` tool so the model can
+recall the most recent learning run (`{}`), notes from the last `days`
+24-hour periods (`{"days": 1}`), or keyword/filtered matches
+(`{"query": "..."}`). Once `learning_recall` returns persisted research notes
+in a turn, further executable tools are locked out for the remainder of that
+turn to preserve the same trust boundary as automatic pre-turn recall.
 
 For automatic recall in interactive Telegram chat, set `chat_recall = true`
 under `[learning]` in `config.toml`, keep learning and memory enabled, and

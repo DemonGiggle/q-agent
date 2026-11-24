@@ -13,6 +13,7 @@ import (
 	"q-agent/internal/learning"
 	"q-agent/internal/llm"
 	"q-agent/internal/platform"
+	"q-agent/internal/redaction"
 	"q-agent/internal/state"
 	"q-agent/internal/trust"
 )
@@ -40,14 +41,24 @@ type researchRecall struct {
 	claimIDs []string
 }
 
+func (r *Runtime) learningRecallAllowed(m platform.Message) bool {
+	cfg := r.Learning
+	return cfg.Enabled && cfg.Recall.ChatEnabled && r.Config.Memory.Enabled &&
+		r.allowed(m) && (m.ChatID > 0 || cfg.Permissions.IncludeGroupChats) &&
+		!cfg.Permissions.ExcludesTopic(m.ChatID, m.TopicID)
+}
+
+func (r *Runtime) learningAllowFunc() func(string) bool {
+	return func(text string) bool {
+		return !strings.Contains(text, redaction.Marker) && !r.Options.Redaction.ContainsSecret(text) && !trust.Suspicious(text)
+	}
+}
+
 func (r *Runtime) taskHistory(ctx context.Context, m platform.Message, conv state.Conversation, interactive bool) ([]llm.Message, researchRecall) {
 	limit := r.memoryContextBytes()
 	var recall researchRecall
-	cfg := r.Learning
-	if interactive && cfg.Enabled && cfg.Recall.ChatEnabled && r.Config.Memory.Enabled &&
-		r.allowed(m) && (m.ChatID > 0 || cfg.Permissions.IncludeGroupChats) &&
-		!cfg.Permissions.ExcludesTopic(m.ChatID, m.TopicID) {
-		recall = r.researchRecall(ctx, cfg, m.Text, min(limit/3, 2000))
+	if interactive && r.learningRecallAllowed(m) {
+		recall = r.researchRecall(ctx, r.Learning, m.Text, min(limit/3, 2000))
 	}
 	if recall.content == "" {
 		return r.memoryHistoryWithin(m, conv, m.Text, limit), recall
@@ -66,7 +77,7 @@ func (r *Runtime) researchRecall(ctx context.Context, cfg learning.Config, query
 	if budget < 185 || strings.TrimSpace(query) == "" {
 		return result
 	}
-	allow := func(text string) bool { return !r.Options.Redaction.ContainsSecret(text) && !trust.Suspicious(text) }
+	allow := r.learningAllowFunc()
 	repo := state.NewLearningRepository(r.Config.StateDir, nil)
 	hits, err := repo.RecallPublic(ctx, cfg, query, allow, 4)
 	if err != nil {

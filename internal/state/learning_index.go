@@ -123,6 +123,30 @@ func (r *LearningRepository) RecentPublicLearning(ctx context.Context, cfg learn
 	return result, nil
 }
 
+// LatestPublicLearning returns the most recently updated authorized public notes.
+func (r *LearningRepository) LatestPublicLearning(ctx context.Context, cfg learning.Config,
+	allow func(string) bool, limit int) ([]LearningRecall, error) {
+	if !cfg.Enabled || allow == nil {
+		return nil, learning.ErrDenied
+	}
+	if limit < 1 || limit > 10 {
+		return nil, learning.ErrRecallQuery
+	}
+	view, err := r.publicRecallView(ctx, cfg, allow, learning.RecallQuery{Recent: true}, "")
+	if err != nil {
+		return nil, err
+	}
+	notes := slices.Clone(view.current.Notes)
+	slices.SortFunc(notes, func(a, b learning.Note) int {
+		return cmp.Or(b.UpdatedAt.Compare(a.UpdatedAt), b.CreatedAt.Compare(a.CreatedAt), cmp.Compare(a.ID, b.ID))
+	})
+	result := make([]LearningRecall, 0, min(len(notes), limit))
+	for _, note := range notes[:min(len(notes), limit)] {
+		result = append(result, view.note(note.ID))
+	}
+	return result, nil
+}
+
 // ReadPublicNote resolves a note ID or body reference with the same policy
 // and citation checks as recall.
 func (r *LearningRepository) ReadPublicNote(ctx context.Context, cfg learning.Config, ref string, allow func(string) bool) (LearningRecall, error) {

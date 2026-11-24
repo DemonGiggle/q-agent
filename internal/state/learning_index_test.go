@@ -30,10 +30,14 @@ func TestLearningRecallCurrentPolicy(t *testing.T) {
 	if err != nil || len(hits) != 1 || len(hits[0].Sources) != 1 || !hits[0].Sources[0].FetchedAt.Equal(now) {
 		t.Fatalf("recall = %+v, %v", hits, err)
 	}
-	for _, query := range []string{"你最近研究了什麼？", "site:example.org after:" + now.Format(time.DateOnly)} {
-		if hits, err := r.RecallPublic(ctx, cfg, query, allow, 5); err != nil || len(hits) != 1 {
-			t.Fatalf("research listing for %q = %+v, %v", query, hits, err)
-		}
+	if hits, err := r.RecallPublic(ctx, cfg, "site:example.org after:"+now.Format(time.DateOnly), allow, 5); err != nil || len(hits) != 1 {
+		t.Fatalf("filtered listing = %+v, %v", hits, err)
+	}
+	if hits, err := r.LatestPublicLearning(ctx, cfg, allow, 5); err != nil || len(hits) != 1 || hits[0].Note.ID != note.ID {
+		t.Fatalf("latest learning = %+v, %v", hits, err)
+	}
+	if parsed, err := learning.ParseRecallQuery("what did you research?"); err != nil || parsed.Recent {
+		t.Fatalf("hardcoded phrase should not set Recent: %+v, %v", parsed, err)
 	}
 	for _, query := range []string{"關白 site:other.example.org", "關白 before:" + now.Format(time.DateOnly), "Linux 驅動"} {
 		if hits, err := r.RecallPublic(ctx, cfg, query, allow, 5); err != nil || len(hits) != 0 {

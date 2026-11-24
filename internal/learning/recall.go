@@ -55,11 +55,7 @@ func ParseRecallQuery(query string) (RecallQuery, error) {
 		return RecallQuery{}, ErrRecallQuery
 	}
 	result.Text = strings.Join(words, " ")
-	switch strings.TrimRight(strings.ToLower(result.Text), "?？。") {
-	case "what did you research", "what have you researched", "what did you read",
-		"你研究了什麼", "你最近研究了什麼", "你最近讀了什麼", "你之前研究過什麼":
-		result.Recent = true
-	case "":
+	if result.Text == "" {
 		result.Recent = result.Domain != "" || !result.After.IsZero() || !result.Before.IsZero()
 	}
 	return result, nil

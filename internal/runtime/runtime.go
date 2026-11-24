@@ -428,8 +428,8 @@ func (r *Runtime) run(ctx context.Context, m platform.Message, runID string) boo
 					// releases them on completion, cancellation, timeout,
 					// setup failure, or shutdown. Inactive MCP returns
 					// baseTools unchanged (no setup, no sessions).
-					mcpTools := mcpclient.Wrap(baseTools, r.Config, r.Options.Redaction, mcpStdioDial(baseTools, r.Options.Redaction), scheduleCreateName, scheduleListName, scheduleDeleteName)
-					tools := &scheduleTools{base: mcpTools, runtime: r, owner: m}
+					mcpTools := mcpclient.Wrap(baseTools, r.Config, r.Options.Redaction, mcpStdioDial(baseTools, r.Options.Redaction), scheduleCreateName, scheduleListName, scheduleDeleteName, learningRecallName)
+					tools := &learningTools{base: &scheduleTools{base: mcpTools, runtime: r, owner: m}, runtime: r, owner: m}
 					if setter, ok := interface{}(tools).(interface{ SetProcessHooks(process.Hooks) }); ok {
 						interimSequence := 0
 						r.mu.Lock()

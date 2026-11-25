@@ -209,12 +209,13 @@ func fakeResponse(status int, body string) *http.Response {
 }
 
 func TestValidateDownloadURL(t *testing.T) {
-	if err := validateDownloadURL("https://github.com/DemonGiggle/q-agent/releases/download/v1.2.3/q-agent_linux_amd64"); err != nil {
+	if err := validateDownloadURL("https://github.com/demongiggle/q-agent/releases/download/v1.2.3/q-agent_linux_amd64"); err != nil {
 		t.Fatal(err)
 	}
 	for _, raw := range []string{
-		"http://github.com/DemonGiggle/q-agent/releases/download/v1.2.3/q-agent_linux_amd64",
-		"https://example.com/DemonGiggle/q-agent/releases/download/v1.2.3/q-agent_linux_amd64",
+		"https://github.com/DemonGiggle/q-agent/releases/download/v1.2.3/q-agent_linux_amd64",
+		"http://github.com/demongiggle/q-agent/releases/download/v1.2.3/q-agent_linux_amd64",
+		"https://example.com/demongiggle/q-agent/releases/download/v1.2.3/q-agent_linux_amd64",
 		"https://github.com/other/repo/releases/download/v1.2.3/q-agent_linux_amd64",
 	} {
 		if err := validateDownloadURL(raw); err == nil {
@@ -234,7 +235,7 @@ func TestRunPreservesSymlinkAndPermissions(t *testing.T) {
 	}
 	client := &http.Client{Transport: roundTripFunc(func(r *http.Request) (*http.Response, error) {
 		if r.URL.Path == "/latest" {
-			return fakeResponse(200, `{"tag_name":"v1.2.3","assets":[{"name":"q-agent_linux_arm64","browser_download_url":"https://github.com/DemonGiggle/q-agent/releases/download/v1.2.3/q-agent_linux_arm64"}]}`), nil
+			return fakeResponse(200, `{"tag_name":"v1.2.3","assets":[{"name":"q-agent_linux_arm64","browser_download_url":"https://github.com/demongiggle/q-agent/releases/download/v1.2.3/q-agent_linux_arm64"}]}`), nil
 		}
 		return fakeResponse(200, "new binary"), nil
 	})}
@@ -262,7 +263,7 @@ func TestRunPreservesSymlinkAndPermissions(t *testing.T) {
 }
 
 func TestRunFailuresLeaveExecutableIntact(t *testing.T) {
-	const valid = `{"tag_name":"v1.2.3","assets":[{"name":"q-agent_linux_amd64","browser_download_url":"https://github.com/DemonGiggle/q-agent/releases/download/v1.2.3/q-agent_linux_amd64"}]}`
+	const valid = `{"tag_name":"v1.2.3","assets":[{"name":"q-agent_linux_amd64","browser_download_url":"https://github.com/demongiggle/q-agent/releases/download/v1.2.3/q-agent_linux_amd64"}]}`
 	for _, tc := range []struct {
 		name, metadata, body, want     string
 		metadataStatus, downloadStatus int

@@ -22,7 +22,7 @@ import (
 )
 
 const (
-	latestReleaseURL   = "https://api.github.com/repos/DemonGiggle/q-agent/releases/latest"
+	latestReleaseURL   = "https://api.github.com/repos/demongiggle/q-agent/releases/latest"
 	maxReleaseMetadata = 1 << 20
 	maxUpdateSize      = 128 << 20
 )
@@ -426,7 +426,7 @@ func validateDownloadURL(raw string) error {
 	if parsed.Scheme != "https" || parsed.Host != "github.com" || parsed.User != nil {
 		return errors.New("release downloads must use https://github.com")
 	}
-	if !strings.HasPrefix(parsed.Path, "/DemonGiggle/q-agent/releases/download/") {
+	if !strings.HasPrefix(parsed.Path, "/demongiggle/q-agent/releases/download/") {
 		return errors.New("URL is not a q-agent GitHub release download")
 	}
 	return nil

@@ -282,7 +282,9 @@ Just ask, e.g. “Remind me today at 12:30 Asia/Taipei…” or “Every Monday 
 chat's current provider, mode, files, and history.
 
 - Times are RFC3339 with explicit offset plus an IANA timezone;
-  daily/weekly use local wall time. One scan per minute (0–60s lateness).
+  daily/weekly/monthly/yearly use local wall time (monthly clamps short
+  months to the last day, yearly maps Feb 29 to Feb 28 outside leap years).
+  One scan per minute (0–60s lateness).
 - Short outages (≤ 5 min) catch up once; longer ones coalesce to the latest
   occurrence and record the rest as `missed`. No overlap: one pending/run
   per schedule. Failed/interrupted agent runs retry up to 3 times with
@@ -308,7 +310,7 @@ chat's current provider, mode, files, and history.
   round trips. Partial deletes report `not_found_ids` instead of hiding
   failures.
 - Anti-resurrection (best-effort guard, not a hard guarantee): deleting a
-  daily/weekly agent task also removes exactly/substring-matching long-term
+  recurring agent task also removes exactly/substring-matching long-term
   notes and pending journal sources (reminder/once deletes do not scrub),
   and tombstones the exact text hash for 24h (`Recently deleted … do not
   recreate unless the current message explicitly asks`). Exact-text

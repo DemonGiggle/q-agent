@@ -236,6 +236,13 @@ func TestScheduleValidationAndCorruption(t *testing.T) {
 			t.Fatal("invalid schedule accepted")
 		}
 	}
+	for _, repeat := range []string{"monthly", "yearly"} {
+		v := base
+		v.Repeat = repeat
+		if err := validateSchedule(v); err != nil {
+			t.Fatalf("valid repeat %q rejected: %v", repeat, err)
+		}
+	}
 	check(t, os.WriteFile(filepath.Join(s.dir, "schedules.json"), []byte(`{"runs":[{"id":"schedule:x","status":"running","next":-1}]}`), 0600))
 	if _, err := Open(s.dir, nil); err == nil {
 		t.Fatal("corrupt queue accepted")
@@ -371,5 +378,88 @@ func TestCollapseNonForumSchedules(t *testing.T) {
 	check(t, err)
 	if len(res.Deleted) != 1 || res.Deleted[0].ID != v.ID {
 		t.Fatalf("delete after collapse = %+v", res)
+	}
+}
+
+func TestScheduleMonthlyYearlyOccurrences(t *testing.T) {
+	taipei := "Asia/Taipei"
+	mk := func(y int, m time.Month, d, h, mi int, repeat string) Schedule {
+		at := time.Date(y, m, d, h, mi, 0, 0, time.Date(2026, 1, 1, 0, 0, 0, 0, time.UTC).Location())
+		loc, err := time.LoadLocation(taipei)
+		check(t, err)
+		at = time.Date(y, m, d, h, mi, 0, 0, loc)
+		return Schedule{At: at, Repeat: repeat, Timezone: taipei}
+	}
+	// Monthly keeps day-of-month: Jan 15 -> Feb 15.
+	got := nextOccurrence(mk(2026, time.January, 15, 9, 0, "monthly"), time.Date(2026, time.January, 15, 9, 0, 1, 0, time.UTC))
+	wantLoc, _ := time.LoadLocation(taipei)
+	want := time.Date(2026, time.February, 15, 9, 0, 0, 0, wantLoc).UTC()
+	if !got.Equal(want) {
+		t.Fatalf("monthly basic: got %s want %s", got, want)
+	}
+	// Monthly clamps short months without drifting: Jan 31 -> Feb 28 -> Mar 31.
+	jan31 := mk(2026, time.January, 31, 9, 0, "monthly")
+	feb := nextOccurrence(jan31, time.Date(2026, time.January, 31, 9, 0, 1, 0, time.UTC))
+	if !feb.Equal(time.Date(2026, time.February, 28, 9, 0, 0, 0, wantLoc).UTC()) {
+		t.Fatalf("monthly clamp: got %s", feb)
+	}
+	mar := nextOccurrence(jan31, feb)
+	if !mar.Equal(time.Date(2026, time.March, 31, 9, 0, 0, 0, wantLoc).UTC()) {
+		t.Fatalf("monthly re-anchor: got %s", mar)
+	}
+	// Yearly keeps month/day: 2026-05-10 -> 2027-05-10.
+	got = nextOccurrence(mk(2026, time.May, 10, 9, 0, "yearly"), time.Date(2026, time.May, 10, 9, 0, 1, 0, time.UTC))
+	if !got.Equal(time.Date(2027, time.May, 10, 9, 0, 0, 0, wantLoc).UTC()) {
+		t.Fatalf("yearly basic: got %s", got)
+	}
+	// Yearly clamps Feb 29 outside leap years, then returns to Feb 29.
+	leap := mk(2024, time.February, 29, 9, 0, "yearly")
+	got = nextOccurrence(leap, time.Date(2024, time.February, 29, 9, 0, 1, 0, time.UTC))
+	if !got.Equal(time.Date(2025, time.February, 28, 9, 0, 0, 0, wantLoc).UTC()) {
+		t.Fatalf("yearly leap clamp: got %s", got)
+	}
+	got = nextOccurrence(leap, time.Date(2027, time.March, 1, 0, 0, 0, 0, time.UTC))
+	if !got.Equal(time.Date(2028, time.February, 29, 9, 0, 0, 0, wantLoc).UTC()) {
+		t.Fatalf("yearly leap return: got %s", got)
+	}
+	// Occurrences before At are excluded.
+	early := mk(2026, time.June, 15, 9, 0, "monthly")
+	if got := nextOccurrence(early, time.Date(2026, time.May, 1, 0, 0, 0, 0, time.UTC)); !got.Equal(time.Date(2026, time.June, 15, 9, 0, 0, 0, wantLoc).UTC()) {
+		t.Fatalf("monthly first: got %s", got)
+	}
+}
+
+func TestScheduleMonthlyYearlyScanCoalesce(t *testing.T) {
+	s, owner, at := scheduleFixture(t)
+	addSchedule(t, s, owner, at, "agent", "monthly")
+	// Two months of downtime coalesces to the latest monthly occurrence.
+	late := at.AddDate(0, 2, 0).Add(time.Minute)
+	check(t, s.ScanDue(late))
+	_, runs := s.ListSchedules(owner)
+	if len(runs) != 1 || runs[0].Status != "pending" {
+		t.Fatalf("monthly coalesce: %+v", runs)
+	}
+	loc, _ := time.LoadLocation("Asia/Taipei")
+	anchor := at.In(loc)
+	dueLoc := runs[0].ScheduledAt.In(loc)
+	if dueLoc.Day() != anchor.Day() || dueLoc.Hour() != anchor.Hour() {
+		t.Fatalf("monthly due not wall-anchored: %+v", runs[0])
+	}
+	schedules, _ := s.ListSchedules(owner)
+	if !schedules[0].NextRunAt.After(late) {
+		t.Fatal("monthly next not advanced")
+	}
+
+	s2, owner2, at2 := scheduleFixture(t)
+	addSchedule(t, s2, owner2, at2, "agent", "yearly")
+	late2 := at2.AddDate(2, 0, 0).Add(time.Minute)
+	check(t, s2.ScanDue(late2))
+	_, runs2 := s2.ListSchedules(owner2)
+	if len(runs2) != 1 || runs2[0].Status != "pending" {
+		t.Fatalf("yearly coalesce: %+v", runs2)
+	}
+	schedules2, _ := s2.ListSchedules(owner2)
+	if !schedules2[0].NextRunAt.After(late2) {
+		t.Fatal("yearly next not advanced")
 	}
 }

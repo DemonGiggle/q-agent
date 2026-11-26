@@ -61,7 +61,7 @@ type Schedule struct {
 	Kind      string           `json:"kind"` // reminder or agent
 	Text      string           `json:"text"`
 	At        time.Time        `json:"at"`
-	Repeat    string           `json:"repeat"` // once, daily, weekly
+	Repeat    string           `json:"repeat"` // once, daily, weekly, monthly, yearly
 	Timezone  string           `json:"timezone"`
 	NextRunAt time.Time        `json:"next_run_at"`
 	Missed    int              `json:"missed"`
@@ -295,8 +295,8 @@ func validateSchedule(v Schedule) error {
 	if v.At.IsZero() {
 		return fmt.Errorf("at is required")
 	}
-	if v.Repeat != "once" && v.Repeat != "daily" && v.Repeat != "weekly" {
-		return fmt.Errorf("repeat must be once, daily, or weekly")
+	if v.Repeat != "once" && v.Repeat != "daily" && v.Repeat != "weekly" && v.Repeat != "monthly" && v.Repeat != "yearly" {
+		return fmt.Errorf("repeat must be once, daily, weekly, monthly, or yearly")
 	}
 	if v.Timezone == "" {
 		return fmt.Errorf("IANA timezone is required")
@@ -311,27 +311,75 @@ func validateSchedule(v Schedule) error {
 }
 
 // nextOccurrence preserves local wall time, not elapsed 24-hour intervals.
-// Nonexistent DST wall times are skipped; an ambiguous wall time fires once.
+// Daily/weekly advance by civil days. Monthly keeps the anchor day-of-month,
+// clamping into shorter months (Jan 31 -> Feb 28/29) without drifting:
+// every occurrence re-anchors to v.At, so March returns to the 31st.
+// Yearly keeps the anchor month/day, clamping Feb 29 into non-leap years
+// (Feb 28). Nonexistent DST wall times are skipped; an ambiguous wall time
+// fires once.
+func daysInMonth(loc *time.Location, year int, month time.Month) int {
+	return time.Date(year, month+1, 0, 12, 0, 0, 0, loc).Day()
+}
+
 func nextOccurrence(v Schedule, after time.Time) time.Time {
 	if v.Repeat == "once" {
 		return time.Time{}
 	}
 	loc, _ := time.LoadLocation(v.Timezone)
 	anchor, local := v.At.In(loc), after.In(loc)
-	for day := 0; day <= 8; day++ {
-		date := time.Date(local.Year(), local.Month(), local.Day()+day, 12, 0, 0, 0, loc)
-		if v.Repeat == "weekly" && date.Weekday() != anchor.Weekday() {
-			continue
+	switch v.Repeat {
+	case "monthly":
+		for offset := 0; offset <= 14; offset++ {
+			base := time.Date(local.Year(), local.Month()+time.Month(offset), 1, 12, 0, 0, 0, loc)
+			yy, mm := base.Year(), base.Month()
+			day := anchor.Day()
+			if dim := daysInMonth(loc, yy, mm); day > dim {
+				day = dim
+			}
+			candidate := time.Date(yy, mm, day, anchor.Hour(), anchor.Minute(), anchor.Second(), anchor.Nanosecond(), loc)
+			if candidate.Hour() != anchor.Hour() || candidate.Minute() != anchor.Minute() {
+				continue
+			}
+			if candidate.After(after) && !candidate.Before(v.At) {
+				return candidate.UTC()
+			}
 		}
-		candidate := time.Date(date.Year(), date.Month(), date.Day(), anchor.Hour(), anchor.Minute(), anchor.Second(), anchor.Nanosecond(), loc)
-		if candidate.Hour() != anchor.Hour() || candidate.Minute() != anchor.Minute() {
-			continue
+		return time.Time{}
+	case "yearly":
+		for offset := 0; offset <= 5; offset++ {
+			yy := local.Year() + offset
+			mm := anchor.Month()
+			day := anchor.Day()
+			if dim := daysInMonth(loc, yy, mm); day > dim {
+				day = dim
+			}
+			candidate := time.Date(yy, mm, day, anchor.Hour(), anchor.Minute(), anchor.Second(), anchor.Nanosecond(), loc)
+			if candidate.Hour() != anchor.Hour() || candidate.Minute() != anchor.Minute() {
+				continue
+			}
+			if candidate.After(after) && !candidate.Before(v.At) {
+				return candidate.UTC()
+			}
 		}
-		if candidate.After(after) && !candidate.Before(v.At) {
-			return candidate.UTC()
+		return time.Time{}
+	case "daily", "weekly":
+		for day := 0; day <= 8; day++ {
+			date := time.Date(local.Year(), local.Month(), local.Day()+day, 12, 0, 0, 0, loc)
+			if v.Repeat == "weekly" && date.Weekday() != anchor.Weekday() {
+				continue
+			}
+			candidate := time.Date(date.Year(), date.Month(), date.Day(), anchor.Hour(), anchor.Minute(), anchor.Second(), anchor.Nanosecond(), loc)
+			if candidate.Hour() != anchor.Hour() || candidate.Minute() != anchor.Minute() {
+				continue
+			}
+			if candidate.After(after) && !candidate.Before(v.At) {
+				return candidate.UTC()
+			}
 		}
+		return time.Time{}
+	default:
+		return time.Time{}
 	}
-	return time.Time{}
 }
 
 func (s *Store) CreateSchedule(v Schedule, now time.Time) (Schedule, error) {
@@ -1034,9 +1082,14 @@ func (s *Store) ScanDue(now time.Time) error {
 		due := v.NextRunAt
 		if v.Repeat != "once" {
 			// Look back at most one recurrence, independent of downtime duration.
+			// Monthly covers the longest month (31d), yearly the longest year (366d).
 			days := 1
 			if v.Repeat == "weekly" {
 				days = 7
+			} else if v.Repeat == "monthly" {
+				days = 31
+			} else if v.Repeat == "yearly" {
+				days = 366
 			}
 			recent := nextOccurrence(*v, now.AddDate(0, 0, -days-1))
 			for !recent.IsZero() && !recent.After(now) {

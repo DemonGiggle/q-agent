@@ -68,7 +68,7 @@ Full rules in [operations](docs/operations.md#3-talking-to-the-bot).
 - Models: Ollama, OpenAI, OpenCode Go, ChatGPT subscription; per-chat `/provider`, `/model`, `/think`, `/max_steps`.
 - Tools: `read`, `list`, `search`, `write`, `edit`, `shell` with capped output.
 - Web: `web_search` (DuckDuckGo, no key), `web_fetch` (text-only, no JS/login).
-- Schedules: one-time reminders and daily/weekly agent tasks by asking; list/delete in chat.
+- Schedules: one-time reminders and daily/weekly/monthly/yearly agent tasks by asking; list/delete in chat.
 - Memory: short-term context per topic plus nightly notes per chat (`/memory`, `/forget`).
 - Photos & files: photos (up to 2 per message, 10 MB each) and documents, video, audio, voice saved to `inbox/` for vision + tools (5 files, 20 MB each, 100 MB per chat, cleared daily).
 - Interactive sessions: PTY/pipe process sessions (`shell` + `process`), incl. login flows.

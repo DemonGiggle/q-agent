@@ -127,7 +127,7 @@ reads them.
 Scope rule: /new clears **one topic's** short history. /forget clears
 the **whole chat's** long-term notes and journal. Files, schedules, and
 other topics are untouched by either — except `schedule_delete` for a
-daily/weekly **agent** task, which also removes exactly/substring-matching
+recurring **agent** task, which also removes exactly/substring-matching
 long-term notes and pending journal sources for the deleted text (reminder
 and `once` deletes never scrub) so past discussion cannot resurrect a
 stopped task. Scrubbing is conservative and logged via

@@ -86,9 +86,10 @@ topics. Two parts:
 - journal: raw day-to-day records, not yet summarized, may contain noise.
 - distilled notes: short facts the nightly summarizer already cleaned up.
 
-**Live taps:** recent group chatter the bot overheard without being
-mentioned, kept 12 hours only. Used only to decide whether to check in,
-never as task history. Private chats are never tapped.
+**Live taps:** recent human group messages delivered by Telegram, including
+messages without mentions. Companion reads them within its recent window
+(12 hours by default). Opted-in group learning can use them for up to 48
+hours. Private chats use their interactive history.
 
 ## 1. The three memories at a glance
 
@@ -122,7 +123,7 @@ reads them.
 | --- | --- | --- | --- | --- |
 | Short-term | one topic | past questions + final answers in order, plus follow-ups and one bounded interruption note | last 12 turns, 32 KB total | every task, replayed exactly |
 | Long-term | whole chat, shared by topics | distilled facts + not-yet-summarized journal | 32 KB notes on disk, 6 KB sent to model per task, 4 MB journal cap | every task (ranked) and check-in decider |
-| Recent taps + check-in runs | whole chat | overheard group messages with arrival time, last check-in drafts | 200 msgs / 32 KB, 12 h window, 6 KB decider input | check-in decider only (plus last 3 check-ins shown as reference in topic 0) |
+| Recent taps + check-in runs | whole chat | overheard group messages with arrival time, last check-in drafts | 200 msgs / 32 KB, 12 h default companion window, 48 h learning window | companion decider and opted-in group learning |
 
 Scope rule: /new clears **one topic's** short history. /forget clears
 the **whole chat's** long-term notes and journal. Files, schedules, and
@@ -183,8 +184,8 @@ Notes:
 - Turned-off memory keeps old notes visible for /memory and /forget but
   stops new journaling and background summaries.
 
-The optional [ACA integration](learning.md) uses completed exchange origins
-for scoped research input.
+The optional [ACA integration](learning.md) uses completed exchanges and
+opted-in group messages for scoped research input.
 
 Manual pins skip the journal entirely:
 

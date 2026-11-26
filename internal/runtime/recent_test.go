@@ -6,8 +6,10 @@ import (
 	"testing"
 	"time"
 
+	"q-agent/internal/learning"
 	"q-agent/internal/platform"
 	"q-agent/internal/state"
+	"q-agent/internal/telegram"
 )
 
 func tapInput(updateID, chat, topic, user int64, text string) platform.Message {
@@ -102,5 +104,82 @@ func TestProactiveSilentConsumesRecent(t *testing.T) {
 	msgs, _ := r.Store.RecentSince(chat.Key, now.Add(-12*time.Hour))
 	if len(msgs) != 0 {
 		t.Fatalf("silent must consume taps, kept %d", len(msgs))
+	}
+}
+
+func TestLearningFromUnaddressedGroupMessages(t *testing.T) {
+	r, _, provider := fixture(t)
+	ctx := context.Background()
+	now := time.Now().UTC()
+	inside := time.Date(now.Year(), now.Month(), now.Day(), 3, 0, 0, 0, time.UTC)
+	cfg := learning.DefaultConfig()
+	cfg.Enabled, cfg.Schedule.Enabled = true, true
+	cfg.Permissions.IncludeGroupChats = true
+	cfg.Permissions.ExcludedTerms = []string{"excluded conversation"}
+	r.Learning = cfg
+
+	// Two human Telegram messages, without tags and without replies.
+	group := tapInput(800, -10, 7, 2, "This ARM64 board uses a coherent DMA buffer")
+	for _, m := range []platform.Message{
+		group,
+		tapInput(801, -10, 7, 3, "The CPU mapping appears non-cacheable"),
+		tapInput(802, -10, 7, 3, "excluded conversation"),
+		tapInput(803, -999, 0, 4, "unauthorized group"),
+	} {
+		update := telegram.Update{ID: m.UpdateID, Message: &telegram.Message{
+			ID: m.MessageID, Text: m.Text, TopicID: m.TopicID, IsTopicMessage: true,
+			Chat: telegram.Chat{ID: m.ChatID, Type: "supergroup", IsForum: true},
+			From: &telegram.User{ID: m.UserID},
+		}}
+		tap, text, ok := telegram.ExtractTap(update)
+		if !ok {
+			t.Fatalf("telegram update %d did not reach observation", update.ID)
+		}
+		if _, ok := telegram.Normalize(update, telegram.User{ID: 99, Username: "agent_bot"}); ok {
+			t.Fatalf("telegram update %d would receive an interactive reply", update.ID)
+		}
+		r.ObserveTapMessage(tap, text, inside.Add(-time.Hour).Add(time.Duration(m.UpdateID-800)*time.Second))
+	}
+	messages, err := r.Store.RecentSince(group.WorkspaceKey(), inside.Add(-2*time.Hour))
+	must(t, err)
+	if len(messages) != 3 || messages[0].Text != group.Text || !strings.Contains(messages[1].Text, "non-cacheable") {
+		t.Fatalf("unexpected companion messages: %+v", messages)
+	}
+	r.consumeRecentProcessed(group.WorkspaceKey(), inside)
+	messages, err = r.Store.RecentSince(group.WorkspaceKey(), inside.Add(-2*time.Hour))
+	must(t, err)
+	if len(messages) != 0 {
+		t.Fatal("companion can still see consumed messages")
+	}
+
+	// A group with companion off is still eligible for learning.
+	r.Config.Proactive.Enabled = false
+	m := tapInput(804, -10, 7, 2, "No bot reply was sent")
+	r.ObserveTapMessage(m, m.Text, inside.Add(-50*time.Minute))
+	messages, err = r.Store.RecentSince(group.WorkspaceKey(), inside.Add(-2*time.Hour))
+	must(t, err)
+	if len(messages) != 0 {
+		t.Fatal("learning-only message leaked into companion")
+	}
+
+	const query = "ARM64 DMA cacheability"
+	r.LearningTopics = func(_ context.Context, exchanges []string) ([]string, error) {
+		if len(exchanges) != 3 || !strings.Contains(exchanges[0], group.Text) ||
+			!strings.Contains(exchanges[1], "non-cacheable") || !strings.Contains(exchanges[2], m.Text) {
+			t.Fatalf("unexpected learning input: %q", exchanges)
+		}
+		return []string{query}, nil
+	}
+	searched := false
+	search := nightSearch(func(_ context.Context, q string, _ int) ([]learning.SearchHit, learning.Budget, error) {
+		if q != query {
+			t.Fatalf("unexpected search query: %q", q)
+		}
+		searched = true
+		return nil, learning.Budget{Requests: 1}, nil
+	})
+	must(t, r.runNightResearch(ctx, inside, search, nil))
+	if !searched || len(provider.requests) != 0 {
+		t.Fatalf("night search=%t, interactive requests=%d", searched, len(provider.requests))
 	}
 }

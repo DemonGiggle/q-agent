@@ -182,9 +182,10 @@ check-in decider input, up to 6 KB:
 ```
 
 Empty history + memory + chatter means no model call at all. Group taps
-cover chatter without a mention (private chats are never tapped; their
-history is already complete). Taps expire after the window, are consumed
-up to the sweep mark after a fully judged sweep, and are capped per chat.
+cover chatter without a mention. Companion reads its configured recent
+window and consumes input up to the sweep mark after an evaluated sweep.
+The same messages remain eligible for opted-in group learning for up to
+48 hours, within the per-chat caps.
 
 ## 3. Companion budgets cheat sheet
 

@@ -461,6 +461,9 @@ func (s *Store) ClearMemory(key string) error {
 	if err := s.recoverExchange(key, &mem); err != nil {
 		return err
 	}
+	if err := s.clearLearningRecentLocked(key); err != nil {
+		return err
+	}
 	mem.Epoch++
 	mem.Revision++
 	mem.Entries, mem.Pending, mem.Notices = nil, nil, nil

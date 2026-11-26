@@ -4,6 +4,7 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"slices"
 	"sort"
 	"strings"
 	"time"
@@ -12,16 +13,16 @@ import (
 	"q-agent/internal/redaction"
 )
 
-// RecentMessage is one tapped human message kept for the companion sweep.
-// It covers group chatter even without a mention, so the decider sees real
-// conversation instead of only addressed history. Timestamps are arrival time
-// (Telegram date is not decoded); the sweep treats them as recency hints.
+// RecentMessage is a human message observed on arrival, including group
+// chatter. Companion consumption and learning eligibility are independent.
 type RecentMessage struct {
-	UpdateID int64     `json:"update_id"`
-	Topic    int64     `json:"topic,omitempty"`
-	User     int64     `json:"user_id"`
-	At       time.Time `json:"at"`
-	Text     string    `json:"text"`
+	UpdateID      int64     `json:"update_id"`
+	Topic         int64     `json:"topic,omitempty"`
+	User          int64     `json:"user_id"`
+	At            time.Time `json:"at"`
+	Text          string    `json:"text"`
+	Learning      bool      `json:"learning,omitempty"`
+	CompanionDone bool      `json:"companion_done,omitempty"`
 }
 
 const maxRecentTextRunes = 2000
@@ -81,6 +82,14 @@ func quarantineRecent(dir string) error {
 // UpdateID so polling retries stay idempotent. Text is persistence-redacted
 // and truncated to maxRecentTextRunes.
 func (s *Store) AppendRecent(route platform.Message, at time.Time, text string, maxMessages, maxBytes int) error {
+	return s.AppendRecentFor(route, at, text, maxMessages, maxBytes, true, false)
+}
+
+// AppendRecentFor records the message once for the enabled consumers.
+func (s *Store) AppendRecentFor(route platform.Message, at time.Time, text string, maxMessages, maxBytes int, companion, learning bool) error {
+	if !companion && !learning {
+		return nil
+	}
 	trimmed := strings.TrimSpace(text)
 	if trimmed == "" {
 		return nil
@@ -152,12 +161,18 @@ func (s *Store) AppendRecent(route platform.Message, at time.Time, text string, 
 			return nil
 		}
 	}
+	learningCutoff := at.Add(-ConversationFrontierLookback)
+	msgs = slices.DeleteFunc(msgs, func(m RecentMessage) bool {
+		return m.CompanionDone && m.At.Before(learningCutoff)
+	})
 	msgs = append(msgs, RecentMessage{
-		UpdateID: route.UpdateID,
-		Topic:    route.TopicID,
-		User:     route.UserID,
-		At:       at,
-		Text:     trimmed,
+		UpdateID:      route.UpdateID,
+		Topic:         route.TopicID,
+		User:          route.UserID,
+		At:            at,
+		Text:          trimmed,
+		Learning:      learning,
+		CompanionDone: !companion,
 	})
 	// Enforce caps: oldest first.
 	for len(msgs) > maxMessages || recentBytes(msgs) > maxBytes {
@@ -166,18 +181,22 @@ func (s *Store) AppendRecent(route platform.Message, at time.Time, text string, 
 			break
 		}
 	}
+	return s.saveRecentLocked(key, msgs)
+}
+
+// saveRecentLocked updates one chat in the durable buffer and its cache.
+func (s *Store) saveRecentLocked(key string, messages []RecentMessage) error {
 	next := make(map[string][]RecentMessage, len(s.recent)+1)
 	for k, v := range s.recent {
 		next[k] = v
 	}
-	if len(msgs) == 0 {
+	if len(messages) == 0 {
 		delete(next, key)
 	} else {
-		next[key] = msgs
+		next[key] = messages
 	}
 	if err := s.atomic(s.recentPath(), next); err != nil {
-		// Recovery cache: reread durable file so later reads see intent
-		// if rename succeeded before a directory-sync error.
+		// Rename may have succeeded before a directory-sync error.
 		var saved map[string][]RecentMessage
 		if read(s.recentPath(), &saved) == nil && saved != nil {
 			s.recent = saved
@@ -196,7 +215,7 @@ func recentBytes(msgs []RecentMessage) int {
 	return n
 }
 
-// RecentSince returns a copy of taps with At >= since, oldest-first.
+// RecentSince returns unconsumed companion messages with At >= since, oldest-first.
 func (s *Store) RecentSince(key string, since time.Time) ([]RecentMessage, error) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
@@ -206,16 +225,16 @@ func (s *Store) RecentSince(key string, since time.Time) ([]RecentMessage, error
 	}
 	var out []RecentMessage
 	for _, m := range msgs {
-		if !m.At.Before(since) {
+		if !m.CompanionDone && !m.At.Before(since) {
 			out = append(out, m)
 		}
 	}
 	return out, nil
 }
 
-// ConsumeRecent deletes taps with At <= before. A zero before clears the key.
-// It bounds disk even when sweeps skip; processed sweeps pass their start
-// watermark, expiry pruning passes now-window.
+// ConsumeRecent consumes companion messages with At <= before. It preserves
+// eligible learning input until it ages out of the learning window. A zero
+// before clears both consumers' messages.
 func (s *Store) ConsumeRecent(key string, before time.Time) error {
 	s.mu.Lock()
 	defer s.mu.Unlock()
@@ -224,43 +243,39 @@ func (s *Store) ConsumeRecent(key string, before time.Time) error {
 		return nil
 	}
 	if before.IsZero() {
-		next := make(map[string][]RecentMessage, len(s.recent))
-		for k, v := range s.recent {
-			if k != key {
-				next[k] = v
-			}
-		}
-		if err := s.atomic(s.recentPath(), next); err != nil {
-			return err
-		}
-		s.recent = next
-		return nil
+		return s.saveRecentLocked(key, nil)
 	}
-	// Copy to avoid mutating the stored slice while filtering.
-	kept := append([]RecentMessage(nil), msgs[:0]...)
+	kept := make([]RecentMessage, 0, len(msgs))
+	learningCutoff := time.Now().Add(-ConversationFrontierLookback)
 	for _, m := range msgs {
 		if m.At.After(before) {
 			kept = append(kept, m)
+		} else if m.Learning && !m.At.Before(learningCutoff) {
+			m.CompanionDone = true
+			kept = append(kept, m)
 		}
 	}
-	next := make(map[string][]RecentMessage, len(s.recent))
-	for k, v := range s.recent {
-		next[k] = v
-	}
-	if len(kept) == 0 {
-		delete(next, key)
-	} else {
-		next[key] = kept
-	}
-	// No-op when nothing expired.
-	if len(kept) == len(msgs) {
+	if slices.Equal(kept, msgs) {
 		return nil
 	}
-	if err := s.atomic(s.recentPath(), next); err != nil {
-		return err
+	return s.saveRecentLocked(key, kept)
+}
+
+// Forgetting memory also removes learning access to previously observed
+// messages. Companion can still use its own unconsumed recent input.
+func (s *Store) clearLearningRecentLocked(key string) error {
+	msgs := s.recent[key]
+	if !slices.ContainsFunc(msgs, func(m RecentMessage) bool { return m.Learning }) {
+		return nil
 	}
-	s.recent = next
-	return nil
+	kept := make([]RecentMessage, 0, len(msgs))
+	for _, m := range msgs {
+		if !m.CompanionDone {
+			m.Learning = false
+			kept = append(kept, m)
+		}
+	}
+	return s.saveRecentLocked(key, kept)
 }
 
 // ClearRecent removes all taps for a chat.

@@ -131,3 +131,54 @@ func TestLearningHistoryStampRequiresOptIn(t *testing.T) {
 		})
 	}
 }
+
+func TestLearningReaderObservedMessagesSurviveCompanionAndRestart(t *testing.T) {
+	ctx := context.Background()
+	dir := t.TempDir()
+	store, err := Open(dir, nil, MemoryLimits{LearnFromGroups: true})
+	if err != nil {
+		t.Fatal(err)
+	}
+	route := tapRoute(101, -10, 7, 1)
+	now := time.Now().UTC()
+	at := now.Add(-time.Hour)
+	if err := store.AppendRecentFor(route, at, "observed standalone message", 20, 4096, true, true); err != nil {
+		t.Fatal(err)
+	}
+	completed := tapRoute(102, -10, 7, 1)
+	if err := store.AppendRecentFor(completed, at.Add(time.Second), "observed copy of addressed message", 20, 4096, true, true); err != nil {
+		t.Fatal(err)
+	}
+	if err := store.CommitExchange(completed, "update:telegram:102", Conversation{Pairs: []Pair{{User: "addressed message", Answer: "response"}}}, at.Add(2*time.Second)); err != nil {
+		t.Fatal(err)
+	}
+	other := tapRoute(103, -10, 9, 3)
+	if err := store.AppendRecentFor(other, at, "a distinct topic", 20, 4096, true, true); err != nil {
+		t.Fatal(err)
+	}
+	if err := store.ConsumeRecent(route.WorkspaceKey(), now); err != nil {
+		t.Fatal(err)
+	}
+
+	reader := NewFileLearningReader(dir, nil, func(context.Context, learning.Scope) bool { return true }, nil)
+	query := learning.ConversationQuery{
+		Scope: learning.Scope{Platform: route.Platform, ChatID: route.ChatID, TopicID: &route.TopicID, Visibility: learning.GroupChat},
+		From:  at.Add(-time.Minute), Until: now,
+	}
+	turns, err := reader.Recent(ctx, query)
+	if err != nil || len(turns) != 2 || turns[0].Transcript != "user: observed standalone message" ||
+		turns[1].Transcript != "user: addressed message\nassistant: response\n" {
+		t.Fatalf("unexpected topic turns: %+v, %v", turns, err)
+	}
+	reopened, err := Open(dir, nil, MemoryLimits{LearnFromGroups: true})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := reopened.ClearMemory(route.WorkspaceKey()); err != nil {
+		t.Fatal(err)
+	}
+	turns, err = reader.Recent(ctx, query)
+	if err != nil || len(turns) != 0 {
+		t.Fatalf("forget did not clear learning access: %+v, %v", turns, err)
+	}
+}

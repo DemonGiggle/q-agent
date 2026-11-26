@@ -221,11 +221,10 @@ func Normalize(update Update, bot User) (platform.Message, bool) {
 }
 
 // ExtractTap returns a lightweight route plus raw text for any human message,
-// regardless of addressing. It feeds the companion recent buffer so group
-// chatter without a mention is still visible within recent_window. Callbacks
-// return false (they go through Normalize/Handle); bot messages, unsupported
-// chat types, and empty texts (without photos) are ignored. Commands to other
-// bots are kept as chatter context, unlike Normalize which drops them.
+// regardless of addressing. Companion and learning use this path for group
+// chatter without mentions. Callbacks go through Normalize/Handle. Bot
+// messages, unsupported chat types, and messages without usable content are
+// ignored. Commands to other bots are kept as chatter context.
 // The returned text keeps mentions intact and folds a reply snippet in front
 // so the sweep sees thread context. Timestamps are arrival time (Telegram date
 // is not decoded); Runtime.ObserveTap stamps with time.Now.

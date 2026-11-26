@@ -101,3 +101,34 @@ func TestLearningOllamaRejectsMissingAndExcessUsage(t *testing.T) {
 		}
 	}
 }
+
+func TestLearningOllamaExtractsTopicsFromConversation(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		var payload struct {
+			Messages []ollamaMessage
+			Tools    json.RawMessage
+			Format   json.RawMessage
+		}
+		if err := json.NewDecoder(r.Body).Decode(&payload); err != nil || len(payload.Messages) != 2 ||
+			len(payload.Tools) != 0 || len(payload.Format) == 0 {
+			t.Errorf("invalid extraction request: %+v, %v", payload, err)
+			w.WriteHeader(http.StatusBadRequest)
+			return
+		}
+		var exchanges []string
+		if err := json.Unmarshal([]byte(payload.Messages[1].Content), &exchanges); err != nil ||
+			len(exchanges) != 2 || exchanges[0] != "The buffer looks non-cacheable" || exchanges[1] != "CPU is ARM64" {
+			t.Errorf("expected ordered conversation data, got %q, %v", exchanges, err)
+		}
+		fmt.Fprint(w, `{"done":true,"prompt_eval_count":100,"eval_count":10,"message":{"content":"{\"queries\":[\"ARM64 DMA memory attributes\"]}"}}`)
+	}))
+	defer server.Close()
+	ollama, err := newLearningOllama(server.URL, "fixture")
+	if err != nil {
+		t.Fatal(err)
+	}
+	queries, err := ollama.learningTopics(context.Background(), []string{"The buffer looks non-cacheable", "CPU is ARM64"})
+	if err != nil || len(queries) != 1 || queries[0] != "ARM64 DMA memory attributes" {
+		t.Fatalf("queries=%q, err=%v", queries, err)
+	}
+}

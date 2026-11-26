@@ -290,6 +290,12 @@ func serveWithMaintenance(ctx context.Context, c config.Config, policy *redactio
 	rt := &run.Runtime{Config: c, Learning: learningConfig, Store: store, Workspaces: workspaces, Tools: tools, Sink: bot, Version: version, Options: agent.Options{Model: c.Provider.Model, Thinking: c.Provider.Thinking, MaxSteps: c.Limits.MaxSteps, Redaction: policy, Logger: log.Default()}, Report: func(err error) {
 		log.Printf("[SERVICE] Runtime error reported | error=%q", policy.Text(redaction.Terminal, err.Error()))
 	}}
+	if c.Learning.AutoResearchModel != "" {
+		rt.LearningTopics, err = llm.NewLearningTopicExtractor(c.Learning.AutoResearchModel)
+		if err != nil {
+			return fmt.Errorf("configure learning topic extraction: %w", err)
+		}
+	}
 	management.StateDir, management.Version, management.Notify = c.StateDir, version, bot.Send
 	if len(management.ServeArgv) == 0 && len(os.Args) > 1 && os.Args[1] == "serve" {
 		management.ServeArgv = append([]string(nil), os.Args[1:]...)
@@ -359,22 +365,15 @@ func serveWithMaintenance(ctx context.Context, c config.Config, policy *redactio
 			log.Printf("[TELEGRAM] Updates received | updates=%d cursor=%d", len(updates), store.Cursor())
 		}
 		for _, update := range updates {
-			// Tap every human message into the companion recent buffer so the
-			// sweep sees N hours of group chatter, not only mentions. Tapping
-			// is bounded (per-chat caps + recent_window expiry + consume after
-			// processed sweeps) and never fails polling; unauthorized, private,
-			// and group-policy-off taps are skipped inside ObserveTapMessage.
-			if tapMsg, tapText, tapOK := telegram.ExtractTap(update); tapOK {
+			// Observe group chatter before checking whether the bot should reply.
+			if tapMsg, tapText, tapOK := telegram.ExtractTap(update); tapOK && update.ID > store.Cursor() {
 				rt.ObserveTapMessage(tapMsg, tapText, time.Now())
 			}
 			message, ok := telegram.Normalize(update, identity)
 			if ok {
 				err = rt.Handle(ctx, message)
 			} else {
-				// Console-only: group messages without a mention/reply and
-				// non-text updates are filtered here and never reach Handle.
-				// They are still tapped above for the companion recent buffer.
-				log.Printf("[TELEGRAM] Update ignored | update=%d reason=%q", update.ID, "not addressed to @"+identity.Username+" or non-text")
+				log.Printf("[TELEGRAM] No interactive reply | update=%d reason=%q", update.ID, "not addressed to @"+identity.Username+" or unsupported message")
 				_, err = store.Accept(update.ID)
 			}
 			if err != nil {

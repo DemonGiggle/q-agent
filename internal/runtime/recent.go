@@ -4,6 +4,7 @@ import (
 	"strings"
 	"time"
 
+	"q-agent/internal/learning"
 	"q-agent/internal/platform"
 )
 
@@ -28,35 +29,22 @@ func (r *Runtime) recentCaps() (maxMessages, maxBytes int) {
 	return maxMessages, maxBytes
 }
 
-// ObserveTapMessage records one tapped human message for the companion recent
-// buffer. It is a no-op when the global kill switch is off, the route is not
-// allowed, the group policy disables groups, or the chat is private (private
-// history is already complete via addressed tasks, so tapping would only
-// duplicate). Storage errors are reported but never fail the polling loop.
+// ObserveTapMessage stores authorized human group messages for the enabled
+// consumers, including messages that never result in an interactive task.
 func (r *Runtime) ObserveTapMessage(m platform.Message, text string, at time.Time) {
-	if !r.Config.Proactive.Enabled {
+	if m.ChatID >= 0 || !r.allowed(m) || strings.TrimSpace(text) == "" {
 		return
 	}
-	if !r.allowed(m) {
+	companion := r.Config.Proactive.Enabled && r.Config.Proactive.GroupPolicy != "off"
+	cfg := r.Learning
+	learn := r.Config.Memory.Enabled && cfg.Enabled && cfg.Permissions.IncludeGroupChats &&
+		!cfg.Permissions.ExcludesTopic(m.ChatID, m.TopicID) &&
+		!cfg.Permissions.Excludes(learning.ConversationTurn{Transcript: text})
+	if !companion && !learn {
 		return
-	}
-	// Group policy off means groups are never visited; skip collection.
-	if m.ChatID < 0 && r.Config.Proactive.GroupPolicy == "off" {
-		return
-	}
-	// Private 1:1 history already contains every message (private is always
-	// addressed). Tapping privates would only duplicate buildProactiveInput.
-	if m.ChatID > 0 {
-		return
-	}
-	if strings.TrimSpace(text) == "" {
-		return
-	}
-	if at.IsZero() {
-		at = time.Now()
 	}
 	maxMessages, maxBytes := r.recentCaps()
-	if err := r.Store.AppendRecent(m, at, text, maxMessages, maxBytes); err != nil {
+	if err := r.Store.AppendRecentFor(m, at, text, maxMessages, maxBytes, companion, learn); err != nil {
 		r.report(err)
 	}
 }

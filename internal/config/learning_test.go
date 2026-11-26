@@ -19,7 +19,7 @@ func TestLearningConfigLoadAndPolicy(t *testing.T) {
 	if err != nil {
 		t.Fatalf("Load default: %v", err)
 	}
-	if cfg.Learning.Enabled || cfg.Learning.ChatRecall || cfg.Learning.Schedule != "" || cfg.Learning.IdleWait != "30m" {
+	if cfg.Learning.Enabled || cfg.Learning.ChatRecall || cfg.Learning.AutoResearchModel != "" || cfg.Learning.Schedule != "" || cfg.Learning.IdleWait != "30m" {
 		t.Fatalf("unexpected learning defaults: %+v", cfg.Learning)
 	}
 	policy := cfg.Learning.Policy()
@@ -43,6 +43,7 @@ allow_domains = ["lite.duckduckgo.com", "example.org"]
 block_domains = ["blocked.example.org"]
 excluded_terms = ["secret-topic"]
 schedule = "23:00-03:00"
+auto_research_model = "qwen3:4b"
 timezone = "Asia/Taipei"
 idle_wait = "45m"
 `
@@ -57,7 +58,7 @@ idle_wait = "45m"
 	if err := policy.Validate(); err != nil {
 		t.Fatalf("full policy invalid: %v", err)
 	}
-	if !policy.Enabled || !policy.Recall.ChatEnabled ||
+	if cfg.Learning.AutoResearchModel != "qwen3:4b" || !policy.Enabled || !policy.Recall.ChatEnabled ||
 		!policy.Permissions.IncludePrivateChats || !policy.Permissions.IncludeGroupChats ||
 		!reflect.DeepEqual(policy.Permissions.AllowDomains, []string{"lite.duckduckgo.com", "example.org"}) ||
 		!reflect.DeepEqual(policy.Permissions.BlockDomains, []string{"blocked.example.org"}) ||
@@ -81,6 +82,9 @@ func TestLearningConfigValidationErrors(t *testing.T) {
 		{"empty schedule window", "[learning]\nenabled = true\nschedule = '02:00-02:00'\n"},
 		{"bad timezone", "[learning]\nenabled = true\ntimezone = 'Not/A_Zone'\n"},
 		{"negative idle_wait", "[learning]\nenabled = true\nidle_wait = '-5m'\n"},
+		{"automatic discovery without schedule", "[learning]\nenabled = true\ninclude_private_chats = true\nauto_research_model = 'qwen3:4b'\n"},
+		{"automatic discovery without chat consent", "[learning]\nenabled = true\nschedule = '02:00-05:00'\nauto_research_model = 'qwen3:4b'\n"},
+		{"automatic discovery with cloud model", "[learning]\nenabled = true\nschedule = '02:00-05:00'\ninclude_private_chats = true\nauto_research_model = 'example:cloud'\n"},
 		{"bad idle_wait", "[learning]\nenabled = true\nidle_wait = 'soon'\n"},
 	} {
 		t.Run(tc.name, func(t *testing.T) {

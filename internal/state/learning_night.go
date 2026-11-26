@@ -8,7 +8,9 @@ import (
 	"io"
 	"os"
 	"path/filepath"
+	"strings"
 	"time"
+	"unicode"
 
 	"q-agent/internal/learning"
 )
@@ -17,6 +19,9 @@ type learningNight struct {
 	Window          string `json:"window,omitempty"`
 	FreshnessWindow string `json:"freshness_window,omitempty"`
 	DeferredWindow  string `json:"deferred_window,omitempty"`
+	DiscoveryWindow string `json:"discovery_window,omitempty"`
+	Automatic       bool   `json:"automatic,omitempty"`
+	StagedQuery     string `json:"staged_query,omitempty"`
 	Pending         string `json:"pending_run_id,omitempty"`
 	Active          string `json:"active_run_id,omitempty"`
 }
@@ -31,17 +36,20 @@ func loadLearningNight(path string) (learningNight, error) {
 		return night, err
 	}
 	defer f.Close()
-	const limit = 1024
+	const limit = 4096
 	data, err := io.ReadAll(io.LimitReader(f, limit+1))
 	if err != nil {
 		return night, err
 	}
 	if len(data) > limit || json.Unmarshal(data, &night) != nil ||
 		(night.Pending != "" && !auditID.MatchString(night.Pending)) ||
-		(night.Active != "" && !auditID.MatchString(night.Active)) {
+		(night.Active != "" && !auditID.MatchString(night.Active)) ||
+		(night.Automatic && night.Active == "") ||
+		(night.StagedQuery != "" && (!night.Automatic || len(night.StagedQuery) > 512 ||
+			night.Active != automaticResearchID("run", night.StagedQuery))) {
 		return learningNight{}, fmt.Errorf("invalid overnight learning queue")
 	}
-	for _, date := range []string{night.Window, night.FreshnessWindow, night.DeferredWindow} {
+	for _, date := range []string{night.Window, night.FreshnessWindow, night.DeferredWindow, night.DiscoveryWindow} {
 		if _, err := time.Parse(time.DateOnly, date); date != "" && err != nil {
 			return learningNight{}, fmt.Errorf("invalid overnight learning date")
 		}
@@ -98,7 +106,7 @@ func (c *LearningCoordinator) RemoveScheduledResearch(id string) error {
 	case night.Pending:
 		night.Pending = ""
 	case night.Active:
-		night.Active = ""
+		night.Active, night.Automatic, night.StagedQuery = "", false, ""
 	default:
 		return nil
 	}
@@ -110,6 +118,14 @@ func (c *LearningCoordinator) RemoveScheduledResearch(id string) error {
 // The caller holds the learning-directory lock across the operation.
 func (c *LearningCoordinator) RunScheduledResearch(ctx context.Context, cfg learning.Config, window string, allow func(string) bool,
 	search learning.SearchProvider, fetch learning.DocumentFetcher, reader learning.DocumentReader) error {
+	return c.RunScheduledResearchWithDiscovery(ctx, cfg, window, allow, search, fetch, reader, nil)
+}
+
+// RunScheduledResearchWithDiscovery considers local topic discovery after any
+// active or manually approved run. A nil discovery function disables it.
+func (c *LearningCoordinator) RunScheduledResearchWithDiscovery(ctx context.Context, cfg learning.Config, window string, allow func(string) bool,
+	search learning.SearchProvider, fetch learning.DocumentFetcher, reader learning.DocumentReader,
+	discover func(context.Context) ([]string, error)) error {
 	if !cfg.Enabled || !cfg.Schedule.Enabled || window == "" {
 		return nil
 	}
@@ -125,6 +141,26 @@ func (c *LearningCoordinator) RunScheduledResearch(ctx context.Context, cfg lear
 	if id == "" {
 		id = night.Pending
 	}
+	if id == "" && discover != nil && search != nil && allow != nil && night.DiscoveryWindow < window {
+		night.DiscoveryWindow = window
+		if err := Atomic(path, night); err != nil {
+			return err
+		}
+		queries, err := discover(ctx)
+		if err != nil {
+			return err
+		}
+		id, night.StagedQuery, err = c.selectDiscoveredResearch(ctx, cfg, queries, allow)
+		if err != nil {
+			return err
+		}
+		if id != "" {
+			night.Active, night.Window, night.Automatic = id, window, true
+			if err := Atomic(path, night); err != nil {
+				return err
+			}
+		}
+	}
 	if id == "" {
 		if cfg.SourcePolicy == nil || cfg.SourcePolicy.RevalidateDays == 0 || fetch == nil || allow == nil || window <= night.FreshnessWindow {
 			return nil
@@ -138,9 +174,23 @@ func (c *LearningCoordinator) RunScheduledResearch(ctx context.Context, cfg lear
 		}
 		return c.revalidateLearningSource(ctx, cfg, allow, fetch)
 	}
+	autoAllowed := discover != nil && search != nil &&
+		(night.StagedQuery == "" || validDiscoveredQuery(cfg, night.StagedQuery, allow))
+	if night.StagedQuery != "" && autoAllowed {
+		// The query and its admission are durable before creating the run.
+		// Retrying after either write reuses the same IDs.
+		query := night.StagedQuery
+		if err := c.create(ctx, learning.Partition{Public: true}, id, automaticResearchID("plan", query), query, 2); err != nil {
+			return err
+		}
+		night.StagedQuery = ""
+		if err := Atomic(path, night); err != nil {
+			return err
+		}
+	}
 	run, err := c.readAuthorizedResearch(ctx, cfg, id, allow)
 	var policyAuditErr error
-	if errors.Is(err, learning.ErrDenied) || (err == nil && search == nil) {
+	if errors.Is(err, learning.ErrDenied) || (err == nil && (search == nil || (night.Automatic && !autoAllowed))) {
 		record, loadErr := c.load(id)
 		if loadErr != nil && !errors.Is(loadErr, os.ErrNotExist) {
 			return loadErr
@@ -161,7 +211,7 @@ func (c *LearningCoordinator) RunScheduledResearch(ctx context.Context, cfg lear
 	}
 	if errors.Is(err, learning.ErrDenied) || errors.Is(err, os.ErrNotExist) {
 		if night.Active != "" {
-			night.Active = ""
+			night.Active, night.Automatic, night.StagedQuery = "", false, ""
 		} else {
 			night.Pending = ""
 		}
@@ -196,7 +246,7 @@ func (c *LearningCoordinator) RunScheduledResearch(ctx context.Context, cfg lear
 	cleanup := context.WithoutCancel(ctx)
 	_, auditErr := c.ExportResearchAudit(cleanup, cfg, id, allow)
 	if terminalLearningRun(result.State) {
-		night.Active = ""
+		night.Active, night.Automatic = "", false
 		return errors.Join(workErr, auditErr, Atomic(path, night))
 	}
 	if ctx.Err() != nil {
@@ -204,4 +254,38 @@ func (c *LearningCoordinator) RunScheduledResearch(ctx context.Context, cfg lear
 		return errors.Join(workErr, auditErr, Atomic(path, night))
 	}
 	return errors.Join(workErr, auditErr)
+}
+
+func validDiscoveredQuery(cfg learning.Config, query string, allow func(string) bool) bool {
+	return len(query) > 0 && len(query) <= 512 && !strings.ContainsAny(query, "@/\\") &&
+		!strings.ContainsFunc(query, unicode.IsControl) && allow != nil && allow(query) &&
+		!cfg.Permissions.Excludes(learning.ConversationTurn{Transcript: query}) &&
+		strings.ContainsFunc(query, unicode.IsLetter)
+}
+
+func automaticResearchID(kind, query string) string {
+	key := strings.ToLower(strings.Join(strings.Fields(strings.TrimRight(query, "?？.。")), " "))
+	return frontierResearchID(kind, "automatic", key)
+}
+
+// selectDiscoveredResearch skips previously admitted public queries without
+// persisting the originating chat or the rest of the model's suggestions.
+func (c *LearningCoordinator) selectDiscoveredResearch(ctx context.Context, cfg learning.Config,
+	queries []string, allow func(string) bool) (id, query string, err error) {
+	if err := ctx.Err(); err != nil {
+		return "", "", err
+	}
+	for _, query := range queries {
+		query = strings.TrimSpace(query)
+		if !validDiscoveredQuery(cfg, query, allow) {
+			continue
+		}
+		id := automaticResearchID("run", query)
+		if _, err := c.load(id); errors.Is(err, os.ErrNotExist) {
+			return id, query, nil
+		} else if err != nil {
+			return "", "", err
+		}
+	}
+	return "", "", nil
 }

@@ -18,6 +18,7 @@ allow_domains = []
 block_domains = []
 excluded_terms = []
 schedule = ""
+auto_research_model = ""
 timezone = ""
 idle_wait = "30m"
 ```
@@ -362,8 +363,8 @@ q-agent learning frontier --chat-id -1001234567890 --topic-id 7 --config ./confi
 
 Enable learning and the relevant chat type in the learning policy. The
 requested chat must also be authorized by the Telegram service configuration.
-The command uses up to 24 completed exchanges from that topic's last 48
-hours. Explicit user questions produce related research candidates with
+The command uses up to 24 exchanges or observed group messages from that
+topic's last 48 hours. Explicit user questions produce related research candidates with
 origin references and a deterministic score. Repeated and near-duplicate
 questions reuse the same entry. The frontier stores up to 64 candidates per
 topic. Newly excluded text is withheld from results.
@@ -460,6 +461,51 @@ the active worker. Use `learning status` to read the final state.
 Cancellation keeps the existing reservation and commit fencing rules.
 An overnight approval whose question or search destination is excluded
 by a policy change is withdrawn before dispatch.
+
+## Discover and research conversation topics overnight
+
+To let the idle scheduler pick a topic automatically, set
+`auto_research_model` to an installed model in the local Ollama daemon at
+`http://127.0.0.1:11434`. This model is independent of the chat provider.
+Use a [local-only Ollama daemon](https://docs.ollama.com/faq#how-do-i-disable-ollamas-cloud-features).
+Keep `[memory] enabled = true`, opt in to the relevant chat type, and restart
+q-agent.
+
+```toml
+[learning]
+enabled = true
+include_private_chats = true
+chat_recall = true
+schedule = "02:00-05:00"
+timezone = "Asia/Taipei"
+idle_wait = "30m"
+auto_research_model = "qwen3:4b"
+```
+
+With no active or manually approved run, the scheduler can read up to 24
+recent items from the past 48 hours in one authorized topic. It reads
+completed exchanges and human group messages delivered by Telegram,
+including messages sent between group members. Mentions and replies to
+q-agent can still trigger immediate handling. The local model can suggest
+public follow-ups based on statements, recurring subjects, and open
+questions. Topic and term exclusions apply before extraction.
+
+For passive group history, enable `include_group_chats` and authorize the
+group. Telegram must deliver its ordinary messages to the bot. This is
+available to bot administrators and bots with Privacy Mode disabled.
+Group history is captured as messages arrive, using the per-chat
+`recent_max_messages` and `recent_max_bytes` caps. Companion can consume
+its recent input while the same messages stay available to learning.
+
+Only a rewritten public query passes to the web search service. The
+public run stores the query without the transcript or its chat and topic IDs.
+
+Discovery is attempted at most once per idle window. The worker searches
+for two verified sources for one eligible query and stores a cited note
+when it succeeds. Previously queued automatic queries with the same
+normalized text are skipped. Use `q-agent learning digest` for recent results
+or ask in Telegram with chat recall enabled. Clear `auto_research_model` and
+restart q-agent to return to manually approved runs.
 
 ## Run approved research overnight
 

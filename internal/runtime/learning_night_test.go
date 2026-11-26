@@ -167,3 +167,77 @@ func TestLearningNightResearchReachesChatRecall(t *testing.T) {
 	t.Logf("M1 fixture: control notes=%d, learning notes=%d, verified sources=%d, reserved requests=%d",
 		len(without.noteIDs), len(with.noteIDs), report.Events[learning.EvidenceValidated], report.TerminalReservations.Requests)
 }
+
+func TestLearningNightDiscoversTopicsFromStatements(t *testing.T) {
+	r, _, _ := fixture(t)
+	ctx := context.Background()
+	cfg := learning.DefaultConfig()
+	cfg.Enabled, cfg.Schedule.Enabled, cfg.Recall.ChatEnabled = true, true, true
+	cfg.Permissions.IncludePrivateChats = true
+	cfg.Permissions.ExcludedTerms = []string{"internal-only"}
+	r.Learning = cfg
+
+	inside := time.Date(2026, 11, 22, 3, 0, 0, 0, time.UTC)
+	record := func(id, chat, topic int64, ago time.Duration, statement string) {
+		t.Helper()
+		route := input(id, chat, topic, chat, "")
+		at := inside.Add(-ago)
+		must(t, r.Store.RecordChat(route, at))
+		must(t, r.Store.CommitExchange(route, fmt.Sprintf("update:telegram:%d", id), state.Conversation{Pairs: []state.Pair{{
+			User: statement, Answer: "Recorded observation",
+		}}}, at))
+	}
+	record(1, 1, 0, time.Hour, "The coherent DMA buffer looks non-cacheable")
+	record(2, 1, 0, 50*time.Minute, "The CPU uses ARM64")
+	record(3, 1, 0, 40*time.Minute, "internal-only project details")
+	record(4, -10, 7, 35*time.Minute, "Group member discussion")
+	record(5, 2, 0, 34*time.Minute, "Unauthorized chat discussion")
+
+	const query = "ARM64 coherent DMA buffer cacheability"
+	analyses, searches := 0, 0
+	r.LearningTopics = func(_ context.Context, exchanges []string) ([]string, error) {
+		analyses++
+		if len(exchanges) != 2 || !strings.Contains(exchanges[0], "coherent DMA buffer") ||
+			!strings.Contains(exchanges[1], "CPU uses ARM64") {
+			t.Fatalf("unexpected exchanges: %q", exchanges)
+		}
+		return []string{"internal-only appears", "private@example.org", query}, nil
+	}
+	const first = "https://example.org/dma"
+	const second = "https://example.net/dma"
+	search := nightSearch(func(_ context.Context, q string, _ int) ([]learning.SearchHit, learning.Budget, error) {
+		searches++
+		if q != query {
+			t.Fatalf("unexpected public query: %q", q)
+		}
+		return []learning.SearchHit{{URI: first}, {URI: second}}, learning.Budget{Requests: 1}, nil
+	})
+	fetch := nightFetch(func(_ context.Context, uri string, _ int64) (learning.FetchedDocument, learning.Budget, error) {
+		body := "ARM64 coherent DMA buffer cacheability is determined by platform properties."
+		if uri == second {
+			body = "Coherent ARM64 DMA buffers may require non-cacheable CPU mappings on some platforms."
+		}
+		return learning.FetchedDocument{
+			MediaType: "text/plain", Body: []byte(body), Source: learning.Source{
+				Record: learning.Record{SchemaVersion: learning.SchemaVersion, CreatedAt: inside, UpdatedAt: inside},
+				ID:     fmt.Sprintf("%x", sha256.Sum256([]byte(uri))), CanonicalURI: uri, FetchedAt: inside,
+				ContentHash: fmt.Sprintf("%x", sha256.Sum256([]byte(body))), TrustClass: "public_reference",
+			},
+		}, learning.Budget{Requests: 2, Documents: 1}, nil
+	})
+
+	must(t, r.runNightResearch(ctx, inside.Add(-31*time.Minute), search, fetch))
+	if analyses != 0 {
+		t.Fatal("topic extraction started during recent chat activity")
+	}
+	must(t, r.runNightResearch(ctx, inside, search, fetch))
+	must(t, r.runNightResearch(ctx, inside.Add(time.Minute), search, fetch))
+	must(t, r.runNightResearch(ctx, inside.AddDate(0, 0, 1), search, fetch))
+	if analyses != 2 || searches != 1 {
+		t.Fatalf("discovery=%d search=%d, want one discovery per window and one search total", analyses, searches)
+	}
+	_, recall := r.taskHistory(ctx, input(6, 1, 0, 1, query), state.Conversation{}, true)
+	if !strings.Contains(recall.content, first) || !strings.Contains(recall.content, second) {
+		t.Fatalf("missing recalled sources: %q", recall.content)
+	}
+}

@@ -290,6 +290,12 @@ func serveWithMaintenance(ctx context.Context, c config.Config, policy *redactio
 	rt := &run.Runtime{Config: c, Learning: learningConfig, Store: store, Workspaces: workspaces, Tools: tools, Sink: bot, Version: version, Options: agent.Options{Model: c.Provider.Model, Thinking: c.Provider.Thinking, MaxSteps: c.Limits.MaxSteps, Redaction: policy, Logger: log.Default()}, Report: func(err error) {
 		log.Printf("[SERVICE] Runtime error reported | error=%q", policy.Text(redaction.Terminal, err.Error()))
 	}}
+	if c.Learning.AutoResearchModel != "" {
+		rt.LearningTopics, err = llm.NewLearningTopicExtractor(c.Learning.AutoResearchModel)
+		if err != nil {
+			return fmt.Errorf("configure learning topic extraction: %w", err)
+		}
+	}
 	management.StateDir, management.Version, management.Notify = c.StateDir, version, bot.Send
 	if len(management.ServeArgv) == 0 && len(os.Args) > 1 && os.Args[1] == "serve" {
 		management.ServeArgv = append([]string(nil), os.Args[1:]...)

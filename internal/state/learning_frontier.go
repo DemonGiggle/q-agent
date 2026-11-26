@@ -63,24 +63,16 @@ func (r *LearningRepository) ConversationFrontier(ctx context.Context, reader le
 		return nil, err
 	}
 	prior := data.Snapshot.Frontier
-	cutoff := maxTime(query.From, retainSince)
 	if !retainSince.IsZero() {
 		prior = slices.DeleteFunc(slices.Clone(prior), func(entry learning.FrontierEntry) bool {
 			return entry.Question.UpdatedAt.Before(retainSince)
 		})
 	}
-	cutoff = privateLearningAfter(data, cutoff)
-	if cutoff.Before(query.Until) {
-		query.From = cutoff
-	}
-	turns, err := reader.Recent(ctx, query)
+	query.From = maxTime(query.From, retainSince)
+	turns, blocked, err := recentLearningTurns(ctx, data, reader, query, now)
 	if err != nil {
 		return nil, err
 	}
-	turns = slices.DeleteFunc(turns, func(turn learning.ConversationTurn) bool {
-		return turn.At.Before(cutoff) || !turn.At.Before(query.Until)
-	})
-	turns, blocked := filterDeletedLearning(data, turns, now)
 	entries, changed := learning.ConversationCandidates(prior, turns, now.UTC(), allow)
 	entries = slices.DeleteFunc(entries, func(entry learning.FrontierEntry) bool { return blocked[entry.Question.ID] })
 	if observe {
@@ -107,6 +99,42 @@ func (r *LearningRepository) ConversationFrontier(ctx context.Context, reader le
 		}
 	}
 	return entries, nil
+}
+
+// RecentLearningTurns reads eligible exchanges for topic discovery while
+// honoring private frontier erasure. The caller supplies an authorized reader.
+func (r *LearningRepository) RecentLearningTurns(ctx context.Context, reader learning.ConversationReader,
+	query learning.ConversationQuery, now time.Time) ([]learning.ConversationTurn, error) {
+	key, err := learningPartitionKey(learning.Partition{Scope: &query.Scope})
+	if err != nil {
+		return nil, err
+	}
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	data, err := r.load(key)
+	if err != nil {
+		return nil, err
+	}
+	turns, _, err := recentLearningTurns(ctx, data, reader, query, now)
+	return turns, err
+}
+
+func recentLearningTurns(ctx context.Context, data learningPartition, reader learning.ConversationReader,
+	query learning.ConversationQuery, now time.Time) ([]learning.ConversationTurn, map[string]bool, error) {
+	query.From = privateLearningAfter(data, query.From)
+	var turns []learning.ConversationTurn
+	if query.From.Before(query.Until) {
+		var err error
+		turns, err = reader.Recent(ctx, query)
+		if err != nil {
+			return nil, nil, err
+		}
+		turns = slices.DeleteFunc(turns, func(turn learning.ConversationTurn) bool {
+			return turn.At.Before(query.From) || !turn.At.Before(query.Until)
+		})
+	}
+	turns, blocked := filterDeletedLearning(data, turns, now)
+	return turns, blocked, nil
 }
 
 func (r *LearningRepository) PublicFrontier(ctx context.Context, cfg learning.Config, now time.Time, allow func(string) bool) ([]learning.FrontierEntry, error) {

@@ -150,6 +150,7 @@ type Proactive struct {
 type Learning struct {
 	Enabled             bool     `toml:"enabled"`
 	ChatRecall          bool     `toml:"chat_recall"`
+	AutoResearchModel   string   `toml:"auto_research_model"`
 	IncludePrivateChats bool     `toml:"include_private_chats"`
 	IncludeGroupChats   bool     `toml:"include_group_chats"`
 	AllowDomains        []string `toml:"allow_domains"`
@@ -762,6 +763,16 @@ func Load(path string) (Config, error) {
 		}
 		if _, _, err := parseScheduleWindow(c.Learning.Schedule); err != nil {
 			return c, err
+		}
+	}
+	c.Learning.AutoResearchModel = strings.TrimSpace(c.Learning.AutoResearchModel)
+	if c.Learning.AutoResearchModel != "" {
+		if !c.Memory.Enabled || c.Learning.Schedule == "" ||
+			(!c.Learning.IncludePrivateChats && !c.Learning.IncludeGroupChats) {
+			return c, fmt.Errorf("learning.auto_research_model requires memory, a learning schedule, and an enabled chat type")
+		}
+		if strings.Contains(strings.ToLower(c.Learning.AutoResearchModel), "cloud") {
+			return c, fmt.Errorf("learning.auto_research_model requires an installed local Ollama model")
 		}
 	}
 	if err := normalizeMCP(&c); err != nil {

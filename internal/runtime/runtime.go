@@ -49,6 +49,7 @@ type task struct {
 type Runtime struct {
 	Config            config.Config
 	Learning          learning.Config
+	LearningTopics    func(context.Context, []string) ([]string, error)
 	Store             *state.Store
 	Workspaces        Workspaces
 	Providers         ProviderFactory

@@ -18,6 +18,10 @@ import (
 // NewLearningOllama connects to an explicitly local Ollama instance. The
 // research request carries public excerpts and exposes no tools.
 func NewLearningOllama(base, model string) (learning.ModelProvider, error) {
+	return newLearningOllama(base, model)
+}
+
+func newLearningOllama(base, model string) (*learningOllama, error) {
 	if base == "" {
 		base = "http://127.0.0.1:11434"
 	}
@@ -49,7 +53,6 @@ type learningOllama struct {
 }
 
 func (p *learningOllama) Generate(ctx context.Context, input learning.StructuredRequest) ([]byte, learning.Budget, error) {
-	const outputTokens = 384
 	if len(input.References) == 0 || len(input.References) > 2 || input.TokenLimit < 1024 || input.TokenLimit > 4096 {
 		return nil, learning.Budget{}, errors.New("invalid learning Ollama request")
 	}
@@ -80,14 +83,19 @@ func (p *learningOllama) Generate(ctx context.Context, input learning.Structured
 	default:
 		return nil, learning.Budget{}, errors.New("invalid learning Ollama operation")
 	}
+	return p.generate(ctx, system, content, input.SchemaJSON, input.TokenLimit)
+}
+
+func (p *learningOllama) generate(ctx context.Context, system, content string, schema []byte, tokenLimit int) ([]byte, learning.Budget, error) {
+	const outputTokens = 384
 	messages := []ollamaMessage{
 		{Role: "system", Content: system},
 		{Role: "user", Content: content},
 	}
 	body, err := json.Marshal(map[string]any{
-		"model": p.model, "messages": messages, "format": json.RawMessage(input.SchemaJSON),
+		"model": p.model, "messages": messages, "format": json.RawMessage(schema),
 		"stream": false, "think": false, "keep_alive": 0,
-		"options": map[string]any{"temperature": 0, "num_ctx": input.TokenLimit - outputTokens, "num_predict": outputTokens},
+		"options": map[string]any{"temperature": 0, "num_ctx": tokenLimit - outputTokens, "num_predict": outputTokens},
 	})
 	if err != nil {
 		return nil, learning.Budget{}, err
@@ -121,8 +129,8 @@ func (p *learningOllama) Generate(ctx context.Context, input learning.Structured
 		*result.InputTokens < 0 || *result.OutputTokens < 0 {
 		return nil, usage, errors.New("invalid learning Ollama response envelope")
 	}
-	if *result.InputTokens > input.TokenLimit-outputTokens || *result.OutputTokens > outputTokens {
-		usage.Tokens = int64(input.TokenLimit) + 1
+	if *result.InputTokens > tokenLimit-outputTokens || *result.OutputTokens > outputTokens {
+		usage.Tokens = int64(tokenLimit) + 1
 		return nil, usage, errors.New("learning Ollama token limit exceeded")
 	}
 	usage.Tokens = int64(*result.InputTokens + *result.OutputTokens)

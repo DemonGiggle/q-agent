@@ -180,6 +180,10 @@ excluded_terms = []
 # Overnight research window (HH:MM-HH:MM, 24-hour). Empty disables overnight runs.
 # Requires enabled = true when set.
 schedule = ""
+# Optional local Ollama model at 127.0.0.1:11434 that identifies public
+# research topics in authorized Telegram conversations. Empty keeps manual
+# approval. Requires a schedule and at least one opted-in chat type.
+auto_research_model = ""
 # IANA timezone for the overnight schedule window; empty means server-local time.
 timezone = ""
 # Wait this long after the last chat activity before starting overnight work.
